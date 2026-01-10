@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT id,\n        name,\n        status as \"status: _\",\n        host_id as \"host_id?\",\n        vcpu,\n        memory,\n        ip_address as \"ip_address?\", \n        mac_address as \"mac_address?\", \n        network_mode as \"network_mode: _\", \n        kernel_params, \n        kernel\nFROM vms\n        ",
+  "query": "\nSELECT id,\n        name,\n        status as \"status: _\",\n        host_id as \"host_id?\",\n        vcpu,\n        memory,\n        hypervisor as \"hypervisor: _\",\n        config as \"config: _\",\n        boot_source_id as \"boot_source_id?\",\n        description as \"description?\"\nFROM vms\n        ",
   "describe": {
     "columns": [
       {
@@ -46,39 +46,34 @@
       },
       {
         "ordinal": 6,
-        "name": "ip_address?",
-        "type_info": "Inet"
-      },
-      {
-        "ordinal": 7,
-        "name": "mac_address?",
-        "type_info": "Macaddr"
-      },
-      {
-        "ordinal": 8,
-        "name": "network_mode: _",
+        "name": "hypervisor: _",
         "type_info": {
           "Custom": {
-            "name": "network_mode",
+            "name": "hypervisor",
             "kind": {
               "Enum": [
-                "STATIC",
-                "DHCP",
-                "NONE"
+                "CLOUD_HV",
+                "FIRECRACKER",
+                "QEMU"
               ]
             }
           }
         }
       },
       {
-        "ordinal": 9,
-        "name": "kernel_params",
-        "type_info": "Varchar"
+        "ordinal": 7,
+        "name": "config: _",
+        "type_info": "Jsonb"
       },
       {
-        "ordinal": 10,
-        "name": "kernel",
+        "ordinal": 8,
+        "name": "boot_source_id?",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "description?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -91,12 +86,11 @@
       true,
       false,
       false,
-      true,
-      true,
       false,
       false,
-      false
+      true,
+      true
     ]
   },
-  "hash": "c793b10195ee37947a35b8e3c0ec0e08d978cabd366c6881c4e62af3e7a42714"
+  "hash": "ac0e1255892eba629f550275d94b9da95304bc51b95b63ec31c6c904d7b4cc00"
 }

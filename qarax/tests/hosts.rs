@@ -1,4 +1,4 @@
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 use common::telemtry::{get_subscriber, init_subscriber};
 use once_cell::sync::Lazy;
@@ -15,7 +15,7 @@ use uuid::Uuid;
 struct TestApp {
     pub db_name: String,
     pub address: String,
-    pub pool: PgPool,
+    pub _pool: PgPool,
 }
 
 static TRACING: Lazy<()> = Lazy::new(|| {
@@ -63,11 +63,13 @@ async fn spawn_app() -> TestApp {
     let connection_pool = configure_database(&configuration.database).await;
 
     let server = run(listener, connection_pool.clone()).await;
-    let _ = tokio::spawn(async { server.unwrap().await });
+    tokio::spawn(async move {
+        let _ = server.unwrap().await;
+    });
     TestApp {
         db_name: configuration.database.name,
         address,
-        pool: connection_pool,
+        _pool: connection_pool,
     }
 }
 
@@ -91,7 +93,7 @@ async fn test_add_host() {
     };
     let client = reqwest::Client::new();
     let res = client
-        .post(&format!("{}/hosts", &app.address))
+        .post(format!("{}/hosts", &app.address))
         .header("Content-Type", "application/json")
         .json(&host)
         .send()

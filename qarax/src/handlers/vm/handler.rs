@@ -18,6 +18,7 @@ pub async fn list(Extension(env): Extension<App>) -> Result<ApiResponse<Vec<Vm>>
     })
 }
 
+#[allow(dead_code)]
 #[instrument(skip(env))]
 pub async fn get(Extension(env): Extension<App>, vm_id: uuid::Uuid) -> Result<ApiResponse<Vm>> {
     let vm = vms::get(env.pool(), vm_id).await?;

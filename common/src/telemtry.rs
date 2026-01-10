@@ -12,7 +12,7 @@ where
 {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(env_filter));
-    let formatting_layer = BunyanFormattingLayer::new(name.into(), sink);
+    let formatting_layer = BunyanFormattingLayer::new(name, sink);
     tracing_subscriber::Registry::default()
         .with(env_filter)
         .with(formatting_layer)
