@@ -8,6 +8,15 @@ use http::StatusCode;
 use tracing::instrument;
 use uuid::Uuid;
 
+#[utoipa::path(
+    get,
+    path = "/hosts",
+    responses(
+        (status = 200, description = "List all hosts", body = Vec<Host>),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "hosts"
+)]
 #[instrument(skip(env))]
 pub async fn list(Extension(env): Extension<App>) -> Result<ApiResponse<Vec<Host>>> {
     let hosts = hosts::list(env.pool()).await?;
@@ -17,6 +26,18 @@ pub async fn list(Extension(env): Extension<App>) -> Result<ApiResponse<Vec<Host
     })
 }
 
+#[utoipa::path(
+    post,
+    path = "/hosts",
+    request_body = NewHost,
+    responses(
+        (status = 201, description = "Host created successfully", body = String),
+        (status = 422, description = "Invalid input"),
+        (status = 409, description = "Host with name already exists"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "hosts"
+)]
 #[instrument(skip(env))]
 pub async fn add(
     Extension(env): Extension<App>,

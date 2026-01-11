@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Type, types::Json};
 use strum_macros::{Display, EnumString};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct CpuTopology {
     pub threads_per_core: Option<i32>,
     pub cores_per_die: Option<i32>,
@@ -11,7 +12,7 @@ pub struct CpuTopology {
     pub packages: Option<i32>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Vm {
     pub id: Uuid,
     pub name: String,
@@ -100,7 +101,7 @@ impl From<VmRow> for Vm {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display)]
+#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema)]
 #[sqlx(rename_all = "SCREAMING_SNAKE_CASE")]
 #[sqlx(type_name = "hypervisor")]
 #[serde(rename_all = "snake_case")]
@@ -109,7 +110,7 @@ pub enum Hypervisor {
     CloudHv,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display)]
+#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema)]
 #[sqlx(rename_all = "SCREAMING_SNAKE_CASE")]
 #[sqlx(type_name = "vm_status")]
 #[serde(rename_all = "snake_case")]
@@ -122,7 +123,7 @@ pub enum VmStatus {
     Shutdown,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewVm {
     pub name: String,
     pub hypervisor: Hypervisor,

@@ -58,7 +58,10 @@ Three main tables with custom enum types:
 ### Building
 
 ```bash
-# Build all workspace members
+# Build all workspace members and generate OpenAPI spec
+make build
+
+# Or use cargo directly (won't generate OpenAPI)
 cargo build
 
 # Build release binaries
@@ -70,6 +73,8 @@ cargo build -p qarax-node
 ```
 
 Note: Project uses musl target (see `.cargo/config.toml`)
+
+**Recommended**: Use `make build` instead of `cargo build` to ensure the OpenAPI spec is regenerated.
 
 ### Testing
 
@@ -124,6 +129,74 @@ qarax reads configuration from `configuration/base.yaml` merged with environment
 ## Protocol Buffers
 
 The project uses Protocol Buffers for gRPC communication between qarax and qarax-node. Proto definitions are in `proto/node.proto` and compiled via `tonic-build` in build scripts. The `VmService` defines operations: StartVM, StopVM, ListVms, GetVmInfo.
+
+## OpenAPI Documentation
+
+The qarax control plane includes auto-generated OpenAPI 3.1 documentation using utoipa. The OpenAPI spec is version-controlled and should be regenerated whenever API endpoints change.
+
+### Accessing the Documentation
+
+When the qarax server is running:
+- **Swagger UI**: http://localhost:8000/swagger-ui
+- **OpenAPI JSON spec**: http://localhost:8000/api-docs/openapi.json
+- **Committed YAML spec**: `qarax/openapi.yaml`
+
+### Regenerating the OpenAPI Spec
+
+The OpenAPI spec is automatically regenerated when you run `make build`. You can also generate it manually:
+
+```bash
+# Recommended: build and generate OpenAPI
+make build
+
+# Or generate OpenAPI only
+make openapi
+
+# Or use cargo directly
+cargo run -p qarax --bin generate-openapi
+```
+
+This updates `qarax/openapi.yaml` which should be committed to the repository.
+
+### Adding New Endpoints
+
+When adding a new endpoint, follow these steps:
+
+1. **Annotate the handler function** with `#[utoipa::path(...)]`:
+   ```rust
+   #[utoipa::path(
+       get,
+       path = "/resource/{id}",
+       params(
+           ("id" = uuid::Uuid, Path, description = "Resource ID")
+       ),
+       responses(
+           (status = 200, description = "Success", body = Resource),
+           (status = 404, description = "Not found")
+       ),
+       tag = "resources"
+   )]
+   pub async fn get_resource(...) -> Result<ApiResponse<Resource>> {
+       // implementation
+   }
+   ```
+
+2. **Add `ToSchema` derive** to any new data models:
+   ```rust
+   #[derive(Serialize, Deserialize, ToSchema)]
+   pub struct Resource {
+       pub id: Uuid,
+       pub name: String,
+   }
+   ```
+
+3. **Register in `handlers/mod.rs`** `ApiDoc`:
+   - Add the handler path to the `paths(...)` list
+   - Add any new schemas to the `components(schemas(...))` list
+
+4. **Regenerate the spec**: Run `make build` or `make openapi`
+
+5. **Commit the updated spec**: Include `qarax/openapi.yaml` in your commit
 
 ## Important Implementation Details
 

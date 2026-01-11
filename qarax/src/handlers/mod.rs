@@ -14,6 +14,8 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 use validator::ValidationErrors;
 
 mod host;
@@ -21,12 +23,44 @@ mod vm;
 
 pub type Result<T, E = Error> = ::std::result::Result<T, E>;
 
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        host::handler::list,
+        host::handler::add,
+        vm::handler::list,
+        vm::handler::get,
+    ),
+    components(
+        schemas(
+            crate::model::hosts::Host,
+            crate::model::hosts::NewHost,
+            crate::model::hosts::HostStatus,
+            crate::model::vms::Vm,
+            crate::model::vms::NewVm,
+            crate::model::vms::VmStatus,
+            crate::model::vms::Hypervisor,
+        )
+    ),
+    tags(
+        (name = "hosts", description = "Host management endpoints"),
+        (name = "vms", description = "Virtual machine management endpoints")
+    ),
+    info(
+        title = "Qarax API",
+        version = "0.1.0",
+        description = "REST API for managing virtual machines and hypervisor hosts"
+    )
+)]
+pub struct ApiDoc;
+
 pub fn app(env: App) -> Router {
     let x_request_id = HeaderName::from_static("x-request-id");
     Router::new()
         .route("/", get(|| async { "hello" }))
         .merge(hosts())
         .merge(vms())
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(
             ServiceBuilder::new()
                 .layer(PropagateRequestIdLayer::new(x_request_id.clone()))

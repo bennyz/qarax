@@ -1,0 +1,226 @@
+openapi: 3.1.0
+info:
+  title: Qarax API
+  description: REST API for managing virtual machines and hypervisor hosts
+  license:
+    name: ''
+  version: 0.1.0
+paths:
+  /hosts:
+    get:
+      tags:
+      - hosts
+      operationId: list
+      responses:
+        '200':
+          description: List all hosts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Host'
+        '500':
+          description: Internal server error
+    post:
+      tags:
+      - hosts
+      operationId: add
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewHost'
+        required: true
+      responses:
+        '201':
+          description: Host created successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+        '409':
+          description: Host with name already exists
+        '422':
+          description: Invalid input
+        '500':
+          description: Internal server error
+  /vms:
+    get:
+      tags:
+      - vms
+      operationId: list
+      responses:
+        '200':
+          description: List all VMs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Vm'
+        '500':
+          description: Internal server error
+  /vms/{vm_id}:
+    get:
+      tags:
+      - vms
+      operationId: get
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: VM details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vm'
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
+components:
+  schemas:
+    Host:
+      type: object
+      required:
+      - id
+      - name
+      - address
+      - port
+      - status
+      - host_user
+      properties:
+        address:
+          type: string
+        host_user:
+          type: string
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        port:
+          type: integer
+          format: int32
+        status:
+          $ref: '#/components/schemas/HostStatus'
+    HostStatus:
+      type: string
+      enum:
+      - unknown
+      - down
+      - installing
+      - installation_failed
+      - initializing
+      - up
+    Hypervisor:
+      type: string
+      enum:
+      - cloud_hv
+    NewHost:
+      type: object
+      required:
+      - name
+      - address
+      - port
+      - host_user
+      - password
+      properties:
+        address:
+          type: string
+        host_user:
+          type: string
+        name:
+          type: string
+        password:
+          type: string
+        port:
+          type: integer
+          format: int32
+    NewVm:
+      type: object
+      required:
+      - name
+      - vcpu
+      - memory
+      - hypervisor
+      properties:
+        boot_source_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        config: {}
+        description:
+          type:
+          - string
+          - 'null'
+        hypervisor:
+          $ref: '#/components/schemas/Hypervisor'
+        memory:
+          type: integer
+          format: int32
+        name:
+          type: string
+        vcpu:
+          type: integer
+          format: int32
+    Vm:
+      type: object
+      required:
+      - id
+      - name
+      - status
+      - vcpu
+      - memory
+      - hypervisor
+      - config
+      properties:
+        boot_source_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        config: {}
+        description:
+          type:
+          - string
+          - 'null'
+        host_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        hypervisor:
+          $ref: '#/components/schemas/Hypervisor'
+        id:
+          type: string
+          format: uuid
+        memory:
+          type: integer
+          format: int32
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/VmStatus'
+        vcpu:
+          type: integer
+          format: int32
+    VmStatus:
+      type: string
+      enum:
+      - up
+      - down
+      - unknown
+tags:
+- name: hosts
+  description: Host management endpoints
+- name: vms
+  description: Virtual machine management endpoints

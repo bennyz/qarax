@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Type, types::Uuid};
 use strum_macros::{Display, EnumString};
+use utoipa::ToSchema;
 use validator::{Validate, ValidationError, ValidationErrors};
 
 use crate::errors;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Host {
     pub id: Uuid,
     pub name: String,
@@ -18,7 +19,7 @@ pub struct Host {
     pub password: Vec<u8>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display)]
+#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema)]
 #[sqlx(rename_all = "SCREAMING_SNAKE_CASE")]
 #[sqlx(type_name = "host_status")]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +33,7 @@ pub enum HostStatus {
     Up,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Validate)]
+#[derive(Serialize, Deserialize, Debug, Clone, Validate, ToSchema)]
 pub struct NewHost {
     #[validate(length(min = 1, max = 255))]
     pub name: String,

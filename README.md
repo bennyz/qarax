@@ -11,6 +11,24 @@ qarax consists of two main components:
 - **qarax** (this repository): Control plane REST API server that manages VM and host lifecycle
 - **qarax-node**: Data plane gRPC service that runs on hypervisor hosts and manages VM execution via Cloud Hypervisor
 
+## Building
+
+```bash
+# Build all packages and generate OpenAPI spec
+make build
+
+# Generate OpenAPI spec only
+make openapi
+
+# Run tests
+make test
+
+# Or use cargo directly (won't auto-generate OpenAPI)
+cargo build
+```
+
+The project includes auto-generated OpenAPI 3.1 documentation. Access it at http://localhost:8000/swagger-ui when the server is running.
+
 ## Host Provisioning
 
 qarax uses bootc (bootable containers) to deploy VMM (Virtual Machine Manager) hosts. The bootc image includes qarax-node, Cloud Hypervisor, and all necessary dependencies.
