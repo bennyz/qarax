@@ -538,6 +538,91 @@ components:
       type: string
       enum:
       - cloud_hv
+    InterfaceType:
+      type: string
+      enum:
+      - macvtap
+      - tap
+      - vhost_user
+    NetworkInterface:
+      type: object
+      required:
+      - id
+      - vm_id
+      - device_id
+      - mtu
+      - interface_type
+      - vhost_user
+      - num_queues
+      - queue_size
+      - offload_tso
+      - offload_ufo
+      - offload_csum
+      - pci_segment
+      - iommu
+      properties:
+        device_id:
+          type: string
+        host_mac:
+          type:
+          - string
+          - 'null'
+        id:
+          type: string
+          format: uuid
+        interface_type:
+          $ref: '#/components/schemas/InterfaceType'
+        iommu:
+          type: boolean
+        ip_address:
+          type:
+          - string
+          - 'null'
+        mac_address:
+          type:
+          - string
+          - 'null'
+        mtu:
+          type: integer
+          format: int32
+        network_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        num_queues:
+          type: integer
+          format: int32
+        offload_csum:
+          type: boolean
+        offload_tso:
+          type: boolean
+        offload_ufo:
+          type: boolean
+        pci_segment:
+          type: integer
+          format: int32
+        queue_size:
+          type: integer
+          format: int32
+        rate_limiter: {}
+        tap_name:
+          type:
+          - string
+          - 'null'
+        vhost_mode:
+          type:
+          - string
+          - 'null'
+        vhost_socket:
+          type:
+          - string
+          - 'null'
+        vhost_user:
+          type: boolean
+        vm_id:
+          type: string
+          format: uuid
     NewBootSource:
       type: object
       required:
@@ -703,13 +788,28 @@ components:
           description: Optional network interfaces to attach at create time (passed to qarax-node).
     NewVmNetwork:
       type: object
-      description: Minimal network config for create-VM request. Passed to qarax-node; id is required.
+      description: Network interface config for create-VM request. Passed to qarax-node; id is required.
       required:
       - id
       properties:
+        host_mac:
+          type:
+          - string
+          - 'null'
+          description: Host-side MAC address
         id:
           type: string
           description: Unique device id (e.g. "net0")
+        interface_type:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/InterfaceType'
+            description: Override interface type (inferred from tap/vhost_user if not set)
+        iommu:
+          type:
+          - boolean
+          - 'null'
+          description: Enable IOMMU for the device
         ip:
           type:
           - string
@@ -731,11 +831,75 @@ components:
           - 'null'
           format: int32
           description: MTU (optional)
+        num_queues:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: Number of virtio queues
+        offload_csum:
+          type:
+          - boolean
+          - 'null'
+          description: Enable checksum offload
+        offload_tso:
+          type:
+          - boolean
+          - 'null'
+          description: Enable TCP Segmentation Offload
+        offload_ufo:
+          type:
+          - boolean
+          - 'null'
+          description: Enable UDP Fragmentation Offload
+        pci_segment:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: PCI segment number
+        queue_size:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: Size of each queue
+        rate_limiter:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/RateLimiterConfig'
+            description: Rate limiter configuration
         tap:
           type:
           - string
           - 'null'
           description: Pre-created TAP device name (optional)
+        vhost_mode:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/VhostMode'
+            description: Vhost-user mode (client or server)
+        vhost_socket:
+          type:
+          - string
+          - 'null'
+          description: Unix socket path for vhost-user backend
+        vhost_user:
+          type:
+          - boolean
+          - 'null'
+          description: Enable vhost-user networking
+    RateLimiterConfig:
+      type: object
+      properties:
+        bandwidth:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/TokenBucket'
+        ops:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/TokenBucket'
     StorageObject:
       type: object
       required:
@@ -821,6 +985,23 @@ components:
       - ceph
       - lvm
       - zfs
+    TokenBucket:
+      type: object
+      required:
+      - size
+      - refill_time
+      properties:
+        one_time_burst:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        refill_time:
+          type: integer
+          format: int64
+        size:
+          type: integer
+          format: int64
     UpdateHostRequest:
       type: object
       required:
@@ -828,6 +1009,11 @@ components:
       properties:
         status:
           $ref: '#/components/schemas/HostStatus'
+    VhostMode:
+      type: string
+      enum:
+      - client
+      - server
     Vm:
       type: object
       required:

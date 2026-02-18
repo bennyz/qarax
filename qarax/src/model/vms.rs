@@ -4,6 +4,8 @@ use strum_macros::{Display, EnumString};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::model::network_interfaces::{InterfaceType, RateLimiterConfig, VhostMode};
+
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct CpuTopology {
     pub threads_per_core: Option<i32>,
@@ -127,7 +129,7 @@ pub enum VmStatus {
     Shutdown,
 }
 
-/// Minimal network config for create-VM request. Passed to qarax-node; id is required.
+/// Network interface config for create-VM request. Passed to qarax-node; id is required.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewVmNetwork {
     /// Unique device id (e.g. "net0")
@@ -142,6 +144,34 @@ pub struct NewVmNetwork {
     pub mask: Option<String>,
     /// MTU (optional)
     pub mtu: Option<i32>,
+
+    // Advanced fields
+    /// Host-side MAC address
+    pub host_mac: Option<String>,
+    /// Override interface type (inferred from tap/vhost_user if not set)
+    pub interface_type: Option<InterfaceType>,
+    /// Enable vhost-user networking
+    pub vhost_user: Option<bool>,
+    /// Unix socket path for vhost-user backend
+    pub vhost_socket: Option<String>,
+    /// Vhost-user mode (client or server)
+    pub vhost_mode: Option<VhostMode>,
+    /// Number of virtio queues
+    pub num_queues: Option<i32>,
+    /// Size of each queue
+    pub queue_size: Option<i32>,
+    /// Rate limiter configuration
+    pub rate_limiter: Option<RateLimiterConfig>,
+    /// Enable TCP Segmentation Offload
+    pub offload_tso: Option<bool>,
+    /// Enable UDP Fragmentation Offload
+    pub offload_ufo: Option<bool>,
+    /// Enable checksum offload
+    pub offload_csum: Option<bool>,
+    /// PCI segment number
+    pub pci_segment: Option<i32>,
+    /// Enable IOMMU for the device
+    pub iommu: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]

@@ -7,7 +7,7 @@ use crate::{
     App,
     grpc_client::{CreateVmRequest, NodeClient, net_configs_from_api},
     model::{
-        boot_sources, hosts,
+        boot_sources, hosts, network_interfaces,
         vms::{self, NewVm, Vm, VmStatus},
     },
 };
@@ -137,6 +137,13 @@ pub async fn create(
             "qarax-node: {}",
             e
         )));
+    }
+
+    // Store network interfaces in DB (inside tx, so rolls back if any insert fails)
+    for net in vm.networks.as_deref().unwrap_or(&[]) {
+        network_interfaces::create(&mut tx, id, net)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
     }
 
     tx.commit().await?;

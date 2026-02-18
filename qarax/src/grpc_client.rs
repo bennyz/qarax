@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use tracing::{debug, instrument};
 use uuid::Uuid;
 
+use crate::model::network_interfaces::{RateLimiterConfig, TokenBucket, VhostMode};
 use crate::model::vms::NewVmNetwork;
 
 // Include the generated proto code
@@ -44,21 +45,39 @@ pub fn net_configs_from_api(networks: &[NewVmNetwork]) -> Vec<NetConfig> {
             ip: n.ip.clone(),
             mask: n.mask.clone(),
             mac: n.mac.clone(),
-            host_mac: None,
+            host_mac: n.host_mac.clone(),
             mtu: n.mtu,
-            vhost_user: None,
-            vhost_socket: None,
-            vhost_mode: None,
-            num_queues: None,
-            queue_size: None,
-            rate_limiter: None,
-            offload_tso: None,
-            offload_ufo: None,
-            offload_csum: None,
-            pci_segment: None,
-            iommu: None,
+            vhost_user: n.vhost_user,
+            vhost_socket: n.vhost_socket.clone(),
+            vhost_mode: n.vhost_mode.as_ref().map(|m| match m {
+                VhostMode::Server => node::VhostMode::Server as i32,
+                VhostMode::Client => node::VhostMode::Client as i32,
+            }),
+            num_queues: n.num_queues,
+            queue_size: n.queue_size,
+            rate_limiter: n.rate_limiter.as_ref().map(rate_limiter_to_proto),
+            offload_tso: n.offload_tso,
+            offload_ufo: n.offload_ufo,
+            offload_csum: n.offload_csum,
+            pci_segment: n.pci_segment,
+            iommu: n.iommu,
         })
         .collect()
+}
+
+fn rate_limiter_to_proto(r: &RateLimiterConfig) -> node::RateLimiterConfig {
+    node::RateLimiterConfig {
+        bandwidth: r.bandwidth.as_ref().map(token_bucket_to_proto),
+        ops: r.ops.as_ref().map(token_bucket_to_proto),
+    }
+}
+
+fn token_bucket_to_proto(b: &TokenBucket) -> node::TokenBucket {
+    node::TokenBucket {
+        size: b.size,
+        refill_time: b.refill_time,
+        one_time_burst: b.one_time_burst,
+    }
 }
 
 impl NodeClient {
