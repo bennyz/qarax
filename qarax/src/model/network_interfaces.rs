@@ -1,33 +1,38 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Type, types::Json};
+use sqlx::{PgPool, Postgres, Transaction, Type, types::Json};
 use strum_macros::{Display, EnumString};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+use crate::model::vms::NewVmNetwork;
+
+pub type PgTransaction<'a> = Transaction<'a, Postgres>;
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct RateLimiterConfig {
     pub bandwidth: Option<TokenBucket>,
     pub ops: Option<TokenBucket>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct TokenBucket {
     pub size: i64,
     pub refill_time: i64,
     pub one_time_burst: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NetworkInterface {
     pub id: Uuid,
     pub vm_id: Uuid,
-    pub network_id: Uuid,
+    pub network_id: Option<Uuid>,
     pub device_id: String,
 
     // Basic network config
     pub tap_name: Option<String>,
-    pub mac_address: String,
+    pub mac_address: Option<String>,
     pub host_mac: Option<String>,
-    pub ip_address: String,
+    pub ip_address: Option<String>,
     pub mtu: i32,
 
     // Interface type and mode
@@ -55,12 +60,12 @@ pub struct NetworkInterface {
 pub struct NetworkInterfaceRow {
     pub id: Uuid,
     pub vm_id: Uuid,
-    pub network_id: Uuid,
+    pub network_id: Option<Uuid>,
     pub device_id: String,
     pub tap_name: Option<String>,
-    pub mac_address: String,
+    pub mac_address: Option<String>,
     pub host_mac: Option<String>,
-    pub ip_address: String,
+    pub ip_address: Option<String>,
     pub mtu: i32,
     pub interface_type: InterfaceType,
     pub vhost_user: bool,
@@ -104,8 +109,10 @@ impl From<NetworkInterfaceRow> for NetworkInterface {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display)]
-#[sqlx(rename_all = "lowercase")]
+#[derive(
+    Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema,
+)]
+#[sqlx(rename_all = "snake_case")]
 #[sqlx(type_name = "interface_type")]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -115,18 +122,30 @@ pub enum InterfaceType {
     VhostUser,
 }
 
+#[derive(
+    Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema,
+)]
+#[sqlx(rename_all = "lowercase")]
+#[sqlx(type_name = "varchar")]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum VhostMode {
+    Client,
+    Server,
+}
+
 pub async fn list_by_vm(pool: &PgPool, vm_id: Uuid) -> Result<Vec<NetworkInterface>, sqlx::Error> {
     let interfaces: Vec<NetworkInterfaceRow> = sqlx::query_as!(
         NetworkInterfaceRow,
         r#"
 SELECT id,
         vm_id,
-        network_id,
+        network_id as "network_id?",
         device_id as "device_id!",
         tap_name as "tap_name?",
-        mac_address::text as "mac_address!",
+        mac_address::text as "mac_address?",
         host_mac::text as "host_mac?",
-        ip_address::text as "ip_address!",
+        ip_address::text as "ip_address?",
         mtu as "mtu!",
         interface_type as "interface_type: _",
         vhost_user as "vhost_user!",
@@ -158,12 +177,12 @@ pub async fn get(pool: &PgPool, interface_id: Uuid) -> Result<NetworkInterface, 
         r#"
 SELECT id,
         vm_id,
-        network_id,
+        network_id as "network_id?",
         device_id as "device_id!",
         tap_name as "tap_name?",
-        mac_address::text as "mac_address!",
+        mac_address::text as "mac_address?",
         host_mac::text as "host_mac?",
-        ip_address::text as "ip_address!",
+        ip_address::text as "ip_address?",
         mtu as "mtu!",
         interface_type as "interface_type: _",
         vhost_user as "vhost_user!",
@@ -186,4 +205,72 @@ WHERE id = $1
     .await?;
 
     Ok(interface.into())
+}
+
+pub async fn create(
+    tx: &mut PgTransaction<'_>,
+    vm_id: Uuid,
+    n: &NewVmNetwork,
+) -> Result<Uuid, sqlx::Error> {
+    let id = Uuid::new_v4();
+
+    // Infer interface_type from fields
+    let interface_type = if n.vhost_user == Some(true) {
+        InterfaceType::VhostUser
+    } else if n.tap.is_some() {
+        InterfaceType::Tap
+    } else {
+        InterfaceType::Macvtap
+    };
+
+    let vhost_mode = n.vhost_mode.as_ref().map(|m| m.to_string());
+    let rate_limiter = n
+        .rate_limiter
+        .as_ref()
+        .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null));
+
+    sqlx::query(
+        r#"
+INSERT INTO network_interfaces (
+    id, vm_id, network_id, device_id,
+    tap_name, mac_address, host_mac, ip_address, mtu,
+    interface_type, vhost_user, vhost_socket, vhost_mode,
+    num_queues, queue_size, rate_limiter,
+    offload_tso, offload_ufo, offload_csum,
+    pci_segment, iommu
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6::macaddr, $7::macaddr, $8::inet, $9,
+    $10, $11, $12, $13,
+    $14, $15, $16,
+    $17, $18, $19,
+    $20, $21
+)
+        "#,
+    )
+    .bind(id)
+    .bind(vm_id)
+    .bind(Option::<Uuid>::None) // network_id: nullable, not provided via API
+    .bind(&n.id)
+    .bind(&n.tap)
+    .bind(&n.mac)
+    .bind(&n.host_mac)
+    .bind(&n.ip)
+    .bind(n.mtu.unwrap_or(1500))
+    .bind(interface_type)
+    .bind(n.vhost_user.unwrap_or(false))
+    .bind(&n.vhost_socket)
+    .bind(vhost_mode)
+    .bind(n.num_queues.unwrap_or(1))
+    .bind(n.queue_size.unwrap_or(256))
+    .bind(rate_limiter)
+    .bind(n.offload_tso.unwrap_or(true))
+    .bind(n.offload_ufo.unwrap_or(true))
+    .bind(n.offload_csum.unwrap_or(true))
+    .bind(n.pci_segment.unwrap_or(0))
+    .bind(n.iommu.unwrap_or(false))
+    .execute(tx.as_mut())
+    .await?;
+
+    Ok(id)
 }

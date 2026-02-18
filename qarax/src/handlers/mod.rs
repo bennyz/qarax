@@ -72,6 +72,11 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::storage_pools::StoragePoolStatus,
             crate::model::boot_sources::BootSource,
             crate::model::boot_sources::NewBootSource,
+            crate::model::network_interfaces::NetworkInterface,
+            crate::model::network_interfaces::RateLimiterConfig,
+            crate::model::network_interfaces::TokenBucket,
+            crate::model::network_interfaces::InterfaceType,
+            crate::model::network_interfaces::VhostMode,
         )
     ),
     tags(
