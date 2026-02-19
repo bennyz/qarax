@@ -45,8 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure runtime directory exists
     tokio::fs::create_dir_all(&args.runtime_dir).await?;
 
-    // Create the VM service
-    let vm_service = VmServiceImpl::with_paths(&args.runtime_dir, &args.cloud_hypervisor_binary);
+    // Create the VM service (async to allow startup recovery of surviving CH processes)
+    let vm_service =
+        VmServiceImpl::with_paths(&args.runtime_dir, &args.cloud_hypervisor_binary).await;
 
     info!("Starting gRPC server with Cloud Hypervisor backend");
 

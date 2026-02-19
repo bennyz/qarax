@@ -223,6 +223,18 @@ enum VmStatus {
 }
 
 // ============================================================================
+// VM Counters
+// ============================================================================
+
+message DeviceCounters {
+  map<string, int64> values = 1;
+}
+
+message VmCounters {
+  map<string, DeviceCounters> counters = 1;
+}
+
+// ============================================================================
 // gRPC Service Definition
 // ============================================================================
 
@@ -238,6 +250,7 @@ service VmService {
   // VM information
   rpc GetVmInfo(VmID) returns (VmState) {}
   rpc ListVms(google.protobuf.Empty) returns (VmList) {}
+  rpc GetVmCounters(VmID) returns (VmCounters) {}
 
   // Hot-attach operations (for future use)
   rpc AddNetworkDevice(AddNetworkDeviceRequest) returns (google.protobuf.Empty) {}

@@ -16,4 +16,7 @@ pub enum Error {
 
     #[error("internal server error")]
     InternalServerError,
+
+    #[error("not found")]
+    NotFound,
 }

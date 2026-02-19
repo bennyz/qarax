@@ -39,6 +39,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         vm::handler::pause,
         vm::handler::resume,
         vm::handler::delete,
+        vm::handler::metrics,
         storage_object::handler::list,
         storage_object::handler::get,
         storage_object::handler::create,
@@ -77,6 +78,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::network_interfaces::TokenBucket,
             crate::model::network_interfaces::InterfaceType,
             crate::model::network_interfaces::VhostMode,
+            crate::handlers::vm::handler::VmMetrics,
         )
     ),
     tags(
@@ -145,6 +147,7 @@ fn vms() -> Router {
         .route("/vms/:vm_id/stop", post(vm::handler::stop))
         .route("/vms/:vm_id/pause", post(vm::handler::pause))
         .route("/vms/:vm_id/resume", post(vm::handler::resume))
+        .route("/vms/:vm_id/metrics", get(vm::handler::metrics))
 }
 
 fn storage_objects() -> Router {
@@ -238,6 +241,7 @@ impl Error {
             Sqlx(_) | InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
             InvalidEntity(_) | UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Conflict(_) => StatusCode::CONFLICT,
+            NotFound => StatusCode::NOT_FOUND,
         }
     }
 }

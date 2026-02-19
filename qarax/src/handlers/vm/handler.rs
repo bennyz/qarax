@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
 use axum::{Extension, Json, extract::Path};
 use http::StatusCode;
+use serde::Serialize;
 use tracing::instrument;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -13,6 +17,14 @@ use crate::{
 };
 
 use super::{ApiResponse, Result};
+
+#[derive(Serialize, ToSchema)]
+pub struct VmMetrics {
+    pub vm_id: Uuid,
+    pub status: VmStatus,
+    pub memory_actual_size: Option<i64>,
+    pub counters: HashMap<String, HashMap<String, i64>>,
+}
 
 /// Returns the host id for the configured qarax-node (address:port) if a host is registered.
 async fn node_host_id(env: &App) -> Result<Option<Uuid>, crate::errors::Error> {
@@ -293,6 +305,72 @@ pub async fn resume(
 
     Ok(ApiResponse {
         data: (),
+        code: StatusCode::OK,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/vms/{vm_id}/metrics",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 200, description = "VM live metrics and counters", body = VmMetrics),
+        (status = 404, description = "VM not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn metrics(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<ApiResponse<VmMetrics>> {
+    // Verify VM exists in DB
+    let vm = match vms::get(env.pool(), vm_id).await {
+        Ok(vm) => vm,
+        Err(sqlx::Error::RowNotFound) => return Err(crate::errors::Error::NotFound),
+        Err(e) => return Err(crate::errors::Error::Sqlx(e)),
+    };
+
+    let node_client = NodeClient::from_address(env.qarax_node_address());
+
+    // Get live status and memory info from node
+    let (status, memory_actual_size) = match node_client.get_vm_info(vm_id).await {
+        Ok(state) => {
+            let live_status = match state.status {
+                1 => VmStatus::Created,
+                2 => VmStatus::Running,
+                3 => VmStatus::Paused,
+                4 => VmStatus::Shutdown,
+                _ => VmStatus::Unknown,
+            };
+            (live_status, state.memory_actual_size)
+        }
+        Err(_) => {
+            // Node unreachable or VM not found on node — return DB status
+            (vm.status, None)
+        }
+    };
+
+    // Get live counters from node
+    let counters = match node_client.get_vm_counters(vm_id).await {
+        Ok(c) => c
+            .counters
+            .into_iter()
+            .map(|(device, device_counters)| (device, device_counters.values))
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
+
+    Ok(ApiResponse {
+        data: VmMetrics {
+            vm_id,
+            status,
+            memory_actual_size,
+            counters,
+        },
         code: StatusCode::OK,
     })
 }

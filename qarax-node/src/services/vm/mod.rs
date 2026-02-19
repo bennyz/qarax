@@ -4,8 +4,8 @@ use tracing::{debug, error, info};
 
 use crate::cloud_hypervisor::VmManager;
 use crate::rpc::node::{
-    AddDiskDeviceRequest, AddNetworkDeviceRequest, RemoveDeviceRequest, VmConfig, VmId, VmList,
-    VmState, vm_service_server::VmService,
+    AddDiskDeviceRequest, AddNetworkDeviceRequest, DeviceCounters, RemoveDeviceRequest, VmConfig,
+    VmCounters, VmId, VmList, VmState, vm_service_server::VmService,
 };
 
 /// Implementation of VmService using Cloud Hypervisor
@@ -16,28 +16,23 @@ pub struct VmServiceImpl {
 
 impl VmServiceImpl {
     /// Create a new VmServiceImpl with default paths
-    pub fn new() -> Self {
-        Self::with_paths("/var/lib/qarax/vms", "/usr/local/bin/cloud-hypervisor")
+    pub async fn new() -> Self {
+        Self::with_paths("/var/lib/qarax/vms", "/usr/local/bin/cloud-hypervisor").await
     }
 
     /// Create a new VmServiceImpl with custom paths
-    pub fn with_paths(
+    pub async fn with_paths(
         runtime_dir: impl Into<std::path::PathBuf>,
         ch_binary: impl Into<std::path::PathBuf>,
     ) -> Self {
         let manager = Arc::new(VmManager::new(runtime_dir, ch_binary));
+        manager.recover_vms().await;
         Self { manager }
     }
 
     /// Create from an existing VmManager
     pub fn from_manager(manager: Arc<VmManager>) -> Self {
         Self { manager }
-    }
-}
-
-impl Default for VmServiceImpl {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -161,6 +156,30 @@ impl VmService for VmServiceImpl {
         let vms = self.manager.list_vms().await;
         info!("Found {} VMs", vms.len());
         Ok(Response::new(VmList { vms }))
+    }
+
+    async fn get_vm_counters(
+        &self,
+        request: Request<VmId>,
+    ) -> Result<Response<VmCounters>, Status> {
+        let vm_id = request.into_inner().id;
+        info!("Getting VM counters: {}", vm_id);
+
+        match self.manager.get_vm_counters(&vm_id).await {
+            Ok(counters) => {
+                let proto_counters = counters
+                    .into_iter()
+                    .map(|(device, values)| (device, DeviceCounters { values }))
+                    .collect();
+                Ok(Response::new(VmCounters {
+                    counters: proto_counters,
+                }))
+            }
+            Err(e) => {
+                error!("Failed to get VM counters {}: {}", vm_id, e);
+                Err(map_manager_error(e))
+            }
+        }
     }
 
     async fn add_network_device(

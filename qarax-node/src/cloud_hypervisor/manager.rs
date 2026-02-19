@@ -23,6 +23,8 @@ use http_body_util::{Empty, Full, combinators::BoxBody};
 use hyper::Request;
 use tokio::net::UnixStream;
 
+use prost::Message;
+
 use crate::rpc::node::{
     ConsoleConfig as ProtoConsoleConfig, ConsoleMode as ProtoConsoleMode,
     CpuTopology as ProtoCpuTopology, CpusConfig as ProtoCpusConfig, DiskConfig as ProtoDiskConfig,
@@ -57,8 +59,8 @@ pub enum VmManagerError {
 struct VmInstance {
     /// The VM configuration (proto format)
     proto_config: ProtoVmConfig,
-    /// Cloud Hypervisor process
-    process: Child,
+    /// Cloud Hypervisor process (None for recovered VMs)
+    process: Option<Child>,
     /// SDK VM handle
     vm: VM<'static>,
     /// Path to the API socket
@@ -116,6 +118,116 @@ impl VmManager {
         self.runtime_dir.join(format!("{}.log", vm_id))
     }
 
+    /// Get the config persistence path for a VM
+    fn config_path(&self, vm_id: &str) -> PathBuf {
+        self.runtime_dir.join(format!("{}.json", vm_id))
+    }
+
+    /// Scan for surviving Cloud Hypervisor processes and reconnect to them.
+    /// Called on startup to recover VMs that survived a qarax-node restart.
+    pub async fn recover_vms(&self) {
+        info!(
+            "Scanning for surviving VM processes in {:?}",
+            self.runtime_dir
+        );
+
+        let mut read_dir = match tokio::fs::read_dir(&self.runtime_dir).await {
+            Ok(rd) => rd,
+            Err(e) => {
+                warn!("Failed to read runtime dir for recovery: {}", e);
+                return;
+            }
+        };
+
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sock") {
+                continue;
+            }
+
+            let vm_id = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+
+            // Check if config file exists
+            let config_path = self.config_path(&vm_id);
+            if !config_path.exists() {
+                continue;
+            }
+
+            // Read persisted proto config (stored as protobuf binary)
+            let config_bytes = match tokio::fs::read(&config_path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Failed to read config for VM {}: {}", vm_id, e);
+                    continue;
+                }
+            };
+
+            let proto_config = match ProtoVmConfig::decode(config_bytes.as_slice()) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to decode config for VM {}: {}", vm_id, e);
+                    continue;
+                }
+            };
+
+            // Parse VM ID as UUID for SDK
+            let vm_uuid = match Uuid::parse_str(&vm_id) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            let socket_path = path.clone();
+            let socket_path_static: &'static PathBuf = Box::leak(Box::new(socket_path.clone()));
+            let ch_binary_static: &'static PathBuf = Box::leak(Box::new(self.ch_binary.clone()));
+
+            let machine_config = MachineConfig {
+                vm_id: vm_uuid,
+                socket_path: Cow::Borrowed(socket_path_static.as_path()),
+                exec_path: Cow::Borrowed(ch_binary_static.as_path()),
+            };
+
+            let mut vm = match Machine::connect(machine_config).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to VM {} socket (process may have died): {}",
+                        vm_id, e
+                    );
+                    continue;
+                }
+            };
+
+            // Get current status from Cloud Hypervisor
+            let status = match vm.get_info().await {
+                Ok(info) => match info.state {
+                    models::vm_info::State::Created => VmStatus::Created,
+                    models::vm_info::State::Running => VmStatus::Running,
+                    models::vm_info::State::Paused => VmStatus::Paused,
+                    models::vm_info::State::Shutdown => VmStatus::Shutdown,
+                },
+                Err(e) => {
+                    warn!("Failed to get info for recovered VM {}: {}", vm_id, e);
+                    VmStatus::Unknown
+                }
+            };
+
+            let instance = VmInstance {
+                proto_config,
+                process: None, // We don't have the child process handle for recovered VMs
+                vm,
+                socket_path,
+                status,
+            };
+
+            let mut vms = self.vms.lock().await;
+            vms.insert(vm_id.clone(), instance);
+            info!("Recovered VM {} with status {:?}", vm_id, status);
+        }
+    }
+
     /// Create a new VM
     pub async fn create_vm(&self, config: ProtoVmConfig) -> Result<VmState, VmManagerError> {
         let vm_id = config.vm_id.clone();
@@ -136,6 +248,7 @@ impl VmManager {
 
         let socket_path = self.socket_path(&vm_id);
         let log_path = self.log_path(&vm_id);
+        let config_path = self.config_path(&vm_id);
 
         // Remove old socket if it exists
         if socket_path.exists() {
@@ -191,6 +304,12 @@ impl VmManager {
 
         info!("VM {} created on Cloud Hypervisor", vm_id);
 
+        // Persist proto config (as protobuf binary) for recovery after restart
+        let config_bytes = config.encode_to_vec();
+        if let Err(e) = tokio::fs::write(&config_path, config_bytes).await {
+            warn!("Failed to persist config for VM {}: {}", vm_id, e);
+        }
+
         // Parse VM ID as UUID for SDK
         let vm_uuid = Uuid::parse_str(&vm_id)
             .map_err(|e| VmManagerError::InvalidConfig(format!("Invalid VM ID: {}", e)))?;
@@ -209,7 +328,7 @@ impl VmManager {
 
         let instance = VmInstance {
             proto_config: config.clone(),
-            process,
+            process: Some(process),
             vm,
             socket_path,
             status: VmStatus::Created,
@@ -318,14 +437,22 @@ impl VmManager {
             warn!("Failed to shutdown VM via SDK: {}", e);
         }
 
-        // Kill the process
-        if let Err(e) = instance.process.kill().await {
+        // Kill the process if we have it
+        if let Some(mut process) = instance.process.take()
+            && let Err(e) = process.kill().await
+        {
             warn!("Failed to kill CH process: {}", e);
         }
 
         // Clean up socket
         if instance.socket_path.exists() {
             let _ = tokio::fs::remove_file(&instance.socket_path).await;
+        }
+
+        // Clean up persisted config
+        let config_path = self.config_path(vm_id);
+        if config_path.exists() {
+            let _ = tokio::fs::remove_file(&config_path).await;
         }
 
         info!("VM {} deleted successfully", vm_id);
@@ -354,6 +481,37 @@ impl VmManager {
         }
 
         Ok(state)
+    }
+
+    /// Get VM counters from Cloud Hypervisor's /vm.counters endpoint
+    pub async fn get_vm_counters(
+        &self,
+        vm_id: &str,
+    ) -> Result<HashMap<String, HashMap<String, i64>>, VmManagerError> {
+        let socket_path = {
+            let vms = self.vms.lock().await;
+            let instance = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+            instance.socket_path.clone()
+        };
+
+        let body = match self
+            .send_api_request(&socket_path, "GET", "/api/v1/vm.counters", None)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                debug!("VM {} counters not available: {}", vm_id, e);
+                return Ok(HashMap::new());
+            }
+        };
+
+        if body.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        serde_json::from_str(&body).map_err(|e| VmManagerError::ProcessError(e.to_string()))
     }
 
     /// List all VMs

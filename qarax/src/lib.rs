@@ -5,6 +5,7 @@ pub mod grpc_client;
 pub mod handlers;
 pub mod model;
 pub mod startup;
+pub mod vm_monitor;
 
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -33,6 +34,10 @@ impl App {
 
     pub fn qarax_node_address(&self) -> &str {
         &self.qarax_node_address
+    }
+
+    pub fn pool_arc(&self) -> Arc<PgPool> {
+        self.pool.clone()
     }
 
     pub fn vm_defaults(&self) -> &VmDefaultsSettings {
