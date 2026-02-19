@@ -334,6 +334,40 @@ VALUES (
     Ok(id)
 }
 
+pub async fn list_active(pool: &PgPool) -> Result<Vec<Vm>, sqlx::Error> {
+    let vms = sqlx::query_as::<_, VmRow>(
+        r#"
+SELECT id,
+        name,
+        status,
+        host_id,
+        hypervisor,
+        boot_source_id,
+        description,
+        boot_vcpus,
+        max_vcpus,
+        cpu_topology,
+        kvm_hyperv,
+        memory_size,
+        memory_hotplug_size,
+        memory_mergeable,
+        memory_shared,
+        memory_hugepages,
+        memory_hugepage_size,
+        memory_prefault,
+        memory_thp,
+        config
+FROM vms
+WHERE status NOT IN ('SHUTDOWN', 'UNKNOWN')
+  AND host_id IS NOT NULL
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(vms.into_iter().map(|vm| vm.into()).collect())
+}
+
 pub async fn update_status(
     pool: &PgPool,
     vm_id: Uuid,

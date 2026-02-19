@@ -13,8 +13,8 @@ pub mod node {
 }
 
 use node::{
-    ConsoleConfig, CpusConfig, DiskConfig, MemoryConfig, NetConfig, PayloadConfig, VmConfig, VmId,
-    vm_service_client::VmServiceClient,
+    ConsoleConfig, CpusConfig, DiskConfig, MemoryConfig, NetConfig, PayloadConfig, VmConfig,
+    VmCounters, VmId, VmState, vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -262,6 +262,44 @@ impl NodeClient {
 
         debug!("VM {} resumed successfully", vm_id);
         Ok(())
+    }
+
+    /// Get live VM info from the qarax-node
+    #[instrument(skip(self))]
+    pub async fn get_vm_info(&self, vm_id: Uuid) -> Result<VmState> {
+        debug!("Getting VM info {} from node {}", vm_id, self.address);
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .get_vm_info(VmId {
+                id: vm_id.to_string(),
+            })
+            .await
+            .context("Failed to get VM info from qarax-node")?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Get live VM counters from the qarax-node
+    #[instrument(skip(self))]
+    pub async fn get_vm_counters(&self, vm_id: Uuid) -> Result<VmCounters> {
+        debug!("Getting VM counters {} from node {}", vm_id, self.address);
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .get_vm_counters(VmId {
+                id: vm_id.to_string(),
+            })
+            .await
+            .context("Failed to get VM counters from qarax-node")?;
+
+        Ok(response.into_inner())
     }
 
     /// Delete a VM on the qarax-node

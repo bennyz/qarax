@@ -391,6 +391,30 @@ paths:
           description: VM not found
         '500':
           description: Internal server error
+  /vms/{vm_id}/metrics:
+    get:
+      tags:
+      - vms
+      operationId: metrics
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: VM live metrics and counters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VmMetrics'
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
   /vms/{vm_id}/pause:
     post:
       tags:
@@ -1088,6 +1112,34 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/VmStatus'
+    VmMetrics:
+      type: object
+      required:
+      - vm_id
+      - status
+      - counters
+      properties:
+        counters:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+              format: int64
+            propertyNames:
+              type: string
+          propertyNames:
+            type: string
+        memory_actual_size:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        status:
+          $ref: '#/components/schemas/VmStatus'
+        vm_id:
+          type: string
+          format: uuid
     VmStatus:
       type: string
       enum:
