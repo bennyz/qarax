@@ -68,8 +68,10 @@ async fn spawn_app() -> TestApp {
         configuration.vm_defaults.clone(),
     )
     .await;
-    tokio::spawn(async move {
-        let _ = server.unwrap().await;
+    let server = server.unwrap();
+    std::thread::spawn(move || {
+        let rt = Runtime::new().unwrap();
+        let _ = rt.block_on(async move { server.await });
     });
     TestApp {
         db_name: configuration.database.name,

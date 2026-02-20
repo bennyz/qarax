@@ -76,7 +76,7 @@ cargo build -p qarax
 cargo build -p qarax-node
 ```
 
-Note: Project uses musl target (see `.cargo/config.toml`)
+Note: Project defaults to x86_64-unknown-linux-musl (see `.cargo/config.toml`). On macOS, use `cross build` for Linux binaries (install with `cargo install cross`).
 
 **Recommended**: Use `make build` instead of `cargo build` to ensure the OpenAPI spec is regenerated.
 

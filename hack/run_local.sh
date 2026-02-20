@@ -81,11 +81,21 @@ if [[ ! -e /dev/net/tun ]]; then
 fi
 
 # Build qarax-node binary for the node container (same as E2E)
-NODE_BINARY="${REPO_ROOT}/target/x86_64-unknown-linux-musl/release/qarax-node"
+# Use cross on macOS (system linker doesn't support musl cross-compile); cargo on Linux
+MUSL_TARGET="x86_64-unknown-linux-musl"
+NODE_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-node"
 if [[ -z "${SKIP_BUILD}" ]]; then
   if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]]; then
     echo -e "${YELLOW}Building qarax-node (release, musl)...${NC}"
-    cargo build --release -p qarax-node
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      if ! command -v cross &>/dev/null; then
+        echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
+        exit 1
+      fi
+      cross build --target "${MUSL_TARGET}" --release -p qarax-node
+    else
+      cargo build --release -p qarax-node
+    fi
   else
     echo -e "${GREEN}Using existing qarax-node binary${NC}"
   fi
