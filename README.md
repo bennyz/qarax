@@ -34,7 +34,7 @@ The project includes auto-generated OpenAPI 3.1 documentation. Access it at http
 To run the full stack (qarax + qarax-node + PostgreSQL) in Docker for local testing:
 
 ```bash
-./hack/run_local.sh
+./hack/run-local.sh
 ```
 
 Requires Docker, Docker Compose, KVM (`/dev/kvm`), and a Rust toolchain. The script builds qarax-node, starts all services, and prints the API and Swagger UI URLs. Stop with `cd e2e && docker compose down -v`.

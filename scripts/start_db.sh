@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-DB_USER=${POSTGRES_USER:=postgres}
-DB_PASSWORD="${POSTGRES_PASSWORD:=password}"
+DB_USER=${POSTGRES_USER:=qarax}
+DB_PASSWORD="${POSTGRES_PASSWORD:=qarax}"
 DB_NAME=${POSTGRES_DB:=qarax}
 DB_PORT=${POSTGRES_PORT:=5432}
 

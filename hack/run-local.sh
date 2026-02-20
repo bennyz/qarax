@@ -9,11 +9,11 @@
 #   - Rust toolchain (to build qarax-node binary for the node container)
 #
 # Usage:
-#   ./hack/run_local.sh            # Build and start the stack
-#   ./hack/run_local.sh --with-vm  # Create and start a VM with SSH access
-#   ./hack/run_local.sh --cleanup  # Stop and remove stack + volumes
-#   REBUILD=1 ./hack/run_local.sh  # Rebuild Docker images from scratch
-#   SKIP_BUILD=1 ./hack/run_local.sh # Use existing qarax-node binary
+#   ./hack/run-local.sh            # Build and start the stack
+#   ./hack/run-local.sh --with-vm  # Create and start a VM with SSH access
+#   ./hack/run-local.sh --cleanup  # Stop and remove stack + volumes
+#   REBUILD=1 ./hack/run-local.sh  # Rebuild Docker images from scratch
+#   SKIP_BUILD=1 ./hack/run-local.sh # Use existing qarax-node binary
 #
 # After start:
 #   API:        http://localhost:8000
@@ -25,13 +25,11 @@ set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Parse flags
 WITH_VM=0
 for arg in "$@"; do
   case $arg in
@@ -76,7 +74,7 @@ if [[ ! -e /dev/net/tun ]]; then
   echo "VMs with network interfaces will fail to start (virtio-net needs it)."
   echo "Create it on the host, then recreate the stack:"
   echo "  sudo modprobe tun && sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 0666 /dev/net/tun"
-  echo "  ./hack/run_local.sh --cleanup && ./hack/run_local.sh"
+  echo "  ./hack/run-local.sh --cleanup && ./hack/run-local.sh"
   echo ""
 fi
 
@@ -84,24 +82,25 @@ fi
 # Use cross on macOS (system linker doesn't support musl cross-compile); cargo on Linux
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-node"
+QARAX_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
 if [[ -z "${SKIP_BUILD}" ]]; then
-  if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]]; then
-    echo -e "${YELLOW}Building qarax-node (release, musl)...${NC}"
+  if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
+    echo -e "${YELLOW}Building qarax and qarax-node (release, musl)...${NC}"
     if [[ "$(uname -s)" == "Darwin" ]]; then
       if ! command -v cross &>/dev/null; then
         echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
         exit 1
       fi
-      cross build --target "${MUSL_TARGET}" --release -p qarax-node
+      cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node
     else
-      cargo build --release -p qarax-node
+      cargo build --release -p qarax -p qarax-node
     fi
   else
-    echo -e "${GREEN}Using existing qarax-node binary${NC}"
+    echo -e "${GREEN}Using existing binaries${NC}"
   fi
 else
-  if [[ ! -f "${NODE_BINARY}" ]]; then
-    echo -e "${RED}SKIP_BUILD=1 but ${NODE_BINARY} not found. Build it first or remove SKIP_BUILD.${NC}"
+  if [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
+    echo -e "${RED}SKIP_BUILD=1 but binaries not found. Build first or remove SKIP_BUILD.${NC}"
     exit 1
   fi
   echo -e "${YELLOW}Skipping build (SKIP_BUILD=1)${NC}"
@@ -308,21 +307,6 @@ INIT
   INITRAMFS_PATH="/var/lib/qarax/production-images/boot-initramfs.gz"
   CMDLINE="console=ttyS0"
 
-  # Create TAP device for VM networking (must happen before VM creation)
-  echo -e "${YELLOW}Creating TAP device for VM network...${NC}"
-  docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
-    if ! ip link show tap0 >/dev/null 2>&1; then
-      ip tuntap add tap0 mode tap
-      ip link set tap0 up
-      echo "TAP device tap0 created"
-    else
-      echo "TAP device tap0 already exists"
-    fi
-  ' || {
-    echo -e "${RED}Failed to create TAP device${NC}"
-    echo "Continuing anyway - VM may not have network connectivity"
-  }
-
   # Use Python script for all API interactions:
   # host registration, storage pool, transfers, boot source, VM create+start
   echo -e "${YELLOW}Setting up resources via API...${NC}"
@@ -337,12 +321,13 @@ INIT
   if [[ -n "$VM_ID" ]]; then
     vm_id="$VM_ID"
 
-    # Configure host-side TAP device with IP for SSH access
-    echo -e "${YELLOW}Configuring host network for SSH access...${NC}"
-    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
-      ip addr add 192.168.100.1/24 dev tap0 2>/dev/null || true
-      echo "Host TAP device configured: 192.168.100.1"
-    '
+    # Assign the host-side IP on the qarax-node-managed TAP device.
+    # qarax-node creates TAP devices with a deterministic name:
+    # "qt" + first 8 hex chars of VM UUID (no dashes) + "n" + NIC index.
+    tap_name="qt$(echo "${vm_id}" | tr -d '-' | cut -c1-8)n0"
+    echo -e "${YELLOW}Configuring host network for SSH access (${tap_name})...${NC}"
+    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node \
+      ip addr add 192.168.100.1/24 dev "${tap_name}" 2>/dev/null || true
 
     # Wait for VM SSH to become available (static IP: 192.168.100.2)
     echo -e "${YELLOW}Waiting for VM SSH to become available...${NC}"
@@ -370,7 +355,7 @@ INIT
     echo -e "${GREEN}===== Example VM Ready =====${NC}"
     echo "VM ID: ${vm_id}"
     echo "Status: running"
-    echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: tap0)"
+    echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: ${tap_name})"
     echo "VM IP: 192.168.100.2 (static)"
     echo ""
     echo -e "${GREEN}SSH Access:${NC}"
@@ -418,8 +403,7 @@ if [[ $WITH_VM -eq 0 ]]; then
   echo -e "${GREEN}Qarax is running locally.${NC}"
   echo ""
   echo -e "${GREEN}✓ Ready to create VMs with networking and SSH access${NC}"
-  echo "  Use: ./hack/create-test-vm.sh [vm-name]"
-  echo "  Or:  ./hack/run_local.sh --cleanup && ./hack/run_local.sh --with-vm"
+  echo "  Use: ./hack/run-local.sh --with-vm"
   echo ""
   echo "Endpoints:"
   echo "  API (root):   http://localhost:8000/"
@@ -443,28 +427,13 @@ if [[ $WITH_VM -eq 0 ]]; then
   echo "Create a VM with a network interface (id + optional mac, tap, ip, mask):"
   echo '  curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" \'
   echo '    -d '\''{"name":"my-vm-net","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"networks":[{"id":"net0","mac":"52:54:00:12:34:56"}]}'\'''
-  echo "  (In Docker, a pre-created tap may be required for real connectivity; see Swagger for full options.)"
-  echo ""
-  echo "If create fails, VM_ID is the error body (not a UUID), so start fails and GET /vms is []."
-  echo "See why create failed (run this and check the output):"
-  echo '  curl -s -w "\nHTTP %{http_code}\n" -X POST http://localhost:8000/vms \'
-  echo '    -H "Content-Type: application/json" \'
-  echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'''
-  echo "Then: docker compose -f e2e/docker-compose.yml logs qarax qarax-node"
-  echo "Check qarax can reach qarax-node: docker compose -f e2e/docker-compose.yml exec qarax nc -zv qarax-node 50051"
-  echo ""
-  echo "Accessing a VM:"
-  echo "  1. Start the VM first: curl -s -X POST http://localhost:8000/vms/<vm_id>/start"
-  echo "  2. Serial output is written to /var/lib/qarax/vms/<vm_id>.console.log on the node."
-  echo "  3. View it: docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/<vm_id>.console.log"
-  echo "  (Replace <vm_id> with the UUID from create or GET /vms. The log is empty until the VM is started.)"
   echo ""
   echo "Useful commands:"
   echo "  docker compose -f e2e/docker-compose.yml logs -f    # Follow all logs"
   echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
   echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
   echo "  docker compose -f e2e/docker-compose.yml up -d --force-recreate qarax-node  # Apply device/compose changes"
-  echo "  ./hack/run_local.sh --cleanup                        # Stop and remove stack + volumes"
+  echo "  ./hack/run-local.sh --cleanup                        # Stop and remove stack + volumes"
   echo ""
 else
   # With --with-vm, show concise summary
@@ -480,6 +449,6 @@ else
   echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
   echo "  docker compose -f e2e/docker-compose.yml exec qarax-node ls -la /var/lib/qarax/vms/"
   echo ""
-  echo "Cleanup: ./hack/run_local.sh --cleanup"
+  echo "Cleanup: ./hack/run-local.sh --cleanup"
   echo ""
 fi

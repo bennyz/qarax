@@ -1,4 +1,4 @@
-.PHONY: build test test-deps clean openapi help
+.PHONY: build test test-deps clean openapi help lint fmt ruff-check ruff-fmt
 
 # On macOS, override default musl target (linker fails cross-compiling from Mac)
 UNAME_S := $(shell uname -s)
@@ -15,6 +15,10 @@ help:
 	@echo "  make test       - Run all tests (requires Postgres, see test-deps)"
 	@echo "  make test-deps  - Start Postgres in Docker for tests"
 	@echo "  make clean      - Clean build artifacts"
+	@echo "  make lint       - Run cargo clippy (lint)"
+	@echo "  make fmt        - Run cargo fmt (format)"
+	@echo "  make ruff-check - Run ruff check on Python SDK"
+	@echo "  make ruff-fmt   - Run ruff format on Python SDK"
 
 build:
 	cargo build $(CARGO_TARGET)
@@ -24,9 +28,10 @@ openapi:
 	cargo run $(CARGO_TARGET) -p qarax --bin generate-openapi
 
 # Database env vars point config to localhost (overrides local.yaml's host: postgres)
+# Credentials match both the standalone start_db.sh postgres and the E2E compose postgres.
 test: test-deps
 	DATABASE_HOST=localhost DATABASE_PORT=5432 \
-	DATABASE_USERNAME=postgres DATABASE_PASSWORD=password DATABASE_NAME=qarax \
+	DATABASE_USERNAME=qarax DATABASE_PASSWORD=qarax DATABASE_NAME=qarax \
 	cargo test $(CARGO_TARGET)
 
 # Start Postgres in Docker for integration tests. Run before 'make test' if needed.
@@ -44,3 +49,16 @@ test-deps:
 
 clean:
 	cargo clean
+
+# Linting and formatting
+lint:
+	cargo clippy -- -D warnings
+
+fmt:
+	cargo fmt
+
+ruff-check:
+	@cd python-sdk && ruff check .
+
+ruff-fmt:
+	@cd python-sdk && ruff format .

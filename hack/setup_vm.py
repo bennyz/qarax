@@ -2,7 +2,7 @@
 """
 Set up VM resources via the qarax API.
 
-Called by hack/run_local.sh --with-vm to handle all API interactions:
+Called by hack/run-local.sh --with-vm to handle all API interactions:
   - Register host and set it to UP
   - Create storage pool with host_id
   - Transfer kernel and initramfs via local copy
@@ -14,15 +14,11 @@ All status messages go to stderr so they don't interfere with output parsing.
 """
 
 import argparse
-import json
 import sys
 import time
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def log(msg: str) -> None:
     """Print status messages to stderr."""
@@ -43,13 +39,8 @@ def find_by_name(items: list[dict], name: str) -> dict | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# API operations
-# ---------------------------------------------------------------------------
-
 def ensure_host(base_url: str, name: str, address: str, port: int) -> str:
     """Register host if needed, set to UP, return host_id."""
-    # Try to find existing host
     resp = api("GET", "/hosts", base_url)
     resp.raise_for_status()
     host = find_by_name(resp.json(), name)
@@ -58,13 +49,18 @@ def ensure_host(base_url: str, name: str, address: str, port: int) -> str:
         host_id = host["id"]
         log(f"Using existing host: {host_id}")
     else:
-        resp = api("POST", "/hosts", base_url, json={
-            "name": name,
-            "address": address,
-            "port": port,
-            "host_user": "root",
-            "password": "",
-        })
+        resp = api(
+            "POST",
+            "/hosts",
+            base_url,
+            json={
+                "name": name,
+                "address": address,
+                "port": port,
+                "host_user": "root",
+                "password": "",
+            },
+        )
         if resp.status_code == 201:
             host_id = resp.text.strip().strip('"')
             log(f"Host registered: {host_id}")
@@ -78,7 +74,6 @@ def ensure_host(base_url: str, name: str, address: str, port: int) -> str:
         else:
             resp.raise_for_status()
 
-    # Set status to UP
     api("PATCH", f"/hosts/{host_id}", base_url, json={"status": "up"})
     log("Host status set to up")
     return host_id
@@ -94,12 +89,17 @@ def ensure_pool(base_url: str, name: str, host_id: str, path: str) -> str:
         log(f"Using existing storage pool: {pool['id']}")
         return pool["id"]
 
-    resp = api("POST", "/storage-pools", base_url, json={
-        "name": name,
-        "pool_type": "local",
-        "host_id": host_id,
-        "config": {"path": path},
-    })
+    resp = api(
+        "POST",
+        "/storage-pools",
+        base_url,
+        json={
+            "name": name,
+            "pool_type": "local",
+            "host_id": host_id,
+            "config": {"path": path},
+        },
+    )
     resp.raise_for_status()
     pool_id = resp.text.strip().strip('"')
     log(f"Storage pool created: {pool_id}")
@@ -115,7 +115,6 @@ def ensure_storage_object(
     timeout: int = 60,
 ) -> str:
     """Get existing storage object or create one via transfer. Return object_id."""
-    # Check if storage object already exists
     resp = api("GET", "/storage-objects", base_url)
     resp.raise_for_status()
     obj = find_by_name(resp.json(), name)
@@ -125,11 +124,16 @@ def ensure_storage_object(
 
     # Submit transfer
     log(f"Transferring {name}...")
-    resp = api("POST", f"/storage-pools/{pool_id}/transfers", base_url, json={
-        "name": name,
-        "source": source,
-        "object_type": object_type,
-    })
+    resp = api(
+        "POST",
+        f"/storage-pools/{pool_id}/transfers",
+        base_url,
+        json={
+            "name": name,
+            "source": source,
+            "object_type": object_type,
+        },
+    )
     if resp.status_code != 202:
         log(f"Failed to submit transfer for {name}: {resp.status_code} {resp.text}")
         sys.exit(1)
@@ -151,7 +155,9 @@ def ensure_storage_object(
             log(f"Transfer completed: {name} -> {object_id} ({bytes_written} bytes)")
             return object_id
         elif transfer["status"] == "failed":
-            log(f"Transfer failed for {name}: {transfer.get('error_message', 'unknown')}")
+            log(
+                f"Transfer failed for {name}: {transfer.get('error_message', 'unknown')}"
+            )
             sys.exit(1)
 
         time.sleep(1)
@@ -247,10 +253,6 @@ def create_and_start_vm(
     return vm_id
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Set up qarax VM resources")
     parser.add_argument("--api-url", default="http://localhost:8000")
@@ -265,40 +267,45 @@ def main() -> None:
 
     base = args.api_url
 
-    # 1. Host
     host_id = ensure_host(base, args.host_name, args.host_address, args.host_port)
 
-    # 2. Storage pool
     pool_id = ensure_pool(base, "local-pool", host_id, args.pool_path)
 
-    # 3. Transfer kernel
     kernel_id = ensure_storage_object(
-        base, pool_id, "example-kernel", args.kernel_path, "kernel",
+        base,
+        pool_id,
+        "example-kernel",
+        args.kernel_path,
+        "kernel",
     )
 
-    # 4. Transfer initramfs (optional)
     initramfs_id = None
     if args.initramfs_path:
         initramfs_id = ensure_storage_object(
-            base, pool_id, "example-initramfs", args.initramfs_path, "initrd",
+            base,
+            pool_id,
+            "example-initramfs",
+            args.initramfs_path,
+            "initrd",
         )
 
-    # 5. Boot source
     boot_id = ensure_boot_source(
-        base, "example-boot", kernel_id, initramfs_id, args.cmdline,
+        base,
+        "example-boot",
+        kernel_id,
+        initramfs_id,
+        args.cmdline,
     )
 
-    # 6. Delete stale VM, create fresh one
     delete_existing_vm(base, "example-vm")
     vm_id = create_and_start_vm(
         base,
         "example-vm",
         boot_id,
         memory_size=256 * 1024 * 1024,
-        networks=[{"id": "net0", "mac": "52:54:00:12:34:56", "tap": "tap0"}],
+        networks=[{"id": "net0", "mac": "52:54:00:12:34:56"}],
     )
 
-    # Output key=value for bash to eval
     print(f"HOST_ID={host_id}")
     print(f"POOL_ID={pool_id}")
     print(f"KERNEL_ID={kernel_id}")

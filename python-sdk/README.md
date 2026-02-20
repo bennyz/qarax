@@ -21,6 +21,23 @@ source .venv/bin/activate
 pip install openapi-python-client
 ```
 
+## Setup with uv
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create a virtual environment with uv
+uv venv
+
+# Activate the environment
+source .venv/bin/activate
+
+# Install the SDK in editable mode using uv
+uv pip install -e .
+```
+
+
 ### Generate SDK
 
 ```bash

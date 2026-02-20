@@ -4,6 +4,7 @@ Basic usage example for the qarax-api-client SDK
 This example demonstrates how to interact with the Qarax API
 to manage hosts and virtual machines.
 """
+
 import asyncio
 from qarax_api_client import Client
 from qarax_api_client.api.hosts import list_ as list_hosts
@@ -20,7 +21,9 @@ async def main():
         hosts = await list_hosts.asyncio(client=c)
         if hosts:
             for host in hosts:
-                print(f"Host: {host.name} ({host.address}:{host.port}) - Status: {host.status}")
+                print(
+                    f"Host: {host.name} ({host.address}:{host.port}) - Status: {host.status}"
+                )
         else:
             print("No hosts found")
 

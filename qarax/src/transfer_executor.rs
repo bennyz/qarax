@@ -87,11 +87,11 @@ impl TransferExecutor for FilesystemTransferExecutor {
             TransferType::Download => node_client
                 .download_file(&transfer_id_str, &transfer.source, &destination)
                 .await
-                .map_err(|e| TransferError::TransferFailed(e.to_string()))?,
+                .map_err(|e| TransferError::TransferFailed(format!("{:#}", e)))?,
             TransferType::LocalCopy => node_client
                 .copy_file(&transfer_id_str, &transfer.source, &destination)
                 .await
-                .map_err(|e| TransferError::TransferFailed(e.to_string()))?,
+                .map_err(|e| TransferError::TransferFailed(format!("{:#}", e)))?,
         };
 
         Ok(TransferResult {
