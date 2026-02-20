@@ -1006,9 +1006,6 @@ components:
       enum:
       - local
       - nfs
-      - ceph
-      - lvm
-      - zfs
     TokenBucket:
       type: object
       required:

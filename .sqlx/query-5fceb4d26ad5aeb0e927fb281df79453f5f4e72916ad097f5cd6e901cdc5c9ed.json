@@ -22,10 +22,7 @@
             "kind": {
               "Enum": [
                 "LOCAL",
-                "NFS",
-                "CEPH",
-                "LVM",
-                "ZFS"
+                "NFS"
               ]
             }
           }

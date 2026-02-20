@@ -87,29 +87,27 @@ pub async fn list(pool: &PgPool) -> Result<Vec<Host>, sqlx::Error> {
 
 // add adds a new host and returns its generated id
 pub async fn add(pool: &PgPool, host: &NewHost) -> Result<Uuid, sqlx::Error> {
-    let host_status = HostStatus::Down;
-    let id = sqlx::query!(
+    let row = sqlx::query(
         r#"
         INSERT INTO hosts (name, address, port, host_user, password, status)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         "#,
-        host.name,
-        host.address,
-        host.port,
-        host.host_user,
-        host.password.as_bytes(),
-        host_status as HostStatus,
     )
+    .bind(&host.name)
+    .bind(&host.address)
+    .bind(host.port)
+    .bind(&host.host_user)
+    .bind(host.password.as_bytes())
+    .bind(HostStatus::Down)
     .fetch_one(pool)
     .await
     .map_err(|e| {
         tracing::error!("Error adding host: {}", e);
         e
-    })?
-    .id;
+    })?;
 
-    Ok(id)
+    Ok(row.get("id"))
 }
 
 pub async fn update_status(pool: &PgPool, id: Uuid, status: HostStatus) -> Result<(), sqlx::Error> {
