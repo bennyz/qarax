@@ -65,7 +65,6 @@ async fn spawn_app() -> TestApp {
     let server = run(
         listener,
         connection_pool.clone(),
-        configuration.qarax_node.address(),
         configuration.vm_defaults.clone(),
     )
     .await;

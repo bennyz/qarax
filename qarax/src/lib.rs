@@ -15,25 +15,19 @@ use crate::configuration::VmDefaultsSettings;
 #[derive(Debug, Clone)]
 pub struct App {
     pool: Arc<PgPool>,
-    qarax_node_address: String,
     vm_defaults: VmDefaultsSettings,
 }
 
 impl App {
-    pub fn new(pool: PgPool, qarax_node_address: String, vm_defaults: VmDefaultsSettings) -> Self {
+    pub fn new(pool: PgPool, vm_defaults: VmDefaultsSettings) -> Self {
         Self {
             pool: Arc::new(pool),
-            qarax_node_address,
             vm_defaults,
         }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
-    }
-
-    pub fn qarax_node_address(&self) -> &str {
-        &self.qarax_node_address
     }
 
     pub fn pool_arc(&self) -> Arc<PgPool> {

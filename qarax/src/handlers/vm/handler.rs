@@ -11,7 +11,9 @@ use crate::{
     App,
     grpc_client::{CreateVmRequest, NodeClient, net_configs_from_api},
     model::{
-        boot_sources, hosts, network_interfaces,
+        boot_sources, hosts,
+        hosts::Host,
+        network_interfaces,
         vms::{self, NewVm, Vm, VmStatus},
     },
 };
@@ -26,16 +28,24 @@ pub struct VmMetrics {
     pub counters: HashMap<String, HashMap<String, i64>>,
 }
 
-/// Returns the host id for the configured qarax-node (address:port) if a host is registered.
-async fn node_host_id(env: &App) -> Result<Option<Uuid>, crate::errors::Error> {
-    let (address, port_str) = env
-        .qarax_node_address()
-        .split_once(':')
-        .unwrap_or(("", "0"));
-    let port: i32 = port_str.parse().unwrap_or(0);
-    hosts::id_by_address_and_port(env.pool(), address, port)
-        .await
-        .map_err(crate::errors::Error::Sqlx)
+/// Pick a random UP host for scheduling a new VM.
+async fn pick_host(env: &App) -> Result<Host> {
+    hosts::pick_up_host(env.pool()).await?.ok_or_else(|| {
+        crate::errors::Error::UnprocessableEntity(
+            "no hosts in UP state available for scheduling".into(),
+        )
+    })
+}
+
+/// Resolve the host that a VM is assigned to, for routing subsequent operations.
+async fn host_for_vm(env: &App, vm_id: Uuid) -> Result<Host> {
+    let vm = vms::get(env.pool(), vm_id).await?;
+    let host_id = vm.host_id.ok_or_else(|| {
+        crate::errors::Error::UnprocessableEntity("VM has no assigned host".into())
+    })?;
+    hosts::get_by_id(env.pool(), host_id)
+        .await?
+        .ok_or_else(|| crate::errors::Error::UnprocessableEntity("assigned host not found".into()))
 }
 
 #[utoipa::path(
@@ -128,9 +138,12 @@ pub async fn create(
         )
     };
 
+    // Pick a host before touching the node, so we fail fast with a clear error
+    let host = pick_host(&env).await?;
+
     // Call qarax-node to create the VM; on failure we return before commit so the insert is rolled back
     let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     if let Err(e) = node_client
         .create_vm(CreateVmRequest {
             vm_id: id,
@@ -160,10 +173,8 @@ pub async fn create(
 
     tx.commit().await?;
 
-    // Set host_id if a host is registered for the node we used
-    if let Some(host_id) = node_host_id(&env).await? {
-        let _ = vms::update_host_id(env.pool(), id, host_id).await;
-    }
+    // Record which host this VM was scheduled onto
+    let _ = vms::update_host_id(env.pool(), id, host.id).await;
 
     Ok((StatusCode::CREATED, id.to_string()))
 }
@@ -186,20 +197,14 @@ pub async fn start(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    // Call qarax-node to start the VM
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.start_vm(vm_id).await.map_err(|e| {
         tracing::error!("Failed to start VM on qarax-node: {}", e);
         crate::errors::Error::InternalServerError
     })?;
 
-    // Update status in database
     vms::update_status(env.pool(), vm_id, VmStatus::Running).await?;
-
-    // Set host_id if still unset and a host is registered for the node we used
-    if let Some(host_id) = node_host_id(&env).await? {
-        let _ = vms::update_host_id(env.pool(), vm_id, host_id).await;
-    }
 
     Ok(ApiResponse {
         data: (),
@@ -225,14 +230,13 @@ pub async fn stop(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    // Call qarax-node to stop the VM
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.stop_vm(vm_id).await.map_err(|e| {
         tracing::error!("Failed to stop VM on qarax-node: {}", e);
         crate::errors::Error::InternalServerError
     })?;
 
-    // Update status in database
     vms::update_status(env.pool(), vm_id, VmStatus::Shutdown).await?;
 
     Ok(ApiResponse {
@@ -259,14 +263,13 @@ pub async fn pause(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    // Call qarax-node to pause the VM
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.pause_vm(vm_id).await.map_err(|e| {
         tracing::error!("Failed to pause VM on qarax-node: {}", e);
         crate::errors::Error::InternalServerError
     })?;
 
-    // Update status in database
     vms::update_status(env.pool(), vm_id, VmStatus::Paused).await?;
 
     Ok(ApiResponse {
@@ -293,14 +296,13 @@ pub async fn resume(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    // Call qarax-node to resume the VM
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.resume_vm(vm_id).await.map_err(|e| {
         tracing::error!("Failed to resume VM on qarax-node: {}", e);
         crate::errors::Error::InternalServerError
     })?;
 
-    // Update status in database
     vms::update_status(env.pool(), vm_id, VmStatus::Running).await?;
 
     Ok(ApiResponse {
@@ -327,14 +329,15 @@ pub async fn metrics(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<VmMetrics>> {
-    // Verify VM exists in DB
+    // Verify VM exists in DB and resolve its host
     let vm = match vms::get(env.pool(), vm_id).await {
         Ok(vm) => vm,
         Err(sqlx::Error::RowNotFound) => return Err(crate::errors::Error::NotFound),
         Err(e) => return Err(crate::errors::Error::Sqlx(e)),
     };
 
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
 
     // Get live status and memory info from node
     let (status, memory_actual_size) = match node_client.get_vm_info(vm_id).await {
@@ -393,14 +396,13 @@ pub async fn delete(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    // Call qarax-node to delete the VM
-    let node_client = NodeClient::from_address(env.qarax_node_address());
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.delete_vm(vm_id).await.map_err(|e| {
         tracing::error!("Failed to delete VM on qarax-node: {}", e);
         crate::errors::Error::InternalServerError
     })?;
 
-    // Delete from database
     vms::delete(env.pool(), vm_id).await?;
 
     Ok(ApiResponse {

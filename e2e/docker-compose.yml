@@ -22,8 +22,6 @@ services:
     environment:
       DATABASE_URL: postgres://qarax:qarax@postgres:5432/qarax
       APP_ENVIRONMENT: local
-      QARAX_NODE_HOST: qarax-node
-      QARAX_NODE_PORT: 50051
       # VM defaults - can be overridden from environment
       VM_KERNEL: ${VM_KERNEL:-}
       VM_INITRAMFS: ${VM_INITRAMFS:-}
