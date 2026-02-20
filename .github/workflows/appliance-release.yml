@@ -1,0 +1,137 @@
+name: Appliance Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to publish (default: dev-<short-sha>)"
+        required: false
+        type: string
+      cloud_hypervisor_version:
+        description: "Cloud Hypervisor version build arg"
+        required: false
+        default: "v38.0"
+        type: string
+      push_latest:
+        description: "Also publish the latest tag"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/qarax-vmm-host
+  TARGET_TRIPLE: x86_64-unknown-linux-musl
+
+jobs:
+  publish:
+    name: Build and Publish Appliance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools protobuf-compiler
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve release parameters
+        id: vars
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              image_tag="${GITHUB_REF_NAME}"
+            else
+              image_tag="master-${GITHUB_SHA::12}"
+            fi
+            push_latest="true"
+          else
+            image_tag="${{ inputs.image_tag }}"
+            if [ -z "${image_tag}" ]; then
+              image_tag="dev-${GITHUB_SHA::12}"
+            fi
+            push_latest="${{ inputs.push_latest }}"
+          fi
+
+          cloud_hv="${{ inputs.cloud_hypervisor_version }}"
+          if [ -z "${cloud_hv}" ]; then
+            cloud_hv="v38.0"
+          fi
+
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "push_latest=${push_latest}" >> "${GITHUB_OUTPUT}"
+          echo "cloud_hv=${cloud_hv}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build qarax-node release binary
+        run: cargo build --release -p qarax-node --target "${TARGET_TRIPLE}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push appliance image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deployments/Containerfile.qarax-vmm
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          build-args: |
+            CLOUD_HYPERVISOR_VERSION=${{ steps.vars.outputs.cloud_hv }}
+            QARAX_VERSION=${{ steps.vars.outputs.image_tag }}
+
+      - name: Update latest tag
+        if: steps.vars.outputs.push_latest == 'true'
+        run: |
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
+            "${REGISTRY}/${IMAGE_NAME}:${{ steps.vars.outputs.image_tag }}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Sign published image (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          image_ref="${REGISTRY}/${IMAGE_NAME}@${{ steps.image.outputs.digest }}"
+          cosign sign "${image_ref}"
+
+      - name: Publish summary
+        run: |
+          echo "## Appliance image published" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Image: \`${REGISTRY}/${IMAGE_NAME}:${{ steps.vars.outputs.image_tag }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Digest: \`${{ steps.image.outputs.digest }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${{ steps.vars.outputs.push_latest }}" = "true" ]; then
+            echo "- Also tagged: \`${REGISTRY}/${IMAGE_NAME}:latest\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi

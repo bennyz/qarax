@@ -1,4 +1,4 @@
-.PHONY: build test test-deps clean openapi help lint fmt ruff-check ruff-fmt
+.PHONY: build test test-deps clean openapi sdk help lint fmt ruff-check ruff-fmt appliance-build appliance-push
 
 # On macOS, override default musl target (linker fails cross-compiling from Mac)
 UNAME_S := $(shell uname -s)
@@ -8,10 +8,17 @@ else
   CARGO_TARGET :=
 endif
 
+CONTAINER_ENGINE ?= docker
+APPLIANCE_IMAGE ?= ghcr.io/yourorg/qarax-vmm-host
+APPLIANCE_TAG ?= dev
+APPLIANCE_TARGET ?= x86_64-unknown-linux-musl
+CLOUD_HYPERVISOR_VERSION ?= v38.0
+
 help:
 	@echo "Available targets:"
 	@echo "  make build      - Build all packages and generate OpenAPI spec"
 	@echo "  make openapi    - Generate OpenAPI spec only"
+	@echo "  make sdk        - Regenerate Python SDK from OpenAPI"
 	@echo "  make test       - Run all tests (requires Postgres, see test-deps)"
 	@echo "  make test-deps  - Start Postgres in Docker for tests"
 	@echo "  make clean      - Clean build artifacts"
@@ -19,6 +26,8 @@ help:
 	@echo "  make fmt        - Run cargo fmt (format)"
 	@echo "  make ruff-check - Run ruff check on Python SDK"
 	@echo "  make ruff-fmt   - Run ruff format on Python SDK"
+	@echo "  make appliance-build - Build bootc appliance image locally"
+	@echo "  make appliance-push  - Push appliance image to registry"
 
 build:
 	cargo build $(CARGO_TARGET)
@@ -26,6 +35,14 @@ build:
 
 openapi:
 	cargo run $(CARGO_TARGET) -p qarax --bin generate-openapi
+
+sdk: openapi
+	@if ! command -v openapi-python-client >/dev/null 2>&1; then \
+		echo "openapi-python-client is required. Install it in python-sdk/.venv or globally."; \
+		echo "Example: cd python-sdk && uv pip install openapi-python-client"; \
+		exit 1; \
+	fi
+	cd python-sdk && openapi-python-client generate --path ../openapi.yaml --meta setup --overwrite
 
 # Database env vars point config to localhost (overrides local.yaml's host: postgres)
 # Credentials match both the standalone start_db.sh postgres and the E2E compose postgres.
@@ -62,3 +79,15 @@ ruff-check:
 
 ruff-fmt:
 	@cd python-sdk && ruff format .
+
+appliance-build:
+	cargo build --release -p qarax-node --target $(APPLIANCE_TARGET)
+	$(CONTAINER_ENGINE) build \
+		-f deployments/Containerfile.qarax-vmm \
+		--build-arg CLOUD_HYPERVISOR_VERSION=$(CLOUD_HYPERVISOR_VERSION) \
+		--build-arg QARAX_VERSION=$(APPLIANCE_TAG) \
+		-t $(APPLIANCE_IMAGE):$(APPLIANCE_TAG) \
+		.
+
+appliance-push:
+	$(CONTAINER_ENGINE) push $(APPLIANCE_IMAGE):$(APPLIANCE_TAG)

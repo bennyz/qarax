@@ -32,6 +32,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         host::handler::list,
         host::handler::add,
         host::handler::update,
+        host::handler::deploy,
         vm::handler::list,
         vm::handler::get,
         vm::handler::create,
@@ -62,6 +63,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::hosts::Host,
             crate::model::hosts::NewHost,
             crate::model::hosts::UpdateHostRequest,
+            crate::model::hosts::DeployHostRequest,
             crate::model::hosts::HostStatus,
             crate::model::vms::Vm,
             crate::model::vms::NewVm,
@@ -144,6 +146,7 @@ fn hosts() -> Router {
     Router::new()
         .route("/hosts", get(host::handler::list).post(host::handler::add))
         .route("/hosts/{host_id}", patch(host::handler::update))
+        .route("/hosts/{host_id}/deploy", post(host::handler::deploy))
 }
 
 fn vms() -> Router {

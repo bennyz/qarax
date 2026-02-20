@@ -15,6 +15,30 @@ Quick reference for running qarax locally with VMs.
 ./hack/run-local.sh --cleanup
 ```
 
+## Host Deploy Test (libvirt VM)
+
+To test `POST /hosts/{host_id}/deploy` against a real VM, use:
+
+```bash
+# Start stack automatically if needed
+bash ./hack/test-host-deploy-libvirt.sh --start-stack
+
+# Keep the VM running for debugging
+bash ./hack/test-host-deploy-libvirt.sh --start-stack --keep-vm
+
+# Cleanup VM created by the script
+bash ./hack/test-host-deploy-libvirt.sh --cleanup
+```
+
+This test provisions an Ubuntu cloud VM via libvirt + cloud-init, configures SSH,
+adds a `bootc` stub command, exposes a qarax-node stub on port `50051`, triggers
+`/hosts/{host_id}/deploy` with `reboot=true`, and waits until host status becomes `up`.
+
+Prerequisites for this script:
+- libvirt + QEMU (`virsh`, `virt-install`, `qemu-img`)
+- cloud-init tooling (`cloud-localds`, usually package `cloud-image-utils`)
+- local Docker stack access (the script validates connectivity from qarax container)
+
 ## Flags
 
 - `--with-vm`: Create and start an example Alpine Linux VM with SSH. Builds a rootfs on first run (takes a few minutes).
