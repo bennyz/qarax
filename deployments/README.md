@@ -61,6 +61,35 @@ podman tag quay.io/yourorg/qarax-vmm-host:v1.0.0 quay.io/yourorg/qarax-vmm-host:
 podman push quay.io/yourorg/qarax-vmm-host:latest
 ```
 
+### Publish via GitHub Actions (Recommended)
+
+This repository includes `.github/workflows/appliance-release.yml` to publish a bootc appliance image to GHCR:
+
+- Image repository: `ghcr.io/<org>/qarax-vmm-host`
+- Trigger automatically on pushes to `master`
+- Trigger on git tags matching `v*` for versioned releases
+- Or run manually with `workflow_dispatch` to publish ad-hoc/dev tags
+
+On `master` pushes, the workflow publishes:
+
+- `ghcr.io/<org>/qarax-vmm-host:master-<short-sha>`
+- `ghcr.io/<org>/qarax-vmm-host:sha-<git-sha>`
+- `ghcr.io/<org>/qarax-vmm-host:latest`
+
+Versioned release example:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+For release tags, the workflow publishes:
+- `ghcr.io/<org>/qarax-vmm-host:v1.0.0`
+- `ghcr.io/<org>/qarax-vmm-host:sha-<git-sha>`
+- `ghcr.io/<org>/qarax-vmm-host:latest` (for tag-triggered releases)
+
+It also signs the published digest with cosign keyless signing.
+
 ## Deploying to Hosts
 
 ### Initial Host Setup
@@ -92,6 +121,46 @@ bootc switch quay.io/yourorg/qarax-vmm-host:v1.0.0
 # Reboot into the new image
 systemctl reboot
 ```
+
+### Deploy via Qarax API (Bootc)
+
+You can trigger the same flow through qarax instead of running SSH commands manually.
+
+```bash
+# 1) Register the host in qarax (port is qarax-node gRPC port)
+curl -s -X POST http://localhost:8000/hosts \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "vmm-host-1",
+    "address": "10.0.0.42",
+    "port": 50051,
+    "host_user": "root",
+    "password": ""
+  }'
+
+# 2) Start bootc deployment over SSH
+curl -s -X POST http://localhost:8000/hosts/<host-id>/deploy \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "image": "quay.io/yourorg/qarax-vmm-host:v1.0.0",
+    "ssh_port": 22,
+    "ssh_user": "root",
+    "ssh_private_key_path": "/home/qarax/.ssh/id_ed25519",
+    "install_bootc": true,
+    "reboot": true
+  }'
+```
+
+Deployment runs asynchronously. Track progress with:
+
+```bash
+curl -s http://localhost:8000/hosts | jq
+```
+
+Host status transitions:
+- `down` -> `installing` when deployment starts
+- `up` on success
+- `installation_failed` on deployment error
 
 After reboot, the host will:
 - Boot from the container image

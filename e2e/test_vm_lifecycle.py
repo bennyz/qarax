@@ -42,19 +42,38 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
+async def call_api(endpoint_module, **kwargs):
+    """
+    Call generated SDK endpoint in a version-tolerant way.
+
+    Some generated endpoints expose only `asyncio_detailed` (no `asyncio`) when
+    the operation has no parsed response body.
+    """
+    asyncio_fn = getattr(endpoint_module, "asyncio", None)
+    if callable(asyncio_fn):
+        return await asyncio_fn(**kwargs)
+
+    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
+    if callable(detailed_fn):
+        response = await detailed_fn(**kwargs)
+        return response.parsed
+
+    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
+
+
 async def wait_for_status(
     client, vm_id: str, expected_status: VmStatus, timeout: int = VM_OPERATION_TIMEOUT
 ):
     """Wait for a VM to reach the expected status."""
     start_time = time.time()
     while time.time() - start_time < timeout:
-        vm = await get_vm.asyncio(client=client, vm_id=vm_id)
+        vm = await call_api(get_vm, client=client, vm_id=vm_id)
         if vm.status == expected_status:
             return vm
         await asyncio.sleep(0.5)
 
     # Get final state for error message
-    vm = await get_vm.asyncio(client=client, vm_id=vm_id)
+    vm = await call_api(get_vm, client=client, vm_id=vm_id)
     raise TimeoutError(
         f"VM {vm_id} did not reach status {expected_status} within {timeout}s. Current status: {vm.status}"
     )
@@ -73,12 +92,12 @@ async def test_vm_create_and_list(client):
             memory_size=256 * 1024 * 1024,  # 256MB - minimal for test kernel
         )
 
-        vm_id = await create_vm.asyncio(client=c, body=new_vm)
+        vm_id = await call_api(create_vm, client=c, body=new_vm)
         assert vm_id is not None
 
         try:
             # Verify VM was created
-            vm = await get_vm.asyncio(client=c, vm_id=str(vm_id))
+            vm = await call_api(get_vm, client=c, vm_id=str(vm_id))
             assert vm.name == "test-vm-e2e-create"
             assert vm.status == VmStatus.CREATED
             assert vm.boot_vcpus == 1
@@ -86,13 +105,13 @@ async def test_vm_create_and_list(client):
             assert vm.memory_size == 256 * 1024 * 1024
 
             # List VMs and verify our VM is in the list
-            vms = await list_vms.asyncio(client=c)
+            vms = await call_api(list_vms, client=c)
             assert vms is not None
             assert any(v.id == vm.id for v in vms)
 
         finally:
             # Cleanup
-            await delete_vm.asyncio(client=c, vm_id=str(vm_id))
+            await call_api(delete_vm, client=c, vm_id=str(vm_id))
 
 
 @pytest.mark.asyncio
@@ -108,44 +127,44 @@ async def test_vm_full_lifecycle(client):
             memory_size=256 * 1024 * 1024,  # 256MB
         )
 
-        vm_id = await create_vm.asyncio(client=c, body=new_vm)
+        vm_id = await call_api(create_vm, client=c, body=new_vm)
         assert vm_id is not None
         vm_id_str = str(vm_id)
 
         try:
             # Verify initial status
-            vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.CREATED
 
             # 2. Start VM (this boots the real VM with test kernel/initramfs)
-            await start_vm.asyncio(client=c, vm_id=vm_id_str)
-            vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(start_vm, client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.RUNNING
 
             # Give the VM a moment to fully initialize
             await asyncio.sleep(1)
 
             # 3. Pause VM
-            await pause_vm.asyncio(client=c, vm_id=vm_id_str)
-            vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(pause_vm, client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.PAUSED
 
             # 4. Resume VM
-            await resume_vm.asyncio(client=c, vm_id=vm_id_str)
-            vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(resume_vm, client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.RUNNING
 
             # 5. Stop VM
-            await stop_vm.asyncio(client=c, vm_id=vm_id_str)
-            vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(stop_vm, client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.SHUTDOWN
 
         finally:
             # 6. Delete VM (cleanup)
-            await delete_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(delete_vm, client=c, vm_id=vm_id_str)
 
         # Verify VM is deleted (should not be in list)
-        vms = await list_vms.asyncio(client=c)
+        vms = await call_api(list_vms, client=c)
         if vms:
             assert not any(str(v.id) == vm_id_str for v in vms)
 
@@ -163,14 +182,14 @@ async def test_vm_delete(client):
             memory_size=256 * 1024 * 1024,  # 256MB
         )
 
-        vm_id = await create_vm.asyncio(client=c, body=new_vm)
+        vm_id = await call_api(create_vm, client=c, body=new_vm)
         assert vm_id is not None
 
         # Delete the VM
-        await delete_vm.asyncio(client=c, vm_id=str(vm_id))
+        await call_api(delete_vm, client=c, vm_id=str(vm_id))
 
         # Verify VM is deleted
-        vms = await list_vms.asyncio(client=c)
+        vms = await call_api(list_vms, client=c)
         if vms:
             assert not any(str(v.id) == str(vm_id) for v in vms)
 
@@ -192,11 +211,11 @@ async def test_multiple_vms(client):
                     memory_size=256 * 1024 * 1024,  # 256MB each
                 )
 
-                vm_id = await create_vm.asyncio(client=c, body=new_vm)
+                vm_id = await call_api(create_vm, client=c, body=new_vm)
                 vm_ids.append(str(vm_id))
 
             # Verify all VMs were created
-            vms = await list_vms.asyncio(client=c)
+            vms = await call_api(list_vms, client=c)
             assert vms is not None
             created_vm_ids = [str(v.id) for v in vms]
             for vm_id in vm_ids:
@@ -206,7 +225,7 @@ async def test_multiple_vms(client):
             # Cleanup all VMs
             for vm_id in vm_ids:
                 try:
-                    await delete_vm.asyncio(client=c, vm_id=vm_id)
+                    await call_api(delete_vm, client=c, vm_id=vm_id)
                 except Exception:
                     pass  # Best effort cleanup
 
@@ -224,15 +243,15 @@ async def test_vm_start_stop_cycle(client):
             memory_size=256 * 1024 * 1024,
         )
 
-        vm_id = await create_vm.asyncio(client=c, body=new_vm)
+        vm_id = await call_api(create_vm, client=c, body=new_vm)
         vm_id_str = str(vm_id)
 
         try:
             # Start/stop cycle
             for i in range(2):
                 # Start
-                await start_vm.asyncio(client=c, vm_id=vm_id_str)
-                vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+                await call_api(start_vm, client=c, vm_id=vm_id_str)
+                vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
                 assert vm.status == VmStatus.RUNNING, (
                     f"Cycle {i}: Expected RUNNING after start"
                 )
@@ -241,11 +260,11 @@ async def test_vm_start_stop_cycle(client):
                 await asyncio.sleep(0.5)
 
                 # Stop
-                await stop_vm.asyncio(client=c, vm_id=vm_id_str)
-                vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
+                await call_api(stop_vm, client=c, vm_id=vm_id_str)
+                vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
                 assert vm.status == VmStatus.SHUTDOWN, (
                     f"Cycle {i}: Expected SHUTDOWN after stop"
                 )
 
         finally:
-            await delete_vm.asyncio(client=c, vm_id=vm_id_str)
+            await call_api(delete_vm, client=c, vm_id=vm_id_str)

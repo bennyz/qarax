@@ -40,6 +40,70 @@ pub struct UpdateHostRequest {
     pub status: HostStatus,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct DeployHostRequest {
+    /// Fully-qualified bootc image reference to deploy on the host.
+    pub image: String,
+    /// SSH port used to reach the host. Defaults to 22.
+    pub ssh_port: Option<u16>,
+    /// SSH user override. Defaults to the host's registered `host_user`.
+    pub ssh_user: Option<String>,
+    /// Optional SSH password override for this deployment request.
+    pub ssh_password: Option<String>,
+    /// Optional SSH private key path on the qarax control-plane host.
+    pub ssh_private_key_path: Option<String>,
+    /// Install bootc before switching image. Defaults to true.
+    pub install_bootc: Option<bool>,
+    /// Reboot after `bootc switch`. Defaults to true.
+    pub reboot: Option<bool>,
+}
+
+impl DeployHostRequest {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.image.trim().is_empty() {
+            return Err("image is required".to_string());
+        }
+
+        if self.ssh_password.is_some() && self.ssh_private_key_path.is_some() {
+            return Err(
+                "provide either ssh_password or ssh_private_key_path, but not both".to_string(),
+            );
+        }
+
+        if let Some(user) = &self.ssh_user
+            && user.trim().is_empty()
+        {
+            return Err("ssh_user cannot be empty".to_string());
+        }
+
+        if let Some(path) = &self.ssh_private_key_path
+            && path.trim().is_empty()
+        {
+            return Err("ssh_private_key_path cannot be empty".to_string());
+        }
+
+        if let Some(port) = self.ssh_port
+            && port == 0
+        {
+            return Err("ssh_port must be greater than 0".to_string());
+        }
+
+        Ok(())
+    }
+
+    pub fn ssh_port(&self) -> u16 {
+        self.ssh_port.unwrap_or(22)
+    }
+
+    pub fn install_bootc(&self) -> bool {
+        self.install_bootc.unwrap_or(true)
+    }
+
+    pub fn reboot(&self) -> bool {
+        self.reboot.unwrap_or(true)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Validate, ToSchema)]
 pub struct NewHost {
     #[validate(length(min = 1, max = 255))]
@@ -173,4 +237,39 @@ pub async fn by_name(pool: &PgPool, name: &str) -> Result<Option<Host>, sqlx::Er
     .await?;
 
     Ok(host)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeployHostRequest;
+
+    #[test]
+    fn deploy_request_rejects_empty_image() {
+        let request = DeployHostRequest {
+            image: "   ".to_string(),
+            ssh_port: None,
+            ssh_user: None,
+            ssh_password: None,
+            ssh_private_key_path: None,
+            install_bootc: None,
+            reboot: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn deploy_request_rejects_multiple_auth_methods() {
+        let request = DeployHostRequest {
+            image: "quay.io/example/qarax-vmm:v1".to_string(),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            ssh_password: Some("secret".to_string()),
+            ssh_private_key_path: Some("/tmp/id_rsa".to_string()),
+            install_bootc: Some(true),
+            reboot: Some(true),
+        };
+
+        assert!(request.validate().is_err());
+    }
 }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
 from attrs import define as _attrs_define
@@ -9,6 +9,10 @@ from attrs import field as _attrs_field
 
 from ..models.hypervisor import Hypervisor
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.new_vm_network import NewVmNetwork
+
 
 T = TypeVar("T", bound="NewVm")
 
@@ -34,6 +38,8 @@ class NewVm:
         memory_prefault (bool | None | Unset):
         memory_shared (bool | None | Unset):
         memory_thp (bool | None | Unset):
+        networks (list[NewVmNetwork] | None | Unset): Optional network interfaces to attach at create time (passed to
+            qarax-node).
     """
 
     boot_vcpus: int
@@ -53,6 +59,7 @@ class NewVm:
     memory_prefault: bool | None | Unset = UNSET
     memory_shared: bool | None | Unset = UNSET
     memory_thp: bool | None | Unset = UNSET
+    networks: list[NewVmNetwork] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +139,18 @@ class NewVm:
         else:
             memory_thp = self.memory_thp
 
+        networks: list[dict[str, Any]] | None | Unset
+        if isinstance(self.networks, Unset):
+            networks = UNSET
+        elif isinstance(self.networks, list):
+            networks = []
+            for networks_type_0_item_data in self.networks:
+                networks_type_0_item = networks_type_0_item_data.to_dict()
+                networks.append(networks_type_0_item)
+
+        else:
+            networks = self.networks
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -167,11 +186,15 @@ class NewVm:
             field_dict["memory_shared"] = memory_shared
         if memory_thp is not UNSET:
             field_dict["memory_thp"] = memory_thp
+        if networks is not UNSET:
+            field_dict["networks"] = networks
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.new_vm_network import NewVmNetwork
+
         d = dict(src_dict)
         boot_vcpus = d.pop("boot_vcpus")
 
@@ -285,6 +308,28 @@ class NewVm:
 
         memory_thp = _parse_memory_thp(d.pop("memory_thp", UNSET))
 
+        def _parse_networks(data: object) -> list[NewVmNetwork] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                networks_type_0 = []
+                _networks_type_0 = data
+                for networks_type_0_item_data in _networks_type_0:
+                    networks_type_0_item = NewVmNetwork.from_dict(networks_type_0_item_data)
+
+                    networks_type_0.append(networks_type_0_item)
+
+                return networks_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[NewVmNetwork] | None | Unset, data)
+
+        networks = _parse_networks(d.pop("networks", UNSET))
+
         new_vm = cls(
             boot_vcpus=boot_vcpus,
             hypervisor=hypervisor,
@@ -303,6 +348,7 @@ class NewVm:
             memory_prefault=memory_prefault,
             memory_shared=memory_shared,
             memory_thp=memory_thp,
+            networks=networks,
         )
 
         new_vm.additional_properties = d

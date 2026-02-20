@@ -151,6 +151,38 @@ paths:
           description: Host not found
         '500':
           description: Internal server error
+  /hosts/{host_id}/deploy:
+    post:
+      tags:
+      - hosts
+      operationId: deploy
+      parameters:
+      - name: host_id
+        in: path
+        description: Host unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployHostRequest'
+        required: true
+      responses:
+        '202':
+          description: Host deployment accepted
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Host not found
+        '422':
+          description: Invalid input
+        '500':
+          description: Internal server error
   /storage-objects:
     get:
       tags:
@@ -611,6 +643,46 @@ components:
           - 'null'
         name:
           type: string
+    DeployHostRequest:
+      type: object
+      required:
+      - image
+      properties:
+        image:
+          type: string
+          description: Fully-qualified bootc image reference to deploy on the host.
+        install_bootc:
+          type:
+          - boolean
+          - 'null'
+          description: Install bootc before switching image. Defaults to true.
+        reboot:
+          type:
+          - boolean
+          - 'null'
+          description: Reboot after `bootc switch`. Defaults to true.
+        ssh_password:
+          type:
+          - string
+          - 'null'
+          description: Optional SSH password override for this deployment request.
+        ssh_port:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: SSH port used to reach the host. Defaults to 22.
+          minimum: 0
+        ssh_private_key_path:
+          type:
+          - string
+          - 'null'
+          description: Optional SSH private key path on the qarax control-plane host.
+        ssh_user:
+          type:
+          - string
+          - 'null'
+          description: SSH user override. Defaults to the host's registered `host_user`.
     Host:
       type: object
       required:

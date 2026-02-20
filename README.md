@@ -258,19 +258,13 @@ Serial console output is written to `/var/lib/qarax/vms/<vm-uuid>.console.log` o
 
 qarax uses bootc (bootable containers) to deploy VMM (Virtual Machine Manager) hosts. The bootc image includes qarax-node, Cloud Hypervisor, and all necessary dependencies.
 
-### Configuration
+### Host Requirements
 
-Add the deployment configuration to your configuration file (`configuration/base.yaml`):
+Before deployment, provide a pre-installed Linux host that:
 
-```yaml
-deployment:
-  mode: "direct"  # or "bootc" for production
-  ssh_key_path: "/path/to/ssh/key"
-  
-bootc:
-  registry: "quay.io/yourorg"
-  image_name: "qarax-vmm-host"
-```
+- is reachable via SSH from the qarax control plane
+- has virtualization support enabled (`/dev/kvm`)
+- can expose qarax-node on a reachable gRPC port (default `50051`)
 
 ### Development Mode (Direct Deployment)
 
@@ -285,9 +279,7 @@ scp target/debug/qarax-node root@192.168.1.100:/usr/local/bin/qarax-node
 ssh root@192.168.1.100 "systemctl restart qarax-node"
 ```
 
-### Production Mode (bootc Image Deployment)
-
-For production, build and deploy bootc images:
+# bootc setup
 
 ```bash
 # Build release binary
@@ -297,9 +289,26 @@ cargo build --release -p qarax-node
 podman build -f deployments/Containerfile.qarax-vmm -t quay.io/yourorg/qarax-vmm-host:v1.0.0 .
 podman push quay.io/yourorg/qarax-vmm-host:v1.0.0
 
-# Deploy to host via qarax API
-curl -X POST http://qarax:8000/hosts/{host_id}/deploy \
-  -d '{"mode": "bootc", "image_version": "v1.0.0"}'
-```
+# Register the host first (port is qarax-node gRPC port)
+curl -X POST http://qarax:8000/hosts \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "vmm-host-1",
+    "address": "10.0.0.42",
+    "port": 50051,
+    "host_user": "root",
+    "password": ""
+  }'
 
-See [deployments/README.md](deployments/README.md) for detailed information about building and deploying bootc images.
+# Deploy bootc image over SSH
+curl -X POST http://qarax:8000/hosts/{host_id}/deploy \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "image": "quay.io/yourorg/qarax-vmm-host:v1.0.0",
+    "ssh_port": 22,
+    "ssh_user": "root",
+    "ssh_private_key_path": "/home/qarax/.ssh/id_ed25519",
+    "install_bootc": true,
+    "reboot": true
+  }'
+```
