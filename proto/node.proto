@@ -259,6 +259,38 @@ service VmService {
   rpc RemoveDiskDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
 }
 
+// ============================================================================
+// File Transfer Service
+// ============================================================================
+
+message DownloadFileRequest {
+  string transfer_id = 1;
+  string source_url = 2;
+  string destination_path = 3;
+}
+
+message CopyFileRequest {
+  string transfer_id = 1;
+  string source_path = 2;
+  string destination_path = 3;
+}
+
+message TransferResponse {
+  string transfer_id = 1;
+  bool success = 2;
+  int64 bytes_written = 3;
+  string error = 4;
+}
+
+service FileTransferService {
+  rpc DownloadFile(DownloadFileRequest) returns (TransferResponse) {}
+  rpc CopyFile(CopyFileRequest) returns (TransferResponse) {}
+}
+
+// ============================================================================
+// Hot-attach Messages
+// ============================================================================
+
 message AddNetworkDeviceRequest {
   string vm_id = 1;
   NetConfig config = 2;

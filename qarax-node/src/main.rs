@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use tonic::transport::Server;
 use tracing::{Level, info};
 
+use qarax_node::rpc::node::file_transfer_service_server::FileTransferServiceServer;
 use qarax_node::rpc::node::vm_service_server::VmServiceServer;
+use qarax_node::services::file_transfer::FileTransferServiceImpl;
 use qarax_node::services::vm::VmServiceImpl;
 
 #[derive(Parser, Debug)]
@@ -51,9 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting gRPC server with Cloud Hypervisor backend");
 
+    let file_transfer_service = FileTransferServiceImpl::new();
+
     // Start the gRPC server
     Server::builder()
         .add_service(VmServiceServer::new(vm_service))
+        .add_service(FileTransferServiceServer::new(file_transfer_service))
         .serve(addr)
         .await?;
 

@@ -5,6 +5,7 @@ pub mod grpc_client;
 pub mod handlers;
 pub mod model;
 pub mod startup;
+pub mod transfer_executor;
 pub mod vm_monitor;
 
 use sqlx::PgPool;
