@@ -53,9 +53,6 @@ impl From<StoragePoolRow> for StoragePool {
 pub enum StoragePoolType {
     Local,
     Nfs,
-    Ceph,
-    Lvm,
-    Zfs,
 }
 
 #[derive(

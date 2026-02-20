@@ -92,7 +92,20 @@ Register hosts via `POST /hosts` and set their status to `up` via `PATCH /hosts/
 
 ### Step 1 — Register a storage pool
 
-Storage pools group the directories where images live on the host.
+Storage pools group the directories where images live on the hypervisor hosts.
+
+**Supported pool types:** `local`, `nfs`
+
+- **local**: `config.path` is a directory on the host (e.g. `/var/lib/qarax/images`). Place kernel, initramfs, and disk files there before registering them.
+- **nfs**: `config.path` is the NFS mount point on the host. Mount the NFS share on each hypervisor host, then use paths under that mount when registering objects.
+
+**How to get files into the pool:**
+
+- **Local pool**: Copy files (e.g. kernel, initramfs) to the host path before creating storage objects. Example:
+  ```bash
+  scp vmlinux initramfs.gz root@hypervisor-host:/var/lib/qarax/images/
+  ```
+- **NFS pool**: Copy files to the NFS export, or ensure they exist at the paths you will register. Each hypervisor host must have the NFS share mounted at the same path.
 
 ```bash
 curl -s -X POST http://localhost:8000/storage-pools \
@@ -105,11 +118,9 @@ curl -s -X POST http://localhost:8000/storage-pools \
 # Returns: <pool-uuid>
 ```
 
-`pool_type` values: `local`, `nfs`, `ceph`, `lvm`, `zfs`
-
 ### Step 2 — Register storage objects (kernel + initramfs)
 
-Each object points to a real file on the host via `config.path`. This path is what gets passed to Cloud Hypervisor at boot time.
+Each object points to a real file on the host via `config.path`. This path is what gets passed to Cloud Hypervisor at boot time. Ensure the file exists at that path on the hypervisor host where the VM will run.
 
 ```bash
 # Kernel

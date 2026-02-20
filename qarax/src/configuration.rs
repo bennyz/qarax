@@ -70,10 +70,12 @@ impl DatabaseSettings {
 }
 
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
-    // Get our base path which is one level up from current_dir
-    let base_path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
-    println!("Current directory: {:?}", std::env::current_dir().unwrap());
-    let configuration_directory = base_path.join("configuration");
+    // Prefer QARAX_CONFIG_DIR for runtime override (e.g. Docker where CARGO_MANIFEST_DIR is build-path)
+    let configuration_directory = if let Ok(dir) = std::env::var("QARAX_CONFIG_DIR") {
+        Path::new(&dir).to_path_buf()
+    } else {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("configuration")
+    };
     let environment: Environment = std::env::var("APP_ENVIRONMENT")
         .unwrap_or_else(|_| "local".into())
         .try_into()
