@@ -13,8 +13,9 @@ pub mod node {
 }
 
 use node::{
-    ConsoleConfig, CpusConfig, DiskConfig, MemoryConfig, NetConfig, PayloadConfig, VmConfig,
-    VmCounters, VmId, VmState, vm_service_client::VmServiceClient,
+    ConsoleConfig, CopyFileRequest, CpusConfig, DiskConfig, DownloadFileRequest, MemoryConfig,
+    NetConfig, PayloadConfig, VmConfig, VmCounters, VmId, VmState,
+    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -300,6 +301,74 @@ impl NodeClient {
             .context("Failed to get VM counters from qarax-node")?;
 
         Ok(response.into_inner())
+    }
+
+    /// Download a file on the node from a URL to a destination path
+    #[instrument(skip(self))]
+    pub async fn download_file(
+        &self,
+        transfer_id: &str,
+        source_url: &str,
+        destination_path: &str,
+    ) -> Result<i64> {
+        debug!(
+            "Requesting file download on node {}: {} -> {}",
+            self.address, source_url, destination_path
+        );
+
+        let mut client = FileTransferServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .download_file(DownloadFileRequest {
+                transfer_id: transfer_id.to_string(),
+                source_url: source_url.to_string(),
+                destination_path: destination_path.to_string(),
+            })
+            .await
+            .context("Failed to download file on qarax-node")?
+            .into_inner();
+
+        if response.success {
+            Ok(response.bytes_written)
+        } else {
+            anyhow::bail!("Download failed: {}", response.error)
+        }
+    }
+
+    /// Copy a file locally on the node from source to destination
+    #[instrument(skip(self))]
+    pub async fn copy_file(
+        &self,
+        transfer_id: &str,
+        source_path: &str,
+        destination_path: &str,
+    ) -> Result<i64> {
+        debug!(
+            "Requesting file copy on node {}: {} -> {}",
+            self.address, source_path, destination_path
+        );
+
+        let mut client = FileTransferServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .copy_file(CopyFileRequest {
+                transfer_id: transfer_id.to_string(),
+                source_path: source_path.to_string(),
+                destination_path: destination_path.to_string(),
+            })
+            .await
+            .context("Failed to copy file on qarax-node")?
+            .into_inner();
+
+        if response.success {
+            Ok(response.bytes_written)
+        } else {
+            anyhow::bail!("Copy failed: {}", response.error)
+        }
     }
 
     /// Delete a VM on the qarax-node

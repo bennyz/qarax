@@ -21,6 +21,7 @@ mod boot_source;
 mod host;
 mod storage_object;
 mod storage_pool;
+mod transfer;
 mod vm;
 
 pub type Result<T, E = Error> = ::std::result::Result<T, E>;
@@ -52,6 +53,9 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         boot_source::handler::get,
         boot_source::handler::create,
         boot_source::handler::delete,
+        transfer::handler::create,
+        transfer::handler::list,
+        transfer::handler::get,
     ),
     components(
         schemas(
@@ -79,6 +83,10 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::network_interfaces::InterfaceType,
             crate::model::network_interfaces::VhostMode,
             crate::handlers::vm::handler::VmMetrics,
+            crate::model::transfers::Transfer,
+            crate::model::transfers::NewTransfer,
+            crate::model::transfers::TransferType,
+            crate::model::transfers::TransferStatus,
         )
     ),
     tags(
@@ -86,7 +94,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         (name = "vms", description = "Virtual machine management endpoints"),
         (name = "storage-objects", description = "Storage object management endpoints"),
         (name = "storage-pools", description = "Storage pool management endpoints"),
-        (name = "boot-sources", description = "Boot source management endpoints")
+        (name = "boot-sources", description = "Boot source management endpoints"),
+        (name = "transfers", description = "File transfer management endpoints")
     ),
     info(
         title = "Qarax API",
@@ -105,6 +114,7 @@ pub fn app(env: App) -> Router {
         .merge(storage_objects())
         .merge(storage_pools())
         .merge(boot_sources())
+        .merge(transfers())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(
             ServiceBuilder::new()
@@ -171,6 +181,18 @@ fn storage_pools() -> Router {
         .route(
             "/storage-pools/{pool_id}",
             get(storage_pool::handler::get).delete(storage_pool::handler::delete),
+        )
+}
+
+fn transfers() -> Router {
+    Router::new()
+        .route(
+            "/storage-pools/{pool_id}/transfers",
+            get(transfer::handler::list).post(transfer::handler::create),
+        )
+        .route(
+            "/storage-pools/{pool_id}/transfers/{transfer_id}",
+            get(transfer::handler::get),
         )
 }
 

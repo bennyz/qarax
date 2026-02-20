@@ -234,30 +234,6 @@ if [[ $elapsed -ge $timeout ]]; then
   exit 1
 fi
 
-# Register the local qarax-node as a host (required for GET /hosts to show the node)
-echo ""
-echo -e "${YELLOW}Registering host (local-node at qarax-node:50051)...${NC}"
-host_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/hosts \
-  -H "Content-Type: application/json" \
-  -d '{"name":"local-node","address":"qarax-node","port":50051,"host_user":"root","password":""}')
-host_code=$(echo "$host_resp" | tail -n1)
-if [[ "$host_code" == "201" ]]; then
-  echo -e "${GREEN}Host registered.${NC}"
-elif [[ "$host_code" == "409" ]]; then
-  echo -e "${GREEN}Host already registered.${NC}"
-else
-  echo -e "${RED}Failed to register host (HTTP $host_code).${NC}"
-  echo "$host_resp" | head -n -1
-fi
-
-# Set host status to "up" so the scheduler can pick this host for VM operations
-host_id=$(curl -s http://localhost:8000/hosts | sed -n 's/.*"id":"\([^"]*\)","name":"local-node".*/\1/p')
-if [[ -n "$host_id" ]]; then
-  curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \
-    -H "Content-Type: application/json" -d '{"status":"up"}' >/dev/null
-  echo -e "${GREEN}Host status set to up.${NC}"
-fi
-
 # Create and start a VM if --with-vm flag is set
 if [[ $WITH_VM -eq 1 ]]; then
   echo ""
@@ -332,241 +308,107 @@ INIT
   INITRAMFS_PATH="/var/lib/qarax/production-images/boot-initramfs.gz"
   CMDLINE="console=ttyS0"
 
-  # 1. Get or create storage pool
-  # Try to fetch existing pool first
-  pool_id=$(curl -s http://localhost:8000/storage-pools | sed -n 's/.*"id":"\([^"]*\)","name":"local-pool".*/\1/p' | head -n1)
-
-  if [[ -z "$pool_id" ]]; then
-    # Pool doesn't exist, create it
-    pool_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/storage-pools \
-      -H "Content-Type: application/json" \
-      -d '{"name":"local-pool","pool_type":"local","config":{}}')
-    pool_code=$(echo "$pool_resp" | tail -n1)
-    pool_id=$(echo "$pool_resp" | head -n -1 | tr -d '"')
-
-    if [[ "$pool_code" == "201" ]]; then
-      echo -e "${GREEN}Storage pool created: ${pool_id}${NC}"
+  # Create TAP device for VM networking (must happen before VM creation)
+  echo -e "${YELLOW}Creating TAP device for VM network...${NC}"
+  docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
+    if ! ip link show tap0 >/dev/null 2>&1; then
+      ip tuntap add tap0 mode tap
+      ip link set tap0 up
+      echo "TAP device tap0 created"
     else
-      echo -e "${RED}Failed to create storage pool (HTTP $pool_code)${NC}"
-      echo "$pool_resp" | head -n -1
-      pool_id=""
+      echo "TAP device tap0 already exists"
     fi
+  ' || {
+    echo -e "${RED}Failed to create TAP device${NC}"
+    echo "Continuing anyway - VM may not have network connectivity"
+  }
+
+  # Use Python script for all API interactions:
+  # host registration, storage pool, transfers, boot source, VM create+start
+  echo -e "${YELLOW}Setting up resources via API...${NC}"
+  setup_output=$(python3 "${REPO_ROOT}/hack/setup_vm.py" \
+    --kernel-path "$KERNEL_PATH" \
+    --initramfs-path "$INITRAMFS_PATH" \
+    --cmdline "$CMDLINE")
+
+  # Parse key=value output from setup_vm.py
+  eval "$setup_output"
+
+  if [[ -n "$VM_ID" ]]; then
+    vm_id="$VM_ID"
+
+    # Configure host-side TAP device with IP for SSH access
+    echo -e "${YELLOW}Configuring host network for SSH access...${NC}"
+    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
+      ip addr add 192.168.100.1/24 dev tap0 2>/dev/null || true
+      echo "Host TAP device configured: 192.168.100.1"
+    '
+
+    # Wait for VM SSH to become available (static IP: 192.168.100.2)
+    echo -e "${YELLOW}Waiting for VM SSH to become available...${NC}"
+    ssh_ready=0
+    timeout=60
+    elapsed=0
+    while [[ $elapsed -lt $timeout ]]; do
+      sleep 2
+      elapsed=$((elapsed + 2))
+      if docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node nc -z -w1 192.168.100.2 22 2>/dev/null; then
+        ssh_ready=1
+        echo -e "${GREEN}VM SSH is ready!${NC}"
+        break
+      fi
+      if [[ $((elapsed % 10)) -eq 0 ]]; then
+        echo -e "${YELLOW}  Still waiting... (${elapsed}s / ${timeout}s)${NC}"
+      fi
+    done
+    if [[ $ssh_ready -eq 0 ]]; then
+      echo -e "${YELLOW}SSH not ready yet - VM may still be booting${NC}"
+    fi
+
+    # Show VM access info
+    echo ""
+    echo -e "${GREEN}===== Example VM Ready =====${NC}"
+    echo "VM ID: ${vm_id}"
+    echo "Status: running"
+    echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: tap0)"
+    echo "VM IP: 192.168.100.2 (static)"
+    echo ""
+    echo -e "${GREEN}SSH Access:${NC}"
+    echo "  Username: root  |  Password: qarax"
+    echo ""
+    echo "SSH via nc ProxyCommand (from host):"
+    echo "  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='docker compose -f e2e/docker-compose.yml exec -T qarax-node nc %h %p' root@192.168.100.2"
+    echo ""
+    echo "Or open a shell in the node and use nc to verify connectivity:"
+    echo "  docker compose -f e2e/docker-compose.yml exec qarax-node nc -z 192.168.100.2 22 && echo 'SSH port open'"
+    echo ""
+    echo "View VM console output:"
+    echo "  docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/${vm_id}.console.log"
+    echo ""
+    echo "Stop VM:   curl -X POST http://localhost:8000/vms/${vm_id}/stop"
+    echo "Delete VM: curl -X DELETE http://localhost:8000/vms/${vm_id}"
+    echo ""
   else
-    echo -e "${GREEN}Using existing storage pool: ${pool_id}${NC}"
+    echo -e "${RED}VM was not created. Check logs above for errors.${NC}"
   fi
-
-  if [[ -n "$pool_id" ]]; then
-    # 2. Get or create kernel storage object
-    kernel_id=$(curl -s http://localhost:8000/storage-objects | sed -n 's/.*"id":"\([^"]*\)".*"name":"example-kernel".*/\1/p' | head -n1)
-
-    if [[ -z "$kernel_id" ]]; then
-      kernel_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/storage-objects \
-        -H "Content-Type: application/json" \
-        -d "{\"name\":\"example-kernel\",\"storage_pool_id\":\"${pool_id}\",\"object_type\":\"kernel\",\"size_bytes\":10000000,\"config\":{\"path\":\"${KERNEL_PATH}\"}}")
-      kernel_code=$(echo "$kernel_resp" | tail -n1)
-      kernel_id=$(echo "$kernel_resp" | head -n -1 | tr -d '"')
-
-      if [[ "$kernel_code" == "201" ]]; then
-        echo -e "${GREEN}Kernel storage object created: ${kernel_id}${NC}"
-      else
-        echo -e "${RED}Failed to create kernel storage object (HTTP $kernel_code)${NC}"
-        echo "$kernel_resp" | head -n -1
-        kernel_id=""
-      fi
-    else
-      echo -e "${GREEN}Using existing kernel storage object: ${kernel_id}${NC}"
-    fi
-
-    # 3. Get or create initramfs storage object (only if using initramfs)
-    initramfs_id=""
-    if [[ -n "$INITRAMFS_PATH" ]]; then
-      initramfs_id=$(curl -s http://localhost:8000/storage-objects | sed -n 's/.*"id":"\([^"]*\)".*"name":"example-initramfs".*/\1/p' | head -n1)
-
-      if [[ -z "$initramfs_id" ]]; then
-        initramfs_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/storage-objects \
-          -H "Content-Type: application/json" \
-          -d "{\"name\":\"example-initramfs\",\"storage_pool_id\":\"${pool_id}\",\"object_type\":\"initrd\",\"size_bytes\":5000000,\"config\":{\"path\":\"${INITRAMFS_PATH}\"}}")
-        initramfs_code=$(echo "$initramfs_resp" | tail -n1)
-        initramfs_id=$(echo "$initramfs_resp" | head -n -1 | tr -d '"')
-
-        if [[ "$initramfs_code" == "201" ]]; then
-          echo -e "${GREEN}Initramfs storage object created: ${initramfs_id}${NC}"
-        else
-          echo -e "${RED}Failed to create initramfs storage object (HTTP $initramfs_code)${NC}"
-          echo "$initramfs_resp" | head -n -1
-          initramfs_id=""
-        fi
-      else
-        echo -e "${GREEN}Using existing initramfs storage object: ${initramfs_id}${NC}"
-      fi
-    fi
-
-    # 4. Get or create boot source
-    if [[ -n "$kernel_id" ]]; then
-      boot_id=$(curl -s http://localhost:8000/boot-sources | sed -n 's/.*"id":"\([^"]*\)".*"name":"example-boot".*/\1/p' | head -n1)
-
-      if [[ -z "$boot_id" ]]; then
-        # Build boot source JSON - initrd_image_id is optional
-        if [[ -n "$initramfs_id" ]]; then
-          boot_json="{\"name\":\"example-boot\",\"description\":\"Example boot source\",\"kernel_image_id\":\"${kernel_id}\",\"initrd_image_id\":\"${initramfs_id}\",\"kernel_params\":\"${CMDLINE}\"}"
-        else
-          boot_json="{\"name\":\"example-boot\",\"description\":\"Example boot source\",\"kernel_image_id\":\"${kernel_id}\",\"kernel_params\":\"${CMDLINE}\"}"
-        fi
-
-        boot_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/boot-sources \
-          -H "Content-Type: application/json" \
-          -d "$boot_json")
-        boot_code=$(echo "$boot_resp" | tail -n1)
-        boot_id=$(echo "$boot_resp" | head -n -1 | tr -d '"')
-
-        if [[ "$boot_code" == "201" ]]; then
-          echo -e "${GREEN}Boot source created: ${boot_id}${NC}"
-        else
-          echo -e "${RED}Failed to create boot source (HTTP $boot_code)${NC}"
-          echo "$boot_resp" | head -n -1
-          boot_id=""
-        fi
-      else
-        echo -e "${GREEN}Using existing boot source: ${boot_id}${NC}"
-      fi
-
-      # 5. Delete existing VM if present (to avoid stale state from previous runs)
-      if [[ -n "$boot_id" ]]; then
-        existing_vm_id=$(curl -s http://localhost:8000/vms | sed -n 's/.*"id":"\([^"]*\)".*"name":"example-vm".*/\1/p' | head -n1)
-
-        if [[ -n "$existing_vm_id" ]]; then
-          echo -e "${YELLOW}Deleting existing VM to avoid stale state: ${existing_vm_id}${NC}"
-          delete_resp=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:8000/vms/${existing_vm_id}")
-          delete_code=$(echo "$delete_resp" | tail -n1)
-          if [[ "$delete_code" == "204" ]] || [[ "$delete_code" == "200" ]]; then
-            echo -e "${GREEN}Existing VM deleted${NC}"
-          else
-            echo -e "${YELLOW}Failed to delete existing VM (HTTP $delete_code), continuing anyway...${NC}"
-          fi
-          sleep 1
-        fi
-
-        # 6. Create TAP device for VM networking
-        echo -e "${YELLOW}Creating TAP device for VM network...${NC}"
-        docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
-          # Create TAP device if it doesn'\''t exist
-          if ! ip link show tap0 >/dev/null 2>&1; then
-            ip tuntap add tap0 mode tap
-            ip link set tap0 up
-            echo "TAP device tap0 created"
-          else
-            echo "TAP device tap0 already exists"
-          fi
-        ' || {
-          echo -e "${RED}Failed to create TAP device${NC}"
-          echo "Continuing anyway - VM may not have network connectivity"
-        }
-
-        # 6. Create fresh VM
-        echo -e "${YELLOW}Creating fresh VM...${NC}"
-        vm_json="{\"name\":\"example-vm\",\"hypervisor\":\"cloud_hv\",\"boot_vcpus\":1,\"max_vcpus\":1,\"memory_size\":268435456,\"boot_source_id\":\"${boot_id}\",\"networks\":[{\"id\":\"net0\",\"mac\":\"52:54:00:12:34:56\",\"tap\":\"tap0\"}]}"
-
-        vm_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/vms \
-          -H "Content-Type: application/json" \
-          -d "$vm_json")
-        vm_code=$(echo "$vm_resp" | tail -n1)
-        vm_id=$(echo "$vm_resp" | head -n -1 | tr -d '"')
-
-        if [[ "$vm_code" == "201" ]]; then
-          echo -e "${GREEN}VM created: ${vm_id}${NC}"
-        else
-          echo -e "${RED}Failed to create VM (HTTP $vm_code)${NC}"
-          echo "$vm_resp" | head -n -1
-          vm_id=""
-        fi
-
-        if [[ -n "$vm_id" ]]; then
-          # 7. Start the VM
-          echo -e "${YELLOW}Starting VM...${NC}"
-          start_resp=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/vms/${vm_id}/start")
-          start_code=$(echo "$start_resp" | tail -n1)
-
-          if [[ "$start_code" == "200" ]]; then
-            echo -e "${GREEN}VM started successfully!${NC}"
-
-            # Configure host-side TAP device with IP for SSH access
-            if [[ $WITH_VM -eq 1 ]]; then
-              echo -e "${YELLOW}Configuring host network for SSH access...${NC}"
-              docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
-                ip addr add 192.168.100.1/24 dev tap0 2>/dev/null || true
-                echo "Host TAP device configured: 192.168.100.1"
-              '
-            fi
-
-            if [[ $WITH_VM -eq 1 ]]; then
-              # Wait for VM SSH to become available (static IP: 192.168.100.2)
-              echo -e "${YELLOW}Waiting for VM SSH to become available...${NC}"
-              ssh_ready=0
-              timeout=60
-              elapsed=0
-              while [[ $elapsed -lt $timeout ]]; do
-                sleep 2
-                elapsed=$((elapsed + 2))
-                if docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node nc -z -w1 192.168.100.2 22 2>/dev/null; then
-                  ssh_ready=1
-                  echo -e "${GREEN}✓ VM SSH is ready!${NC}"
-                  break
-                fi
-                if [[ $((elapsed % 10)) -eq 0 ]]; then
-                  echo -e "${YELLOW}  Still waiting... (${elapsed}s / ${timeout}s)${NC}"
-                fi
-              done
-              if [[ $ssh_ready -eq 0 ]]; then
-                echo -e "${YELLOW}⚠ SSH not ready yet - VM may still be booting${NC}"
-              fi
-              vm_status="running"
-            fi
-          else
-            echo -e "${RED}Failed to start VM (HTTP $start_code)${NC}"
-            echo "$start_resp" | head -n -1
-          fi
-        fi
-
-        # Show VM access info
-        if [[ -n "$vm_id" ]]; then
-          echo ""
-          echo -e "${GREEN}===== Example VM Ready =====${NC}"
-          echo "VM ID: ${vm_id}"
-          echo "Status: ${vm_status:-running}"
-          echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: tap0)"
-
-          if [[ $WITH_VM -eq 1 ]]; then
-            echo "VM IP: 192.168.100.2 (static)"
-            echo ""
-            echo -e "${GREEN}SSH Access:${NC}"
-            echo "  Username: root  |  Password: qarax"
-            echo ""
-            echo "SSH via nc ProxyCommand (from host):"
-            echo "  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='docker compose -f e2e/docker-compose.yml exec -T qarax-node nc %h %p' root@192.168.100.2"
-            echo ""
-            echo "Or open a shell in the node and use nc to verify connectivity:"
-            echo "  docker compose -f e2e/docker-compose.yml exec qarax-node nc -z 192.168.100.2 22 && echo 'SSH port open'"
-          else
-            echo ""
-            echo -e "${GREEN}✓ VM is running with networking${NC}"
-          fi
-
-          echo ""
-          echo "View VM console output:"
-          echo "  docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/${vm_id}.console.log"
-          echo ""
-          echo "Check network device in Cloud Hypervisor:"
-          echo "  docker compose -f e2e/docker-compose.yml exec qarax-node curl -s --unix-socket /var/lib/qarax/vms/${vm_id}.sock http://localhost/api/v1/vm.info | jq '.config.net'"
-          echo ""
-          echo "Stop VM:"
-          echo "  curl -X POST http://localhost:8000/vms/${vm_id}/stop"
-          echo ""
-          echo "Delete VM:"
-          echo "  curl -X DELETE http://localhost:8000/vms/${vm_id}"
-          echo ""
-        fi
-      fi
-    fi
+else
+  # No --with-vm: just register the host via the Python script (host only, no VM)
+  python3 "${REPO_ROOT}/hack/setup_vm.py" --kernel-path /dev/null 2>&1 | head -0 || true
+  # Simpler: just register host with curl (kept minimal for non-VM case)
+  echo ""
+  echo -e "${YELLOW}Registering host...${NC}"
+  host_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/hosts \
+    -H "Content-Type: application/json" \
+    -d '{"name":"local-node","address":"qarax-node","port":50051,"host_user":"root","password":""}')
+  host_code=$(echo "$host_resp" | tail -n1)
+  if [[ "$host_code" == "201" ]] || [[ "$host_code" == "409" ]]; then
+    echo -e "${GREEN}Host registered.${NC}"
+  fi
+  host_id=$(curl -s http://localhost:8000/hosts | python3 -c "import sys,json; hosts=json.load(sys.stdin); print(next((h['id'] for h in hosts if h['name']=='local-node'),''))" 2>/dev/null)
+  if [[ -n "$host_id" ]]; then
+    curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \
+      -H "Content-Type: application/json" -d '{"status":"up"}' >/dev/null
+    echo -e "${GREEN}Host status set to up.${NC}"
   fi
 fi
 

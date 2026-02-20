@@ -311,6 +311,92 @@ paths:
           description: Storage pool not found
         '500':
           description: Internal server error
+  /storage-pools/{pool_id}/transfers:
+    get:
+      tags:
+      - transfers
+      operationId: list
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: List transfers for this pool
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transfer'
+        '500':
+          description: Internal server error
+    post:
+      tags:
+      - transfers
+      operationId: create
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewTransfer'
+        required: true
+      responses:
+        '202':
+          description: Transfer accepted and started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          description: Storage pool not found
+        '422':
+          description: Invalid input
+        '500':
+          description: Internal server error
+  /storage-pools/{pool_id}/transfers/{transfer_id}:
+    get:
+      tags:
+      - transfers
+      operationId: get
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: transfer_id
+        in: path
+        description: Transfer unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Transfer details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          description: Transfer not found
+        '500':
+          description: Internal server error
   /vms:
     get:
       tags:
@@ -736,6 +822,19 @@ components:
           type: string
         pool_type:
           $ref: '#/components/schemas/StoragePoolType'
+    NewTransfer:
+      type: object
+      required:
+      - name
+      - source
+      - object_type
+      properties:
+        name:
+          type: string
+        object_type:
+          $ref: '#/components/schemas/StorageObjectType'
+        source:
+          type: string
     NewVm:
       type: object
       required:
@@ -1023,6 +1122,83 @@ components:
         size:
           type: integer
           format: int64
+    Transfer:
+      type: object
+      required:
+      - id
+      - name
+      - transfer_type
+      - status
+      - source
+      - storage_pool_id
+      - object_type
+      - transferred_bytes
+      properties:
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        error_message:
+          type:
+          - string
+          - 'null'
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        object_type:
+          $ref: '#/components/schemas/StorageObjectType'
+        source:
+          type: string
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        status:
+          $ref: '#/components/schemas/TransferStatus'
+        storage_object_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        storage_pool_id:
+          type: string
+          format: uuid
+        total_bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        transfer_type:
+          $ref: '#/components/schemas/TransferType'
+        transferred_bytes:
+          type: integer
+          format: int64
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    TransferStatus:
+      type: string
+      enum:
+      - pending
+      - running
+      - completed
+      - failed
+    TransferType:
+      type: string
+      enum:
+      - download
+      - local_copy
     UpdateHostRequest:
       type: object
       required:
@@ -1156,3 +1332,5 @@ tags:
   description: Storage pool management endpoints
 - name: boot-sources
   description: Boot source management endpoints
+- name: transfers
+  description: File transfer management endpoints
