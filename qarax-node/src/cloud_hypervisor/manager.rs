@@ -53,6 +53,9 @@ pub enum VmManagerError {
 
     #[error("Process error: {0}")]
     ProcessError(String),
+
+    #[error("TAP device error: {0}")]
+    TapError(String),
 }
 
 /// Represents a running VM instance
@@ -67,6 +70,8 @@ struct VmInstance {
     socket_path: PathBuf,
     /// Current status
     status: VmStatus,
+    /// TAP devices created by qarax-node for this VM (cleaned up on delete)
+    tap_devices: Vec<String>,
 }
 
 impl VmInstance {
@@ -214,17 +219,81 @@ impl VmManager {
                 }
             };
 
+            // Re-derive managed TAP devices from the persisted config (tap names
+            // were written into the config at create time).
+            let tap_devices: Vec<String> = proto_config
+                .networks
+                .iter()
+                .filter_map(|n| n.tap.clone())
+                .filter(|t| t.starts_with("qt"))
+                .collect();
+
             let instance = VmInstance {
                 proto_config,
                 process: None, // We don't have the child process handle for recovered VMs
                 vm,
                 socket_path,
                 status,
+                tap_devices,
             };
 
             let mut vms = self.vms.lock().await;
             vms.insert(vm_id.clone(), instance);
             info!("Recovered VM {} with status {:?}", vm_id, status);
+        }
+    }
+
+    /// Generate a deterministic TAP device name for a network interface.
+    ///
+    /// Format: "qt" + first 8 hex chars of VM UUID + "n" + NIC index.
+    /// Example: "qt24b6061en0" (12 chars, well within the 15-char Linux limit).
+    fn tap_name_for_net(vm_id: &str, net_index: usize) -> String {
+        let hex_id: String = vm_id
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .take(8)
+            .collect();
+        format!("qt{}n{}", hex_id, net_index)
+    }
+
+    /// Create a TAP device and bring it up.
+    async fn create_tap_device(name: &str) -> Result<(), VmManagerError> {
+        let add = Command::new("ip")
+            .args(["tuntap", "add", name, "mode", "tap"])
+            .status()
+            .await
+            .map_err(|e| VmManagerError::TapError(format!("failed to run ip tuntap add: {e}")))?;
+        if !add.success() {
+            return Err(VmManagerError::TapError(format!(
+                "ip tuntap add {name} failed with status {add}"
+            )));
+        }
+
+        let up = Command::new("ip")
+            .args(["link", "set", name, "up"])
+            .status()
+            .await
+            .map_err(|e| VmManagerError::TapError(format!("failed to run ip link set up: {e}")))?;
+        if !up.success() {
+            return Err(VmManagerError::TapError(format!(
+                "ip link set {name} up failed with status {up}"
+            )));
+        }
+
+        info!("TAP device {} created and up", name);
+        Ok(())
+    }
+
+    /// Delete a TAP device. Logs a warning on failure but does not propagate errors.
+    async fn delete_tap_device(name: &str) {
+        match Command::new("ip")
+            .args(["link", "delete", name])
+            .status()
+            .await
+        {
+            Ok(s) if s.success() => info!("TAP device {} deleted", name),
+            Ok(s) => warn!("ip link delete {} failed with status {}", name, s),
+            Err(e) => warn!("Failed to run ip link delete {}: {}", name, e),
         }
     }
 
@@ -238,6 +307,24 @@ impl VmManager {
             let vms = self.vms.lock().await;
             if vms.contains_key(&vm_id) {
                 return Err(VmManagerError::VmAlreadyExists(vm_id));
+            }
+        }
+
+        // Create TAP devices for networks that need them, injecting the names
+        // into the config so CH uses our managed devices (and we can clean them up).
+        let mut config = config;
+        let mut tap_devices: Vec<String> = Vec::new();
+        for (i, net) in config.networks.iter_mut().enumerate() {
+            if !net.vhost_user.unwrap_or(false) && net.tap.is_none() {
+                let tap_name = Self::tap_name_for_net(&vm_id, i);
+                if let Err(e) = Self::create_tap_device(&tap_name).await {
+                    for tap in &tap_devices {
+                        Self::delete_tap_device(tap).await;
+                    }
+                    return Err(e);
+                }
+                net.tap = Some(tap_name.clone());
+                tap_devices.push(tap_name);
             }
         }
 
@@ -332,6 +419,7 @@ impl VmManager {
             vm,
             socket_path,
             status: VmStatus::Created,
+            tap_devices,
         };
 
         let state = instance.to_vm_state();
@@ -453,6 +541,11 @@ impl VmManager {
         let config_path = self.config_path(vm_id);
         if config_path.exists() {
             let _ = tokio::fs::remove_file(&config_path).await;
+        }
+
+        // Clean up TAP devices created by qarax-node
+        for tap in &instance.tap_devices {
+            Self::delete_tap_device(tap).await;
         }
 
         info!("VM {} deleted successfully", vm_id);

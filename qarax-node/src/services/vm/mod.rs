@@ -307,5 +307,6 @@ fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
             Status::internal(format!("Cloud Hypervisor SDK error: {}", e))
         }
         VmManagerError::ProcessError(msg) => Status::internal(msg),
+        VmManagerError::TapError(msg) => Status::internal(format!("TAP device error: {}", msg)),
     }
 }

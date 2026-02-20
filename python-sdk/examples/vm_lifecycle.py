@@ -9,6 +9,7 @@ This example demonstrates the full VM lifecycle:
 - Stopping the VM
 - Deleting the VM
 """
+
 import asyncio
 from qarax_api_client import Client
 from qarax_api_client.api.vms import (

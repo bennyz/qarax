@@ -327,7 +327,13 @@ impl NodeClient {
                 destination_path: destination_path.to_string(),
             })
             .await
-            .context("Failed to download file on qarax-node")?
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC download_file failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?
             .into_inner();
 
         if response.success {
@@ -361,7 +367,13 @@ impl NodeClient {
                 destination_path: destination_path.to_string(),
             })
             .await
-            .context("Failed to copy file on qarax-node")?
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC copy_file failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?
             .into_inner();
 
         if response.success {

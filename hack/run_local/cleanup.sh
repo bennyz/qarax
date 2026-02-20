@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop and remove the local Docker stack (postgres, qarax, qarax-node) and volumes.
-# Use after ./hack/run_local.sh when you're done testing.
+# Use after ./hack/run-local.sh when you're done testing.
 
 set -e
 

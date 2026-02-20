@@ -104,7 +104,7 @@ cd e2e && ./run_e2e_tests.sh
 To run the full stack (qarax API + qarax-node + PostgreSQL) in Docker for local experimentation:
 
 ```bash
-./hack/run_local.sh
+./hack/run-local.sh
 ```
 
 Requirements: Docker (with Compose), KVM (`/dev/kvm`), Rust toolchain. The script builds the qarax-node binary, starts the E2E-style Compose stack, and prints API and Swagger URLs. Stop with `cd e2e && docker compose down -v`. Optional: `REBUILD=1` to rebuild images, `SKIP_BUILD=1` to skip building qarax-node.

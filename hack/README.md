@@ -4,59 +4,35 @@ Quick reference for running qarax locally with VMs.
 
 ## Quick Start
 
-### 1. Start the Stack
-
 ```bash
-# Start the stack only
-./hack/run_local.sh
+# Start the stack only (registers host, no VM)
+./hack/run-local.sh
 
 # Start the stack and create an example VM with SSH access
-./hack/run_local.sh --with-vm
+./hack/run-local.sh --with-vm
+
+# Cleanup everything
+./hack/run-local.sh --cleanup
 ```
 
-### 2. Create a Test VM
+## Flags
 
-```bash
-# Create a VM with networking
-./hack/create-test-vm.sh my-vm-name
+- `--with-vm`: Create and start an example Alpine Linux VM with SSH. Builds a rootfs on first run (takes a few minutes).
+- `--cleanup`: Stop and remove the Docker stack, volumes, and cached boot images.
 
-# Or create without a name (auto-generates name)
-./hack/create-test-vm.sh
-```
+## Environment Variables
 
-### 3. Cleanup
+- `REBUILD=1`: Force rebuild of Docker images and qarax-node binary.
+- `SKIP_BUILD=1`: Skip building the qarax-node binary (use existing).
 
-```bash
-./hack/run_local.sh --cleanup
-```
+## Networking
 
-## Key Differences: Default vs --with-vm
-
-### Default (no flags)
-- ✅ Fast startup
-- ✅ Minimal resources
-- ✅ Good for API testing
-- No VM is created automatically
-
-### With --with-vm
-- ✅ Persistent VMs with SSH access
-- ✅ Full Alpine Linux rootfs
-- ⚠️ Slower first run (downloads and builds rootfs)
-- Uses locally built kernel, initramfs, and rootfs in `e2e/local-test-images/`
-
-## Network Configuration
-
-All VMs created by the scripts now automatically:
-1. Create a TAP device (e.g., `tap0`, `tap-0104`)
-2. Attach it to the VM's network interface
-3. Configure the network in Cloud Hypervisor
+TAP devices are created and managed automatically by qarax-node. When a VM with a network interface is created, qarax-node creates a TAP device named `qt<vm-id-prefix>n<nic-index>` (e.g. `qt24b6061en0`). The device is deleted when the VM is deleted.
 
 You can verify with:
 ```bash
-# Check TAP devices on the node
-docker compose -f e2e/docker-compose.yml exec qarax-node ip link show | grep tap
+docker compose -f e2e/docker-compose.yml exec qarax-node ip link show type tun
 
-# Check VM network config
 VM_ID=<your-vm-id>
 docker compose -f e2e/docker-compose.yml exec qarax-node \
   curl -s --unix-socket /var/lib/qarax/vms/${VM_ID}.sock \
@@ -65,55 +41,43 @@ docker compose -f e2e/docker-compose.yml exec qarax-node \
 
 ## Common Issues
 
-### No network interface in VM (eth0 missing)
-**Cause**: VM created without a TAP device
-**Solution**: Use the updated scripts which auto-create TAP devices
-
-### Empty rootfs with --with-vm
-**Cause**: Rootfs creation failed
-**Solution**: Run `./hack/run_local.sh --cleanup` and retry
-
-### TAP device creation fails
-**Cause**: `/dev/net/tun` not available
-**Solution**:
+### `/dev/net/tun` not found
 ```bash
 sudo modprobe tun
 sudo mkdir -p /dev/net
 sudo mknod /dev/net/tun c 10 200
 sudo chmod 0666 /dev/net/tun
 ```
+Then restart the stack: `./hack/run-local.sh --cleanup && ./hack/run-local.sh`
+
+### VM won't start
+```bash
+docker compose -f e2e/docker-compose.yml logs qarax-node
+curl -s http://localhost:8000/hosts | jq
+```
+
+### Services won't start
+```bash
+./hack/run-local.sh --cleanup
+REBUILD=1 ./hack/run-local.sh
+```
 
 ## Useful Commands
 
-### View VM console
 ```bash
-VM_ID=<your-vm-id>
+# View VM console output
 docker compose -f e2e/docker-compose.yml exec qarax-node \
-  tail -f /var/lib/qarax/vms/${VM_ID}.console.log
-```
+  tail -f /var/lib/qarax/vms/<vm-id>.console.log
 
-### List VMs
-```bash
+# List VMs
 curl -s http://localhost:8000/vms | jq
-```
 
-### Stop a VM
-```bash
+# Stop / delete a VM
 curl -X POST http://localhost:8000/vms/<vm-id>/stop
-```
-
-### Delete a VM
-```bash
 curl -X DELETE http://localhost:8000/vms/<vm-id>
-```
 
-### Check qarax-node logs
-```bash
+# Follow logs
 docker compose -f e2e/docker-compose.yml logs -f qarax-node
-```
-
-### Check qarax control plane logs
-```bash
 docker compose -f e2e/docker-compose.yml logs -f qarax
 ```
 
@@ -122,59 +86,3 @@ docker compose -f e2e/docker-compose.yml logs -f qarax
 Once the stack is running:
 - **Swagger UI**: http://localhost:8000/swagger-ui
 - **OpenAPI JSON**: http://localhost:8000/api-docs/openapi.json
-- **API root**: http://localhost:8000/
-
-## Environment Variables
-
-- `REBUILD=1`: Force rebuild Docker images
-- `SKIP_BUILD=1`: Skip building qarax-node binary
-- `QARAX_API`: Override API URL (default: http://localhost:8000)
-
-## Script Details
-
-### run_local.sh
-Main script that:
-- Builds Docker images
-- Starts postgres, qarax, qarax-node
-- Registers the host
-- Optionally creates and starts a VM
-
-Flags:
-- `--with-vm`: Create and start an example VM (builds Alpine rootfs with SSH on first run)
-- `--cleanup`: Stop and remove everything
-
-### create-test-vm.sh
-Simple standalone script to create a VM with networking. Useful for:
-- Testing VM creation
-- Creating multiple VMs
-- Understanding the VM creation flow
-
-## Troubleshooting
-
-### Services won't start
-```bash
-# Check Docker is running
-docker ps
-
-# Check logs
-docker compose -f e2e/docker-compose.yml logs
-
-# Rebuild from scratch
-./hack/run_local.sh --cleanup
-REBUILD=1 ./hack/run_local.sh
-```
-
-### VM won't start
-```bash
-# Check qarax-node logs
-docker compose -f e2e/docker-compose.yml logs qarax-node
-
-# Verify host is registered and up
-curl -s http://localhost:8000/hosts | jq
-```
-
-### Can't connect to qarax-node
-```bash
-# From qarax container
-docker compose -f e2e/docker-compose.yml exec qarax nc -zv qarax-node 50051
-```

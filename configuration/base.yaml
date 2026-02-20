@@ -3,8 +3,8 @@ application:
 database:
   host: "localhost"
   port: 5432
-  username: "postgres"
-  password: "password"
+  username: "qarax"
+  password: "qarax"
   database_name: "qarax"
   max_connections: 10
 vm_defaults:
