@@ -169,6 +169,8 @@ jobs:
             exit 1
           fi
 
+          bash setup_host.sh
+
           # Install Python dependencies and run tests
           uv sync --frozen
           uv run pytest test_vm_lifecycle.py -v

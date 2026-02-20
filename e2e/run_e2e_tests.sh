@@ -103,6 +103,9 @@ echo -e "${YELLOW}Service status:${NC}"
 docker-compose ps
 echo ""
 
+bash "$(dirname "$0")/setup_host.sh"
+echo ""
+
 # Setup Python environment with uv
 echo -e "${YELLOW}Installing test dependencies...${NC}"
 uv sync --frozen

@@ -9,6 +9,7 @@ These tests verify the full VM lifecycle with real Cloud Hypervisor VMs:
 - Stopping the VM
 - Deleting the VM
 """
+
 import asyncio
 import os
 import time
@@ -41,7 +42,9 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
-async def wait_for_status(client, vm_id: str, expected_status: VmStatus, timeout: int = VM_OPERATION_TIMEOUT):
+async def wait_for_status(
+    client, vm_id: str, expected_status: VmStatus, timeout: int = VM_OPERATION_TIMEOUT
+):
     """Wait for a VM to reach the expected status."""
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -49,10 +52,12 @@ async def wait_for_status(client, vm_id: str, expected_status: VmStatus, timeout
         if vm.status == expected_status:
             return vm
         await asyncio.sleep(0.5)
-    
+
     # Get final state for error message
     vm = await get_vm.asyncio(client=client, vm_id=vm_id)
-    raise TimeoutError(f"VM {vm_id} did not reach status {expected_status} within {timeout}s. Current status: {vm.status}")
+    raise TimeoutError(
+        f"VM {vm_id} did not reach status {expected_status} within {timeout}s. Current status: {vm.status}"
+    )
 
 
 @pytest.mark.asyncio
@@ -228,7 +233,9 @@ async def test_vm_start_stop_cycle(client):
                 # Start
                 await start_vm.asyncio(client=c, vm_id=vm_id_str)
                 vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
-                assert vm.status == VmStatus.RUNNING, f"Cycle {i}: Expected RUNNING after start"
+                assert vm.status == VmStatus.RUNNING, (
+                    f"Cycle {i}: Expected RUNNING after start"
+                )
 
                 # Small delay
                 await asyncio.sleep(0.5)
@@ -236,7 +243,9 @@ async def test_vm_start_stop_cycle(client):
                 # Stop
                 await stop_vm.asyncio(client=c, vm_id=vm_id_str)
                 vm = await get_vm.asyncio(client=c, vm_id=vm_id_str)
-                assert vm.status == VmStatus.SHUTDOWN, f"Cycle {i}: Expected SHUTDOWN after stop"
+                assert vm.status == VmStatus.SHUTDOWN, (
+                    f"Cycle {i}: Expected SHUTDOWN after stop"
+                )
 
         finally:
             await delete_vm.asyncio(client=c, vm_id=vm_id_str)
