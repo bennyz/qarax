@@ -113,14 +113,15 @@ if [[ $WITH_VM -eq 1 ]]; then
     cat > /tmp/build-rootfs-$$.sh << 'ROOTFS_SCRIPT'
 #!/bin/sh
 set -e
-apk add --no-cache e2fsprogs wget >/dev/null 2>&1
+apk add --no-cache e2fsprogs wget util-linux >/dev/null 2>&1
 echo "Creating 1GB rootfs image..."
 dd if=/dev/zero of=/output/rootfs.img bs=1M count=1024
 echo "Formatting with ext4..."
 mkfs.ext4 -F /output/rootfs.img
 echo "Mounting rootfs..."
 mkdir -p /mnt/rootfs
-mount -o loop /output/rootfs.img /mnt/rootfs
+LOOP=$(losetup --find --show /output/rootfs.img)
+mount "$LOOP" /mnt/rootfs
 echo "Installing Alpine Linux..."
 ALPINE_VERSION="3.19"
 wget -q -O /tmp/alpine.tar.gz \
@@ -159,6 +160,7 @@ cat > /mnt/rootfs/etc/fstab << 'FSTAB_EOF'
 FSTAB_EOF
 echo "Rootfs setup complete"
 umount /mnt/rootfs
+losetup -d "$LOOP"
 chmod 666 /output/rootfs.img
 ls -lh /output/rootfs.img
 ROOTFS_SCRIPT
@@ -238,7 +240,7 @@ else
   echo "$host_resp" | head -n -1
 fi
 
-# Set host status to "up" so GET /hosts shows it as up (VM ops use configured node either way)
+# Set host status to "up" so the scheduler can pick this host for VM operations
 host_id=$(curl -s http://localhost:8000/hosts | sed -n 's/.*"id":"\([^"]*\)","name":"local-node".*/\1/p')
 if [[ -n "$host_id" ]]; then
   curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \

@@ -7,9 +7,6 @@ database:
   password: "password"
   database_name: "qarax"
   max_connections: 10
-qarax_node:
-  host: "localhost"
-  port: 50051
 vm_defaults:
   kernel: "/var/lib/qarax/images/vmlinux"
   initramfs: "/var/lib/qarax/images/test-initramfs.gz"

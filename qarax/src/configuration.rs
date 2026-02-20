@@ -9,18 +9,6 @@ pub struct ApplicationSettings {
     pub host: String,
 }
 
-#[derive(serde::Deserialize, Debug)]
-pub struct QaraxNodeSettings {
-    pub host: String,
-    pub port: u16,
-}
-
-impl QaraxNodeSettings {
-    pub fn address(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-}
-
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct VmDefaultsSettings {
     pub kernel: String,
@@ -32,7 +20,6 @@ pub struct VmDefaultsSettings {
 pub struct Settings {
     pub database: DatabaseSettings,
     pub application: ApplicationSettings,
-    pub qarax_node: QaraxNodeSettings,
     pub vm_defaults: VmDefaultsSettings,
 }
 
@@ -99,9 +86,6 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         .add_source(config::File::from(
             configuration_directory.join(environment_filename),
         ))
-        // Override qarax_node from environment variable if set
-        .set_override_option("qarax_node.host", std::env::var("QARAX_NODE_HOST").ok())?
-        .set_override_option("qarax_node.port", std::env::var("QARAX_NODE_PORT").ok())?
         // Override database settings from environment variables if set
         .set_override_option("database.host", std::env::var("DATABASE_HOST").ok())?
         .set_override_option("database.port", std::env::var("DATABASE_PORT").ok())?

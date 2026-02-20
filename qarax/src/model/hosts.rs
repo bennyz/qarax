@@ -121,19 +121,43 @@ pub async fn update_status(pool: &PgPool, id: Uuid, status: HostStatus) -> Resul
     Ok(())
 }
 
-/// Returns the host id for a host with the given address and port, if any.
-pub async fn id_by_address_and_port(
-    pool: &PgPool,
-    address: &str,
-    port: i32,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    let row = sqlx::query("SELECT id FROM hosts WHERE address = $1 AND port = $2")
-        .bind(address)
-        .bind(port)
-        .fetch_optional(pool)
-        .await?;
+/// Returns a host by id, if it exists.
+pub async fn get_by_id(pool: &PgPool, host_id: Uuid) -> Result<Option<Host>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT id, name, address, port, host_user, password, status FROM hosts WHERE id = $1",
+    )
+    .bind(host_id)
+    .fetch_optional(pool)
+    .await?;
 
-    Ok(row.map(|r| r.get::<Uuid, _>("id")))
+    Ok(row.map(|r| Host {
+        id: r.get("id"),
+        name: r.get("name"),
+        address: r.get("address"),
+        port: r.get("port"),
+        host_user: r.get("host_user"),
+        password: r.get("password"),
+        status: r.get("status"),
+    }))
+}
+
+/// Pick a random UP host for VM scheduling.
+pub async fn pick_up_host(pool: &PgPool) -> Result<Option<Host>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT id, name, address, port, host_user, password, status FROM hosts WHERE status = 'UP' ORDER BY RANDOM() LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| Host {
+        id: r.get("id"),
+        name: r.get("name"),
+        address: r.get("address"),
+        port: r.get("port"),
+        host_user: r.get("host_user"),
+        password: r.get("password"),
+        status: r.get("status"),
+    }))
 }
 
 // TODO: figure out how to not fetch the entire host. Maybe with SELECT exists()?
