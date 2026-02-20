@@ -40,12 +40,22 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Build qarax-node binary if needed
+# Build qarax-node binary if needed (Linux musl binary for Docker)
+MUSL_TARGET="x86_64-unknown-linux-musl"
+NODE_BINARY="../target/${MUSL_TARGET}/release/qarax-node"
 if [ -z "$SKIP_BUILD" ]; then
-    if [ -n "$REBUILD" ] || [ ! -f ../target/x86_64-unknown-linux-musl/release/qarax-node ]; then
+    if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ]; then
         echo -e "${YELLOW}Building qarax-node binary...${NC}"
         cd ..
-        cargo build --release -p qarax-node
+        if [ "$(uname -s)" = "Darwin" ]; then
+            if ! command -v cross &>/dev/null; then
+                echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
+                exit 1
+            fi
+            cross build --target "${MUSL_TARGET}" --release -p qarax-node
+        else
+            cargo build --release -p qarax-node
+        fi
         cd e2e
     else
         echo -e "${GREEN}Using existing qarax-node binary${NC}"

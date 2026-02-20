@@ -133,21 +133,21 @@ pub fn app(env: App) -> Router {
 fn hosts() -> Router {
     Router::new()
         .route("/hosts", get(host::handler::list).post(host::handler::add))
-        .route("/hosts/:host_id", patch(host::handler::update))
+        .route("/hosts/{host_id}", patch(host::handler::update))
 }
 
 fn vms() -> Router {
     Router::new()
         .route("/vms", get(vm::handler::list).post(vm::handler::create))
         .route(
-            "/vms/:vm_id",
+            "/vms/{vm_id}",
             get(vm::handler::get).delete(vm::handler::delete),
         )
-        .route("/vms/:vm_id/start", post(vm::handler::start))
-        .route("/vms/:vm_id/stop", post(vm::handler::stop))
-        .route("/vms/:vm_id/pause", post(vm::handler::pause))
-        .route("/vms/:vm_id/resume", post(vm::handler::resume))
-        .route("/vms/:vm_id/metrics", get(vm::handler::metrics))
+        .route("/vms/{vm_id}/start", post(vm::handler::start))
+        .route("/vms/{vm_id}/stop", post(vm::handler::stop))
+        .route("/vms/{vm_id}/pause", post(vm::handler::pause))
+        .route("/vms/{vm_id}/resume", post(vm::handler::resume))
+        .route("/vms/{vm_id}/metrics", get(vm::handler::metrics))
 }
 
 fn storage_objects() -> Router {
@@ -157,7 +157,7 @@ fn storage_objects() -> Router {
             get(storage_object::handler::list).post(storage_object::handler::create),
         )
         .route(
-            "/storage-objects/:object_id",
+            "/storage-objects/{object_id}",
             get(storage_object::handler::get).delete(storage_object::handler::delete),
         )
 }
@@ -169,7 +169,7 @@ fn storage_pools() -> Router {
             get(storage_pool::handler::list).post(storage_pool::handler::create),
         )
         .route(
-            "/storage-pools/:pool_id",
+            "/storage-pools/{pool_id}",
             get(storage_pool::handler::get).delete(storage_pool::handler::delete),
         )
 }
@@ -181,7 +181,7 @@ fn boot_sources() -> Router {
             get(boot_source::handler::list).post(boot_source::handler::create),
         )
         .route(
-            "/boot-sources/:boot_source_id",
+            "/boot-sources/{boot_source_id}",
             get(boot_source::handler::get).delete(boot_source::handler::delete),
         )
 }
