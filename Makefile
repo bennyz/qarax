@@ -1,4 +1,4 @@
-.PHONY: build test test-deps clean openapi sdk help lint fmt ruff-check ruff-fmt appliance-build appliance-push
+.PHONY: build test test-deps clean openapi sdk help lint fmt shfmt ruff-check ruff-fmt appliance-build appliance-push
 
 # On macOS, override default musl target (linker fails cross-compiling from Mac)
 UNAME_S := $(shell uname -s)
@@ -23,7 +23,7 @@ help:
 	@echo "  make test-deps  - Start Postgres in Docker for tests"
 	@echo "  make clean      - Clean build artifacts"
 	@echo "  make lint       - Run cargo clippy (lint)"
-	@echo "  make fmt        - Run cargo fmt (format)"
+	@echo "  make fmt        - Run cargo fmt + shfmt (format)"
 	@echo "  make ruff-check - Run ruff check on Python SDK"
 	@echo "  make ruff-fmt   - Run ruff format on Python SDK"
 	@echo "  make appliance-build - Build bootc appliance image locally"
@@ -71,8 +71,11 @@ clean:
 lint:
 	cargo clippy -- -D warnings
 
-fmt:
+fmt: shfmt
 	cargo fmt
+
+shfmt:
+	shfmt -w -i 0 hack/*.sh scripts/*.sh
 
 ruff-check:
 	@cd python-sdk && ruff check .

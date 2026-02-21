@@ -32,50 +32,50 @@ NC='\033[0m'
 
 WITH_VM=0
 for arg in "$@"; do
-  case $arg in
-    --with-vm)
-      WITH_VM=1
-      shift
-      ;;
-    --cleanup)
-      echo "===== Qarax local cleanup ====="
-      cd "${REPO_ROOT}/e2e"
-      echo -e "${YELLOW}Stopping and removing stack (postgres, qarax, qarax-node) and volumes...${NC}"
-      docker compose down -v
-      # Clean up local test images if they exist
-      if [[ -d "${REPO_ROOT}/e2e/local-test-images" ]]; then
-        echo -e "${YELLOW}Removing local test kernel/initramfs/rootfs...${NC}"
-        rm -rf "${REPO_ROOT}/e2e/local-test-images"
-      fi
-      echo -e "${GREEN}Done.${NC}"
-      exit 0
-      ;;
-  esac
+	case $arg in
+	--with-vm)
+		WITH_VM=1
+		shift
+		;;
+	--cleanup)
+		echo "===== Qarax local cleanup ====="
+		cd "${REPO_ROOT}/e2e"
+		echo -e "${YELLOW}Stopping and removing stack (postgres, qarax, qarax-node) and volumes...${NC}"
+		docker compose down -v
+		# Clean up local test images if they exist
+		if [[ -d "${REPO_ROOT}/e2e/local-test-images" ]]; then
+			echo -e "${YELLOW}Removing local test kernel/initramfs/rootfs...${NC}"
+			rm -rf "${REPO_ROOT}/e2e/local-test-images"
+		fi
+		echo -e "${GREEN}Done.${NC}"
+		exit 0
+		;;
+	esac
 done
 
 echo "===== Qarax local run (Docker stack) ====="
 
 # Preflight
 if ! command -v docker &>/dev/null; then
-  echo -e "${RED}Docker is required. Install Docker and try again.${NC}"
-  exit 1
+	echo -e "${RED}Docker is required. Install Docker and try again.${NC}"
+	exit 1
 fi
 
 if [[ ! -e /dev/kvm ]]; then
-  echo -e "${RED}/dev/kvm not found.${NC}"
-  echo "qarax-node needs KVM to run VMs. Options:"
-  echo "  - Run on a Linux host with KVM (e.g. Intel VT-x / AMD-V)"
-  echo "  - Use a VM with nested virtualization and /dev/kvm exposed"
-  exit 1
+	echo -e "${RED}/dev/kvm not found.${NC}"
+	echo "qarax-node needs KVM to run VMs. Options:"
+	echo "  - Run on a Linux host with KVM (e.g. Intel VT-x / AMD-V)"
+	echo "  - Use a VM with nested virtualization and /dev/kvm exposed"
+	exit 1
 fi
 
 if [[ ! -e /dev/net/tun ]]; then
-  echo -e "${YELLOW}Warning: /dev/net/tun not found on host.${NC}"
-  echo "VMs with network interfaces will fail to start (virtio-net needs it)."
-  echo "Create it on the host, then recreate the stack:"
-  echo "  sudo modprobe tun && sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 0666 /dev/net/tun"
-  echo "  ./hack/run-local.sh --cleanup && ./hack/run-local.sh"
-  echo ""
+	echo -e "${YELLOW}Warning: /dev/net/tun not found on host.${NC}"
+	echo "VMs with network interfaces will fail to start (virtio-net needs it)."
+	echo "Create it on the host, then recreate the stack:"
+	echo "  sudo modprobe tun && sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 0666 /dev/net/tun"
+	echo "  ./hack/run-local.sh --cleanup && ./hack/run-local.sh"
+	echo ""
 fi
 
 # Build qarax-node binary for the node container (same as E2E)
@@ -84,42 +84,42 @@ MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-node"
 QARAX_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
 if [[ -z "${SKIP_BUILD}" ]]; then
-  if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
-    echo -e "${YELLOW}Building qarax and qarax-node (release, musl)...${NC}"
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-      if ! command -v cross &>/dev/null; then
-        echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
-        exit 1
-      fi
-      cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node
-    else
-      cargo build --release -p qarax -p qarax-node
-    fi
-  else
-    echo -e "${GREEN}Using existing binaries${NC}"
-  fi
+	if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
+		echo -e "${YELLOW}Building qarax and qarax-node (release, musl)...${NC}"
+		if [[ "$(uname -s)" == "Darwin" ]]; then
+			if ! command -v cross &>/dev/null; then
+				echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
+				exit 1
+			fi
+			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node
+		else
+			cargo build --release -p qarax -p qarax-node
+		fi
+	else
+		echo -e "${GREEN}Using existing binaries${NC}"
+	fi
 else
-  if [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
-    echo -e "${RED}SKIP_BUILD=1 but binaries not found. Build first or remove SKIP_BUILD.${NC}"
-    exit 1
-  fi
-  echo -e "${YELLOW}Skipping build (SKIP_BUILD=1)${NC}"
+	if [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
+		echo -e "${RED}SKIP_BUILD=1 but binaries not found. Build first or remove SKIP_BUILD.${NC}"
+		exit 1
+	fi
+	echo -e "${YELLOW}Skipping build (SKIP_BUILD=1)${NC}"
 fi
 
 # Build rootfs before starting the stack (if --with-vm)
 BOOT_IMAGES_DIR=""
 export PRODUCTION_ROOTFS=""
 if [[ $WITH_VM -eq 1 ]]; then
-  BOOT_IMAGES_DIR="${REPO_ROOT}/e2e/local-test-images"
-  ROOTFS_IMG="${BOOT_IMAGES_DIR}/rootfs.img"
+	BOOT_IMAGES_DIR="${REPO_ROOT}/e2e/local-test-images"
+	ROOTFS_IMG="${BOOT_IMAGES_DIR}/rootfs.img"
 
-  if [[ -f "$ROOTFS_IMG" ]]; then
-    echo -e "${GREEN}Using existing rootfs: $ROOTFS_IMG${NC}"
-  else
-    mkdir -p "$BOOT_IMAGES_DIR"
-    echo -e "${YELLOW}Building Alpine Linux rootfs with SSH (this takes a few minutes)...${NC}"
+	if [[ -f "$ROOTFS_IMG" ]]; then
+		echo -e "${GREEN}Using existing rootfs: $ROOTFS_IMG${NC}"
+	else
+		mkdir -p "$BOOT_IMAGES_DIR"
+		echo -e "${YELLOW}Building Alpine Linux rootfs with SSH (this takes a few minutes)...${NC}"
 
-    cat > /tmp/build-rootfs-$$.sh << 'ROOTFS_SCRIPT'
+		cat >/tmp/build-rootfs-$$.sh <<'ROOTFS_SCRIPT'
 #!/bin/sh
 set -e
 apk add --no-cache e2fsprogs wget util-linux >/dev/null 2>&1
@@ -174,17 +174,23 @@ chmod 666 /output/rootfs.img
 ls -lh /output/rootfs.img
 ROOTFS_SCRIPT
 
-    chmod +x /tmp/build-rootfs-$$.sh
-    docker run --rm --privileged \
-      -v "${BOOT_IMAGES_DIR}:/output" \
-      -v "/tmp/build-rootfs-$$.sh:/build-rootfs.sh:ro" \
-      alpine:3.19 sh /build-rootfs.sh
-    rm -f /tmp/build-rootfs-$$.sh
-    echo -e "${GREEN}Rootfs built: $ROOTFS_IMG${NC}"
-  fi
+		chmod +x /tmp/build-rootfs-$$.sh
+		LOOP_DEVICES=()
+		[[ -e /dev/loop-control ]] && LOOP_DEVICES+=(--device /dev/loop-control)
+		for ld in /dev/loop[0-9]*; do
+			[[ -e "$ld" ]] && LOOP_DEVICES+=("--device=$ld")
+		done
+		docker run --rm --privileged \
+			"${LOOP_DEVICES[@]}" \
+			-v "${BOOT_IMAGES_DIR}:/output" \
+			-v "/tmp/build-rootfs-$$.sh:/build-rootfs.sh:ro" \
+			alpine:3.19 sh /build-rootfs.sh
+		rm -f /tmp/build-rootfs-$$.sh
+		echo -e "${GREEN}Rootfs built: $ROOTFS_IMG${NC}"
+	fi
 
-  export PRODUCTION_IMAGES_DIR="$BOOT_IMAGES_DIR"
-  export PRODUCTION_ROOTFS="/var/lib/qarax/production-images/rootfs.img"
+	export PRODUCTION_IMAGES_DIR="$BOOT_IMAGES_DIR"
+	export PRODUCTION_ROOTFS="/var/lib/qarax/production-images/rootfs.img"
 fi
 
 # Start stack (postgres + qarax + qarax-node)
@@ -192,7 +198,7 @@ echo -e "${YELLOW}Starting Docker stack...${NC}"
 cd "${REPO_ROOT}/e2e"
 
 if [[ -n "${REBUILD}" ]]; then
-  docker compose build --no-cache
+	docker compose build --no-cache
 fi
 docker compose up -d --build
 # Recreate to pick up any environment variable changes
@@ -203,52 +209,52 @@ echo -e "${YELLOW}Waiting for services to be healthy...${NC}"
 timeout=90
 elapsed=0
 while [[ $elapsed -lt $timeout ]]; do
-  healthy_count=$(docker compose ps 2>/dev/null | grep -c '(healthy)' || echo "0")
-  total_services=3
+	healthy_count=$(docker compose ps 2>/dev/null | grep -c '(healthy)' || echo "0")
+	total_services=3
 
-  if [[ "$healthy_count" -ge "$total_services" ]]; then
-    echo ""
-    echo -e "${GREEN}All services are healthy.${NC}"
-    break
-  fi
+	if [[ "$healthy_count" -ge "$total_services" ]]; then
+		echo ""
+		echo -e "${GREEN}All services are healthy.${NC}"
+		break
+	fi
 
-  if docker compose ps 2>/dev/null | grep -q "Exit"; then
-    echo ""
-    echo -e "${RED}A service has failed.${NC}"
-    docker compose ps
-    docker compose logs --tail=80
-    exit 1
-  fi
+	if docker compose ps 2>/dev/null | grep -q "Exit"; then
+		echo ""
+		echo -e "${RED}A service has failed.${NC}"
+		docker compose ps
+		docker compose logs --tail=80
+		exit 1
+	fi
 
-  echo -n "."
-  sleep 2
-  elapsed=$((elapsed + 2))
+	echo -n "."
+	sleep 2
+	elapsed=$((elapsed + 2))
 done
 
 if [[ $elapsed -ge $timeout ]]; then
-  echo ""
-  echo -e "${RED}Timeout waiting for services.${NC}"
-  docker compose ps
-  docker compose logs --tail=80
-  exit 1
+	echo ""
+	echo -e "${RED}Timeout waiting for services.${NC}"
+	docker compose ps
+	docker compose logs --tail=80
+	exit 1
 fi
 
 # Create and start a VM if --with-vm flag is set
 if [[ $WITH_VM -eq 1 ]]; then
-  echo ""
-  echo -e "${YELLOW}Creating example VM with boot source...${NC}"
+	echo ""
+	echo -e "${YELLOW}Creating example VM with boot source...${NC}"
 
-  # Build initramfs: loads virtio_net modules then switch_roots into Alpine on /dev/vda
-  # (virtio_blk is built-in so /dev/vda is available at boot without modules)
-  INITRAMFS_GZ="${REPO_ROOT}/e2e/local-test-images/boot-initramfs.gz"
-  if [[ ! -f "$INITRAMFS_GZ" ]]; then
-    echo -e "${YELLOW}Building boot initramfs...${NC}"
-    KERNEL_VERSION=$(docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node ls /lib/modules/ | head -1 | tr -d '\r')
-    MODULE_DIR="/tmp/qarax-mods-$$"
-    mkdir -p "$MODULE_DIR"
+	# Build initramfs: loads virtio_net modules then switch_roots into Alpine on /dev/vda
+	# (virtio_blk is built-in so /dev/vda is available at boot without modules)
+	INITRAMFS_GZ="${REPO_ROOT}/e2e/local-test-images/boot-initramfs.gz"
+	if [[ ! -f "$INITRAMFS_GZ" ]]; then
+		echo -e "${YELLOW}Building boot initramfs...${NC}"
+		KERNEL_VERSION=$(docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node ls /lib/modules/ | head -1 | tr -d '\r')
+		MODULE_DIR="/tmp/qarax-mods-$$"
+		mkdir -p "$MODULE_DIR"
 
-    # Extract network modules from qarax-node
-    cat > /tmp/get-mods-$$.sh << GETMODS
+		# Extract network modules from qarax-node
+		cat >/tmp/get-mods-$$.sh <<GETMODS
 #!/bin/sh
 set -e
 mkdir -p /tmp/mods
@@ -262,14 +268,14 @@ for name in failover net_failover virtio_net; do
 done
 ls /tmp/mods/
 GETMODS
-    chmod +x /tmp/get-mods-$$.sh
-    docker cp /tmp/get-mods-$$.sh e2e-qarax-node-1:/tmp/get-mods.sh
-    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node /tmp/get-mods.sh
-    docker cp e2e-qarax-node-1:/tmp/mods/. "$MODULE_DIR/"
+		chmod +x /tmp/get-mods-$$.sh
+		docker cp /tmp/get-mods-$$.sh e2e-qarax-node-1:/tmp/get-mods.sh
+		docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node /tmp/get-mods.sh
+		docker cp e2e-qarax-node-1:/tmp/mods/. "$MODULE_DIR/"
 
-    # Build the initramfs inside the qarax-node container (uses Fedora busybox)
-    docker cp "$MODULE_DIR/." e2e-qarax-node-1:/tmp/bootmods/
-    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
+		# Build the initramfs inside the qarax-node container (uses Fedora busybox)
+		docker cp "$MODULE_DIR/." e2e-qarax-node-1:/tmp/bootmods/
+		docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node sh -c '
       set -e
       mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot /tmp/initrd/lib/modules
       cp /usr/sbin/busybox /tmp/initrd/bin/busybox
@@ -296,159 +302,159 @@ INIT
       cd /tmp/initrd && find . | cpio -o -H newc 2>/dev/null | gzip > /var/lib/qarax/production-images/boot-initramfs.gz
       echo "Initramfs built: $(ls -lh /var/lib/qarax/production-images/boot-initramfs.gz | awk '"'"'{print $5}'"'"')"
     '
-    rm -f /tmp/get-mods-$$.sh
-    rm -rf "$MODULE_DIR"
-    echo -e "${GREEN}Boot initramfs built.${NC}"
-  else
-    echo -e "${GREEN}Using existing boot initramfs.${NC}"
-  fi
+		rm -f /tmp/get-mods-$$.sh
+		rm -rf "$MODULE_DIR"
+		echo -e "${GREEN}Boot initramfs built.${NC}"
+	else
+		echo -e "${GREEN}Using existing boot initramfs.${NC}"
+	fi
 
-  KERNEL_PATH="/var/lib/qarax/images/vmlinux"
-  INITRAMFS_PATH="/var/lib/qarax/production-images/boot-initramfs.gz"
-  CMDLINE="console=ttyS0"
+	KERNEL_PATH="/var/lib/qarax/images/vmlinux"
+	INITRAMFS_PATH="/var/lib/qarax/production-images/boot-initramfs.gz"
+	CMDLINE="console=ttyS0"
 
-  # Use Python script for all API interactions:
-  # host registration, storage pool, transfers, boot source, VM create+start
-  echo -e "${YELLOW}Setting up resources via API...${NC}"
-  setup_output=$(python3 "${REPO_ROOT}/hack/setup_vm.py" \
-    --kernel-path "$KERNEL_PATH" \
-    --initramfs-path "$INITRAMFS_PATH" \
-    --cmdline "$CMDLINE")
+	# Use Python script for all API interactions:
+	# host registration, storage pool, transfers, boot source, VM create+start
+	echo -e "${YELLOW}Setting up resources via API...${NC}"
+	setup_output=$(python3 "${REPO_ROOT}/hack/setup_vm.py" \
+		--kernel-path "$KERNEL_PATH" \
+		--initramfs-path "$INITRAMFS_PATH" \
+		--cmdline "$CMDLINE")
 
-  # Parse key=value output from setup_vm.py
-  eval "$setup_output"
+	# Parse key=value output from setup_vm.py
+	eval "$setup_output"
 
-  if [[ -n "$VM_ID" ]]; then
-    vm_id="$VM_ID"
+	if [[ -n "$VM_ID" ]]; then
+		vm_id="$VM_ID"
 
-    # Assign the host-side IP on the qarax-node-managed TAP device.
-    # qarax-node creates TAP devices with a deterministic name:
-    # "qt" + first 8 hex chars of VM UUID (no dashes) + "n" + NIC index.
-    tap_name="qt$(echo "${vm_id}" | tr -d '-' | cut -c1-8)n0"
-    echo -e "${YELLOW}Configuring host network for SSH access (${tap_name})...${NC}"
-    docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node \
-      ip addr add 192.168.100.1/24 dev "${tap_name}" 2>/dev/null || true
+		# Assign the host-side IP on the qarax-node-managed TAP device.
+		# qarax-node creates TAP devices with a deterministic name:
+		# "qt" + first 8 hex chars of VM UUID (no dashes) + "n" + NIC index.
+		tap_name="qt$(echo "${vm_id}" | tr -d '-' | cut -c1-8)n0"
+		echo -e "${YELLOW}Configuring host network for SSH access (${tap_name})...${NC}"
+		docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node \
+			ip addr add 192.168.100.1/24 dev "${tap_name}" 2>/dev/null || true
 
-    # Wait for VM SSH to become available (static IP: 192.168.100.2)
-    echo -e "${YELLOW}Waiting for VM SSH to become available...${NC}"
-    ssh_ready=0
-    timeout=60
-    elapsed=0
-    while [[ $elapsed -lt $timeout ]]; do
-      sleep 2
-      elapsed=$((elapsed + 2))
-      if docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node nc -z -w1 192.168.100.2 22 2>/dev/null; then
-        ssh_ready=1
-        echo -e "${GREEN}VM SSH is ready!${NC}"
-        break
-      fi
-      if [[ $((elapsed % 10)) -eq 0 ]]; then
-        echo -e "${YELLOW}  Still waiting... (${elapsed}s / ${timeout}s)${NC}"
-      fi
-    done
-    if [[ $ssh_ready -eq 0 ]]; then
-      echo -e "${YELLOW}SSH not ready yet - VM may still be booting${NC}"
-    fi
+		# Wait for VM SSH to become available (static IP: 192.168.100.2)
+		echo -e "${YELLOW}Waiting for VM SSH to become available...${NC}"
+		ssh_ready=0
+		timeout=60
+		elapsed=0
+		while [[ $elapsed -lt $timeout ]]; do
+			sleep 2
+			elapsed=$((elapsed + 2))
+			if docker compose -f "${REPO_ROOT}/e2e/docker-compose.yml" exec -T qarax-node nc -z -w1 192.168.100.2 22 2>/dev/null; then
+				ssh_ready=1
+				echo -e "${GREEN}VM SSH is ready!${NC}"
+				break
+			fi
+			if [[ $((elapsed % 10)) -eq 0 ]]; then
+				echo -e "${YELLOW}  Still waiting... (${elapsed}s / ${timeout}s)${NC}"
+			fi
+		done
+		if [[ $ssh_ready -eq 0 ]]; then
+			echo -e "${YELLOW}SSH not ready yet - VM may still be booting${NC}"
+		fi
 
-    # Show VM access info
-    echo ""
-    echo -e "${GREEN}===== Example VM Ready =====${NC}"
-    echo "VM ID: ${vm_id}"
-    echo "Status: running"
-    echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: ${tap_name})"
-    echo "VM IP: 192.168.100.2 (static)"
-    echo ""
-    echo -e "${GREEN}SSH Access:${NC}"
-    echo "  Username: root  |  Password: qarax"
-    echo ""
-    echo "SSH via nc ProxyCommand (from host):"
-    echo "  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='docker compose -f e2e/docker-compose.yml exec -T qarax-node nc %h %p' root@192.168.100.2"
-    echo ""
-    echo "Or open a shell in the node and use nc to verify connectivity:"
-    echo "  docker compose -f e2e/docker-compose.yml exec qarax-node nc -z 192.168.100.2 22 && echo 'SSH port open'"
-    echo ""
-    echo "View VM console output:"
-    echo "  docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/${vm_id}.console.log"
-    echo ""
-    echo "Stop VM:   curl -X POST http://localhost:8000/vms/${vm_id}/stop"
-    echo "Delete VM: curl -X DELETE http://localhost:8000/vms/${vm_id}"
-    echo ""
-  else
-    echo -e "${RED}VM was not created. Check logs above for errors.${NC}"
-  fi
+		# Show VM access info
+		echo ""
+		echo -e "${GREEN}===== Example VM Ready =====${NC}"
+		echo "VM ID: ${vm_id}"
+		echo "Status: running"
+		echo "Network: net0 (MAC: 52:54:00:12:34:56, TAP: ${tap_name})"
+		echo "VM IP: 192.168.100.2 (static)"
+		echo ""
+		echo -e "${GREEN}SSH Access:${NC}"
+		echo "  Username: root  |  Password: qarax"
+		echo ""
+		echo "SSH via nc ProxyCommand (from host):"
+		echo "  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='docker compose -f e2e/docker-compose.yml exec -T qarax-node nc %h %p' root@192.168.100.2"
+		echo ""
+		echo "Or open a shell in the node and use nc to verify connectivity:"
+		echo "  docker compose -f e2e/docker-compose.yml exec qarax-node nc -z 192.168.100.2 22 && echo 'SSH port open'"
+		echo ""
+		echo "View VM console output:"
+		echo "  docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/${vm_id}.console.log"
+		echo ""
+		echo "Stop VM:   curl -X POST http://localhost:8000/vms/${vm_id}/stop"
+		echo "Delete VM: curl -X DELETE http://localhost:8000/vms/${vm_id}"
+		echo ""
+	else
+		echo -e "${RED}VM was not created. Check logs above for errors.${NC}"
+	fi
 else
-  # No --with-vm: just register the host via the Python script (host only, no VM)
-  python3 "${REPO_ROOT}/hack/setup_vm.py" --kernel-path /dev/null 2>&1 | head -0 || true
-  # Simpler: just register host with curl (kept minimal for non-VM case)
-  echo ""
-  echo -e "${YELLOW}Registering host...${NC}"
-  host_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/hosts \
-    -H "Content-Type: application/json" \
-    -d '{"name":"local-node","address":"qarax-node","port":50051,"host_user":"root","password":""}')
-  host_code=$(echo "$host_resp" | tail -n1)
-  if [[ "$host_code" == "201" ]] || [[ "$host_code" == "409" ]]; then
-    echo -e "${GREEN}Host registered.${NC}"
-  fi
-  host_id=$(curl -s http://localhost:8000/hosts | python3 -c "import sys,json; hosts=json.load(sys.stdin); print(next((h['id'] for h in hosts if h['name']=='local-node'),''))" 2>/dev/null)
-  if [[ -n "$host_id" ]]; then
-    curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \
-      -H "Content-Type: application/json" -d '{"status":"up"}' >/dev/null
-    echo -e "${GREEN}Host status set to up.${NC}"
-  fi
+	# No --with-vm: just register the host via the Python script (host only, no VM)
+	python3 "${REPO_ROOT}/hack/setup_vm.py" --kernel-path /dev/null 2>&1 | head -0 || true
+	# Simpler: just register host with curl (kept minimal for non-VM case)
+	echo ""
+	echo -e "${YELLOW}Registering host...${NC}"
+	host_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/hosts \
+		-H "Content-Type: application/json" \
+		-d '{"name":"local-node","address":"qarax-node","port":50051,"host_user":"root","password":""}')
+	host_code=$(echo "$host_resp" | tail -n1)
+	if [[ "$host_code" == "201" ]] || [[ "$host_code" == "409" ]]; then
+		echo -e "${GREEN}Host registered.${NC}"
+	fi
+	host_id=$(curl -s http://localhost:8000/hosts | python3 -c "import sys,json; hosts=json.load(sys.stdin); print(next((h['id'] for h in hosts if h['name']=='local-node'),''))" 2>/dev/null)
+	if [[ -n "$host_id" ]]; then
+		curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \
+			-H "Content-Type: application/json" -d '{"status":"up"}' >/dev/null
+		echo -e "${GREEN}Host status set to up.${NC}"
+	fi
 fi
 
 if [[ $WITH_VM -eq 0 ]]; then
-  # Only show verbose instructions if --with-vm was not used
-  echo ""
-  echo -e "${GREEN}Qarax is running locally.${NC}"
-  echo ""
-  echo -e "${GREEN}✓ Ready to create VMs with networking and SSH access${NC}"
-  echo "  Use: ./hack/run-local.sh --with-vm"
-  echo ""
-  echo "Endpoints:"
-  echo "  API (root):   http://localhost:8000/"
-  echo "  Swagger UI:   http://localhost:8000/swagger-ui"
-  echo "  OpenAPI JSON: http://localhost:8000/api-docs/openapi.json"
-  echo ""
-  echo "Quick try:"
-  echo "  curl -s http://localhost:8000/vms"
-  echo "  curl -s http://localhost:8000/hosts"
-  echo ""
-  echo "Create and start a VM (bash):"
-  echo '  VM_ID=$(curl -s -X POST http://localhost:8000/vms \'
-  echo '    -H "Content-Type: application/json" \'
-  echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' )'
-  echo '  curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
-  echo ""
-  echo "Create and start a VM (fish):"
-  echo '  set VM_ID (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'')'
-  echo '  curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
-  echo ""
-  echo "Create a VM with a network interface (id + optional mac, tap, ip, mask):"
-  echo '  curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" \'
-  echo '    -d '\''{"name":"my-vm-net","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"networks":[{"id":"net0","mac":"52:54:00:12:34:56"}]}'\'''
-  echo ""
-  echo "Useful commands:"
-  echo "  docker compose -f e2e/docker-compose.yml logs -f    # Follow all logs"
-  echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
-  echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
-  echo "  docker compose -f e2e/docker-compose.yml up -d --force-recreate qarax-node  # Apply device/compose changes"
-  echo "  ./hack/run-local.sh --cleanup                        # Stop and remove stack + volumes"
-  echo ""
+	# Only show verbose instructions if --with-vm was not used
+	echo ""
+	echo -e "${GREEN}Qarax is running locally.${NC}"
+	echo ""
+	echo -e "${GREEN}✓ Ready to create VMs with networking and SSH access${NC}"
+	echo "  Use: ./hack/run-local.sh --with-vm"
+	echo ""
+	echo "Endpoints:"
+	echo "  API (root):   http://localhost:8000/"
+	echo "  Swagger UI:   http://localhost:8000/swagger-ui"
+	echo "  OpenAPI JSON: http://localhost:8000/api-docs/openapi.json"
+	echo ""
+	echo "Quick try:"
+	echo "  curl -s http://localhost:8000/vms"
+	echo "  curl -s http://localhost:8000/hosts"
+	echo ""
+	echo "Create and start a VM (bash):"
+	echo '  VM_ID=$(curl -s -X POST http://localhost:8000/vms \'
+	echo '    -H "Content-Type: application/json" \'
+	echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' )'
+	echo '  curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
+	echo ""
+	echo "Create and start a VM (fish):"
+	echo '  set VM_ID (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'')'
+	echo '  curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
+	echo ""
+	echo "Create a VM with a network interface (id + optional mac, tap, ip, mask):"
+	echo '  curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" \'
+	echo '    -d '\''{"name":"my-vm-net","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"networks":[{"id":"net0","mac":"52:54:00:12:34:56"}]}'\'''
+	echo ""
+	echo "Useful commands:"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f    # Follow all logs"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
+	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
+	echo "  docker compose -f e2e/docker-compose.yml up -d --force-recreate qarax-node  # Apply device/compose changes"
+	echo "  ./hack/run-local.sh --cleanup                        # Stop and remove stack + volumes"
+	echo ""
 else
-  # With --with-vm, show concise summary
-  echo ""
-  echo -e "${GREEN}Qarax stack ready.${NC}"
-  echo ""
-  echo "API:        http://localhost:8000/"
-  echo "Swagger UI: http://localhost:8000/swagger-ui"
-  echo ""
-  echo "Useful commands:"
-  echo "  docker compose -f e2e/docker-compose.yml logs -f qarax"
-  echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
-  echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
-  echo "  docker compose -f e2e/docker-compose.yml exec qarax-node ls -la /var/lib/qarax/vms/"
-  echo ""
-  echo "Cleanup: ./hack/run-local.sh --cleanup"
-  echo ""
+	# With --with-vm, show concise summary
+	echo ""
+	echo -e "${GREEN}Qarax stack ready.${NC}"
+	echo ""
+	echo "API:        http://localhost:8000/"
+	echo "Swagger UI: http://localhost:8000/swagger-ui"
+	echo ""
+	echo "Useful commands:"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
+	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
+	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node ls -la /var/lib/qarax/vms/"
+	echo ""
+	echo "Cleanup: ./hack/run-local.sh --cleanup"
+	echo ""
 fi
