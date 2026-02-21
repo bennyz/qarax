@@ -107,7 +107,7 @@ pub async fn deploy_bootc_host(
     let node_port =
         u16::try_from(host.port).map_err(|_| DeployError::InvalidNodePort(host.port))?;
     let script = build_bootc_script(request);
-    let remote_command = format!("sh -lc {}", shell_single_quote(&script));
+    let remote_command = format!("bash -lc {}", shell_single_quote(&script));
 
     run_ssh_command(host, request, &remote_command, request.reboot()).await?;
 

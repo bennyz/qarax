@@ -61,11 +61,16 @@ RUN systemctl enable qarax-node
 COPY deployments/vm-network.conf /etc/sysctl.d/99-vm-network.conf
 COPY deployments/vm-modules.conf /etc/modules-load.d/vm-modules.conf
 
-# Create necessary directories
-RUN mkdir -p /var/lib/qarax/vms \
-    /var/lib/qarax/images \
-    /var/lib/qarax/disks \
-    /etc/qarax-node
+# Create necessary directories via tmpfiles.d (bootc/ostree preserves /var
+# as a state directory — RUN mkdir only works on first boot, not after
+# bootc switch from a different image).
+RUN printf '%s\n' \
+    'd /var/lib/qarax      0755 root root -' \
+    'd /var/lib/qarax/vms  0755 root root -' \
+    'd /var/lib/qarax/images 0755 root root -' \
+    'd /var/lib/qarax/disks 0755 root root -' \
+    > /etc/tmpfiles.d/qarax.conf && \
+    mkdir -p /etc/qarax-node
 
 # Configure networking for VMs
 # Enable IP forwarding and bridge networking
@@ -84,12 +89,11 @@ RUN echo "kvm" >> /etc/modules-load.d/vm-modules.conf && \
 
 # Image metadata
 LABEL name="qarax-vmm-host" \
-      version="${QARAX_VERSION}" \
-      cloud-hypervisor-version="${CLOUD_HYPERVISOR_VERSION}" \
-      description="bootc image for qarax Virtual Machine Manager hosts" \
-      maintainer="qarax team" \
-      usage="bootc switch quay.io/yourorg/qarax-vmm-host:latest && systemctl reboot"
+    version="${QARAX_VERSION}" \
+    cloud-hypervisor-version="${CLOUD_HYPERVISOR_VERSION}" \
+    description="bootc image for qarax Virtual Machine Manager hosts" \
+    maintainer="qarax team" \
+    usage="bootc switch quay.io/yourorg/qarax-vmm-host:latest && systemctl reboot"
 
-# Health check (optional - for monitoring)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD systemctl is-active qarax-node || exit 1
