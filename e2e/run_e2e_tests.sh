@@ -45,21 +45,22 @@ MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="../target/${MUSL_TARGET}/release/qarax-node"
 if [ -z "$SKIP_BUILD" ]; then
     INIT_BINARY="../target/${MUSL_TARGET}/release/qarax-init"
-    if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ]; then
-        echo -e "${YELLOW}Building qarax-node and qarax-init binaries...${NC}"
+    QARAX_BINARY="../target/${MUSL_TARGET}/release/qarax"
+    if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ] || [ ! -f "$QARAX_BINARY" ]; then
+        echo -e "${YELLOW}Building qarax, qarax-node, and qarax-init binaries...${NC}"
         cd ..
         if [ "$(uname -s)" = "Darwin" ]; then
             if ! command -v cross &>/dev/null; then
                 echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
                 exit 1
             fi
-            cross build --target "${MUSL_TARGET}" --release -p qarax-node -p qarax-init
+            cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init
         else
-            cargo build --release -p qarax-node -p qarax-init
+            cargo build --release -p qarax -p qarax-node -p qarax-init
         fi
         cd e2e
     else
-        echo -e "${GREEN}Using existing qarax-node binary${NC}"
+        echo -e "${GREEN}Using existing binaries${NC}"
         echo -e "${YELLOW}To rebuild, run: REBUILD=1 ./run_e2e_tests.sh${NC}"
     fi
 fi
