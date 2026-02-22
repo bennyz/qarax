@@ -3,3 +3,4 @@
 - generate rust cli
 - shared storage for OCI
 - console access to VMs
+- cross workspace deps update

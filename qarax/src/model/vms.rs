@@ -130,6 +130,7 @@ pub enum Hypervisor {
 #[strum(serialize_all = "snake_case")]
 pub enum VmStatus {
     Unknown,
+    Pending,
     Created,
     Running,
     Paused,
@@ -300,6 +301,15 @@ pub async fn create_tx(
     tx: &mut Transaction<'_, Postgres>,
     vm: &NewVm,
 ) -> Result<Uuid, sqlx::Error> {
+    create_tx_with_status(tx, vm, VmStatus::Created).await
+}
+
+/// Creates a VM row with a specific initial status inside the given transaction.
+pub async fn create_tx_with_status(
+    tx: &mut Transaction<'_, Postgres>,
+    vm: &NewVm,
+    status: VmStatus,
+) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::new_v4();
     let cpu_topology = vm.cpu_topology.as_ref().map(|t| Json(t.clone()));
     let config = Json(&vm.config);
@@ -324,7 +334,7 @@ VALUES (
     )
     .bind(id)
     .bind(&vm.name)
-    .bind(VmStatus::Created)
+    .bind(status)
     .bind(vm.hypervisor.clone())
     .bind(vm.boot_vcpus)
     .bind(vm.max_vcpus)
@@ -373,7 +383,7 @@ SELECT id,
         image_ref,
         config
 FROM vms
-WHERE status NOT IN ('SHUTDOWN', 'UNKNOWN')
+WHERE status NOT IN ('SHUTDOWN', 'UNKNOWN', 'PENDING')
   AND host_id IS NOT NULL
         "#,
     )

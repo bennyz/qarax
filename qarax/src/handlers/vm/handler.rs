@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use axum::{Extension, Json, extract::Path};
+use axum::{Extension, Json, extract::Path, response::IntoResponse};
 use http::StatusCode;
 use serde::Serialize;
 use tracing::instrument;
@@ -13,6 +13,7 @@ use crate::{
     model::{
         boot_sources, hosts,
         hosts::Host,
+        jobs::{self, JobType, NewJob},
         network_interfaces,
         vm_filesystems::{self, NewVmFilesystem},
         vms::{self, NewVm, Vm, VmStatus},
@@ -20,6 +21,12 @@ use crate::{
 };
 
 use super::{ApiResponse, Result};
+
+#[derive(Serialize, ToSchema)]
+pub struct CreateVmResponse {
+    pub vm_id: Uuid,
+    pub job_id: Uuid,
+}
 
 #[derive(Serialize, ToSchema)]
 pub struct VmMetrics {
@@ -97,7 +104,8 @@ pub async fn get(
     path = "/vms",
     request_body = NewVm,
     responses(
-        (status = 201, description = "VM created successfully", body = String),
+        (status = 201, description = "VM created successfully (synchronous)", body = String),
+        (status = 202, description = "VM creation started asynchronously", body = CreateVmResponse),
         (status = 422, description = "Invalid input"),
         (status = 500, description = "Internal server error")
     ),
@@ -107,13 +115,18 @@ pub async fn get(
 pub async fn create(
     Extension(env): Extension<App>,
     Json(vm): Json<NewVm>,
-) -> Result<(StatusCode, String)> {
+) -> Result<axum::response::Response> {
+    // If an OCI image_ref is provided, use the async job path
+    if vm.image_ref.is_some() {
+        return create_with_image(env, vm).await;
+    }
+
+    // Synchronous path (no image_ref)
     let mut tx = env.pool().begin().await?;
     let id = vms::create_tx(&mut tx, &vm).await?;
 
     // Resolve boot source or use defaults
     let (kernel, initramfs, cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
-        // Resolve boot source
         let resolved = boot_sources::resolve(env.pool(), boot_source_id)
             .await
             .map_err(|e| {
@@ -130,7 +143,6 @@ pub async fn create(
             resolved.kernel_params,
         )
     } else {
-        // Fall back to vm_defaults
         let vm_defaults = env.vm_defaults();
         (
             vm_defaults.kernel.clone(),
@@ -143,50 +155,7 @@ pub async fn create(
     let host = pick_host(&env).await?;
     let node_client = NodeClient::new(&host.address, host.port as u16);
 
-    // If an OCI image_ref is provided, pull the image and configure virtiofs
-    let (fs_configs, memory_shared, effective_cmdline, filesystem_record) = if let Some(image_ref) =
-        &vm.image_ref
-    {
-        // Pull (or verify cached) image on the target node
-        let image_info = node_client.pull_image(image_ref).await.map_err(|e| {
-            tracing::error!("Failed to pull OCI image {}: {}", image_ref, e);
-            crate::errors::Error::UnprocessableEntity(format!("Failed to pull OCI image: {}", e))
-        })?;
-
-        // Build the virtiofs socket path (nydusd will be started by qarax-node on CreateVM)
-        // The socket path follows the convention: {runtime_dir}/{vm_id}-fs0.sock
-        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", id);
-
-        let fs_config = FsConfig {
-            tag: "rootfs".to_string(),
-            socket: socket_path,
-            num_queues: 1,
-            queue_size: 1024,
-            pci_segment: None,
-            id: Some("fs0".to_string()),
-            bootstrap_path: Some(image_info.bootstrap_path.clone()),
-        };
-
-        // Override cmdline to mount virtiofs as root, with serial console and custom init
-        let oci_cmdline =
-            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
-
-        let fs_record = NewVmFilesystem {
-            vm_id: id,
-            tag: "rootfs".to_string(),
-            num_queues: Some(1),
-            queue_size: Some(1024),
-            pci_segment: None,
-            image_ref: Some(image_ref.clone()),
-            image_digest: Some(image_info.digest.clone()),
-        };
-
-        (vec![fs_config], true, oci_cmdline, Some(fs_record))
-    } else {
-        (vec![], vm.memory_shared.unwrap_or(false), cmdline, None)
-    };
-
-    // Call qarax-node to create the VM; on failure we return before commit so the insert is rolled back
+    let memory_shared = vm.memory_shared.unwrap_or(false);
     let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
     if let Err(e) = node_client
         .create_vm(CreateVmRequest {
@@ -197,8 +166,8 @@ pub async fn create(
             networks,
             kernel,
             initramfs,
-            cmdline: effective_cmdline,
-            fs_configs,
+            cmdline,
+            fs_configs: vec![],
             memory_shared,
         })
         .await
@@ -217,19 +186,174 @@ pub async fn create(
             .map_err(crate::errors::Error::Sqlx)?;
     }
 
-    // Persist filesystem record if OCI image was specified
-    if let Some(fs_record) = filesystem_record {
-        vm_filesystems::create_tx(&mut tx, &fs_record)
+    tx.commit().await?;
+
+    // Record which host this VM was scheduled onto
+    let _ = vms::update_host_id(env.pool(), id, host.id).await;
+
+    Ok(ApiResponse {
+        data: id.to_string(),
+        code: StatusCode::CREATED,
+    }
+    .into_response())
+}
+
+/// Async path: pull OCI image and create VM in a background job, return 202 immediately.
+async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Response> {
+    let image_ref = vm
+        .image_ref
+        .clone()
+        .expect("image_ref checked before calling");
+
+    // Pick host eagerly so we return 422 immediately if none are UP
+    let host = pick_host(&env).await?;
+
+    // Resolve boot source or use defaults (needed by background task)
+    let (kernel, initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
+        let resolved = boot_sources::resolve(env.pool(), boot_source_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to resolve boot_source_id {}: {}", boot_source_id, e);
+                crate::errors::Error::UnprocessableEntity(format!(
+                    "Invalid boot_source_id: {}",
+                    boot_source_id
+                ))
+            })?;
+        (
+            resolved.kernel_path,
+            resolved.initramfs_path,
+            resolved.kernel_params,
+        )
+    } else {
+        let vm_defaults = env.vm_defaults();
+        (
+            vm_defaults.kernel.clone(),
+            vm_defaults.initramfs.clone(),
+            vm_defaults.cmdline.clone(),
+        )
+    };
+
+    // Create VM row with PENDING status
+    let mut tx = env.pool().begin().await?;
+    let vm_id = vms::create_tx_with_status(&mut tx, &vm, VmStatus::Pending).await?;
+
+    // Store network interfaces in the transaction
+    for net in vm.networks.as_deref().unwrap_or(&[]) {
+        network_interfaces::create(&mut tx, vm_id, net)
             .await
             .map_err(crate::errors::Error::Sqlx)?;
     }
 
     tx.commit().await?;
 
-    // Record which host this VM was scheduled onto
-    let _ = vms::update_host_id(env.pool(), id, host.id).await;
+    // Record host assignment
+    let _ = vms::update_host_id(env.pool(), vm_id, host.id).await;
 
-    Ok((StatusCode::CREATED, id.to_string()))
+    // Create job record
+    let job = jobs::create(
+        env.pool(),
+        NewJob {
+            job_type: JobType::ImagePull,
+            description: Some(format!("Pulling image {}", image_ref)),
+            resource_id: Some(vm_id),
+            resource_type: Some("vm".to_string()),
+        },
+    )
+    .await?;
+    let job_id = job.id;
+
+    // Spawn background task
+    let db_pool = env.pool_arc();
+    let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
+
+    tokio::spawn(async move {
+        tracing::info!(vm_id = %vm_id, job_id = %job_id, image_ref = %image_ref, "Starting async OCI image pull");
+
+        if let Err(e) = jobs::mark_running(&db_pool, job_id).await {
+            tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as running");
+            return;
+        }
+
+        let node_client = NodeClient::new(&host.address, host.port as u16);
+
+        // Step 1: Pull image
+        let image_info = match node_client.pull_image(&image_ref).await {
+            Ok(info) => info,
+            Err(e) => {
+                let msg = format!("Failed to pull OCI image: {}", e);
+                tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+                let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+                let _ = vms::update_status(&db_pool, vm_id, VmStatus::Unknown).await;
+                return;
+            }
+        };
+
+        let _ = jobs::update_progress(&db_pool, job_id, 50).await;
+
+        // Step 2: Create VM on node with virtiofs config
+        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
+        let fs_config = FsConfig {
+            tag: "rootfs".to_string(),
+            socket: socket_path,
+            num_queues: 1,
+            queue_size: 1024,
+            pci_segment: None,
+            id: Some("fs0".to_string()),
+            bootstrap_path: Some(image_info.bootstrap_path.clone()),
+        };
+        let oci_cmdline =
+            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
+
+        if let Err(e) = node_client
+            .create_vm(CreateVmRequest {
+                vm_id,
+                boot_vcpus: vm.boot_vcpus,
+                max_vcpus: vm.max_vcpus,
+                memory_size: vm.memory_size,
+                networks,
+                kernel,
+                initramfs,
+                cmdline: oci_cmdline,
+                fs_configs: vec![fs_config],
+                memory_shared: true,
+            })
+            .await
+        {
+            let msg = format!("Failed to create VM on qarax-node: {}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+            let _ = vms::update_status(&db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
+
+        // Step 3: Persist virtiofs filesystem record
+        let fs_record = NewVmFilesystem {
+            vm_id,
+            tag: "rootfs".to_string(),
+            num_queues: Some(1),
+            queue_size: Some(1024),
+            pci_segment: None,
+            image_ref: Some(image_ref.clone()),
+            image_digest: Some(image_info.digest.clone()),
+        };
+        if let Err(e) = vm_filesystems::create(&db_pool, &fs_record).await {
+            tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist filesystem record");
+        }
+
+        // Mark VM as created and job as completed
+        let _ = vms::update_status(&db_pool, vm_id, VmStatus::Created).await;
+        let result = serde_json::json!({ "digest": image_info.digest });
+        let _ = jobs::mark_completed(&db_pool, job_id, Some(result)).await;
+
+        tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM creation job completed");
+    });
+
+    use axum::response::IntoResponse as _;
+    Ok(ApiResponse {
+        data: CreateVmResponse { vm_id, job_id },
+        code: StatusCode::ACCEPTED,
+    }
+    .into_response())
 }
 
 #[utoipa::path(
@@ -262,6 +386,11 @@ pub async fn start(
         VmStatus::Paused => {
             return Err(crate::errors::Error::UnprocessableEntity(
                 "VM is paused; use POST /vms/{vm_id}/resume instead".into(),
+            ));
+        }
+        VmStatus::Pending => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "VM is pending job completion; wait for the job to finish".into(),
             ));
         }
         VmStatus::Created | VmStatus::Shutdown | VmStatus::Unknown => {

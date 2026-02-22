@@ -77,6 +77,31 @@ ORDER BY tag
     Ok(rows.into_iter().map(|r| r.into()).collect())
 }
 
+pub async fn create(pool: &PgPool, fs: &NewVmFilesystem) -> Result<Uuid, sqlx::Error> {
+    let id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"
+INSERT INTO vm_filesystems (
+    id, vm_id, tag, num_queues, queue_size, pci_segment, image_ref, image_digest
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(id)
+    .bind(fs.vm_id)
+    .bind(&fs.tag)
+    .bind(fs.num_queues.unwrap_or(1))
+    .bind(fs.queue_size.unwrap_or(1024))
+    .bind(fs.pci_segment)
+    .bind(&fs.image_ref)
+    .bind(&fs.image_digest)
+    .execute(pool)
+    .await?;
+
+    Ok(id)
+}
+
 pub async fn create_tx(
     tx: &mut Transaction<'_, Postgres>,
     fs: &NewVmFilesystem,

@@ -207,6 +207,30 @@ paths:
           description: Host not found
         '500':
           description: Internal server error
+  /jobs/{job_id}:
+    get:
+      tags:
+      - jobs
+      operationId: get
+      parameters:
+      - name: job_id
+        in: path
+        description: Job unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          description: Job not found
+        '500':
+          description: Internal server error
   /storage-objects:
     get:
       tags:
@@ -481,11 +505,17 @@ paths:
         required: true
       responses:
         '201':
-          description: VM created successfully
+          description: VM created successfully (synchronous)
           content:
             text/plain:
               schema:
                 type: string
+        '202':
+          description: VM creation started asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateVmResponse'
         '422':
           description: Invalid input
         '500':
@@ -691,6 +721,18 @@ components:
           - 'null'
         name:
           type: string
+    CreateVmResponse:
+      type: object
+      required:
+      - vm_id
+      - job_id
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        vm_id:
+          type: string
+          format: uuid
     DeployHostRequest:
       type: object
       required:
@@ -782,6 +824,72 @@ components:
       - macvtap
       - tap
       - vhost_user
+    Job:
+      type: object
+      required:
+      - id
+      - job_type
+      - status
+      - created_at
+      - updated_at
+      properties:
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        description:
+          type:
+          - string
+          - 'null'
+        error:
+          type:
+          - string
+          - 'null'
+        id:
+          type: string
+          format: uuid
+        job_type:
+          $ref: '#/components/schemas/JobType'
+        progress:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        resource_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        resource_type:
+          type:
+          - string
+          - 'null'
+        result: {}
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        updated_at:
+          type: string
+          format: date-time
+    JobStatus:
+      type: string
+      enum:
+      - pending
+      - running
+      - completed
+      - failed
+    JobType:
+      type: string
+      enum:
+      - image_pull
     NetworkInterface:
       type: object
       required:
@@ -1527,6 +1635,7 @@ components:
       type: string
       enum:
       - unknown
+      - pending
       - created
       - running
       - paused
@@ -1544,3 +1653,5 @@ tags:
   description: Boot source management endpoints
 - name: transfers
   description: File transfer management endpoints
+- name: jobs
+  description: Async job management endpoints
