@@ -1,11 +1,15 @@
 """Contains all the data models used in inputs/outputs"""
 
 from .boot_source import BootSource
+from .create_vm_response import CreateVmResponse
 from .deploy_host_request import DeployHostRequest
 from .host import Host
 from .host_status import HostStatus
 from .hypervisor import Hypervisor
 from .interface_type import InterfaceType
+from .job import Job
+from .job_status import JobStatus
+from .job_type import JobType
 from .network_interface import NetworkInterface
 from .new_boot_source import NewBootSource
 from .new_host import NewHost
@@ -13,6 +17,7 @@ from .new_storage_object import NewStorageObject
 from .new_storage_pool import NewStoragePool
 from .new_transfer import NewTransfer
 from .new_vm import NewVm
+from .new_vm_filesystem import NewVmFilesystem
 from .new_vm_network import NewVmNetwork
 from .rate_limiter_config import RateLimiterConfig
 from .storage_object import StorageObject
@@ -27,6 +32,7 @@ from .transfer_type import TransferType
 from .update_host_request import UpdateHostRequest
 from .vhost_mode import VhostMode
 from .vm import Vm
+from .vm_filesystem import VmFilesystem
 from .vm_metrics import VmMetrics
 from .vm_metrics_counters import VmMetricsCounters
 from .vm_metrics_counters_additional_property import VmMetricsCountersAdditionalProperty
@@ -34,11 +40,15 @@ from .vm_status import VmStatus
 
 __all__ = (
     "BootSource",
+    "CreateVmResponse",
     "DeployHostRequest",
     "Host",
     "HostStatus",
     "Hypervisor",
     "InterfaceType",
+    "Job",
+    "JobStatus",
+    "JobType",
     "NetworkInterface",
     "NewBootSource",
     "NewHost",
@@ -46,6 +56,7 @@ __all__ = (
     "NewStoragePool",
     "NewTransfer",
     "NewVm",
+    "NewVmFilesystem",
     "NewVmNetwork",
     "RateLimiterConfig",
     "StorageObject",
@@ -60,6 +71,7 @@ __all__ = (
     "UpdateHostRequest",
     "VhostMode",
     "Vm",
+    "VmFilesystem",
     "VmMetrics",
     "VmMetricsCounters",
     "VmMetricsCountersAdditionalProperty",

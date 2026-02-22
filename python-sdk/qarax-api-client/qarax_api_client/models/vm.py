@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
@@ -36,6 +35,7 @@ class Vm:
         cpu_topology (Any | Unset):
         description (None | str | Unset):
         host_id (None | Unset | UUID):
+        image_ref (None | str | Unset):
         memory_hotplug_size (int | None | Unset):
         memory_hugepage_size (int | None | Unset):
     """
@@ -58,6 +58,7 @@ class Vm:
     cpu_topology: Any | Unset = UNSET
     description: None | str | Unset = UNSET
     host_id: None | Unset | UUID = UNSET
+    image_ref: None | str | Unset = UNSET
     memory_hotplug_size: int | None | Unset = UNSET
     memory_hugepage_size: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -115,6 +116,12 @@ class Vm:
         else:
             host_id = self.host_id
 
+        image_ref: None | str | Unset
+        if isinstance(self.image_ref, Unset):
+            image_ref = UNSET
+        else:
+            image_ref = self.image_ref
+
         memory_hotplug_size: int | None | Unset
         if isinstance(self.memory_hotplug_size, Unset):
             memory_hotplug_size = UNSET
@@ -155,6 +162,8 @@ class Vm:
             field_dict["description"] = description
         if host_id is not UNSET:
             field_dict["host_id"] = host_id
+        if image_ref is not UNSET:
+            field_dict["image_ref"] = image_ref
         if memory_hotplug_size is not UNSET:
             field_dict["memory_hotplug_size"] = memory_hotplug_size
         if memory_hugepage_size is not UNSET:
@@ -163,7 +172,7 @@ class Vm:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
         boot_vcpus = d.pop("boot_vcpus")
 
@@ -238,6 +247,15 @@ class Vm:
 
         host_id = _parse_host_id(d.pop("host_id", UNSET))
 
+        def _parse_image_ref(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        image_ref = _parse_image_ref(d.pop("image_ref", UNSET))
+
         def _parse_memory_hotplug_size(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -275,6 +293,7 @@ class Vm:
             cpu_topology=cpu_topology,
             description=description,
             host_id=host_id,
+            image_ref=image_ref,
             memory_hotplug_size=memory_hotplug_size,
             memory_hugepage_size=memory_hugepage_size,
         )

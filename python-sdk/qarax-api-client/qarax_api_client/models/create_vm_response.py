@@ -1,43 +1,37 @@
 from __future__ import annotations
 
 from typing import Any, TypeVar
+from uuid import UUID
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.storage_object_type import StorageObjectType
-
-T = TypeVar("T", bound="NewTransfer")
+T = TypeVar("T", bound="CreateVmResponse")
 
 
 @_attrs_define
-class NewTransfer:
+class CreateVmResponse:
     """
     Attributes:
-        name (str):
-        object_type (StorageObjectType):
-        source (str):
+        job_id (UUID):
+        vm_id (UUID):
     """
 
-    name: str
-    object_type: StorageObjectType
-    source: str
+    job_id: UUID
+    vm_id: UUID
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
+        job_id = str(self.job_id)
 
-        object_type = self.object_type.value
-
-        source = self.source
+        vm_id = str(self.vm_id)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
-                "object_type": object_type,
-                "source": source,
+                "job_id": job_id,
+                "vm_id": vm_id,
             }
         )
 
@@ -46,20 +40,17 @@ class NewTransfer:
     @classmethod
     def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
+        job_id = UUID(d.pop("job_id"))
 
-        object_type = StorageObjectType(d.pop("object_type"))
+        vm_id = UUID(d.pop("vm_id"))
 
-        source = d.pop("source")
-
-        new_transfer = cls(
-            name=name,
-            object_type=object_type,
-            source=source,
+        create_vm_response = cls(
+            job_id=job_id,
+            vm_id=vm_id,
         )
 
-        new_transfer.additional_properties = d
-        return new_transfer
+        create_vm_response.additional_properties = d
+        return create_vm_response
 
     @property
     def additional_keys(self) -> list[str]:

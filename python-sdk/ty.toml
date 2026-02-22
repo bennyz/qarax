@@ -1,0 +1,8 @@
+[environment]
+python = "./.venv"
+python-version = "3.12"
+root = [".", "qarax-api-client"]
+
+[analysis]
+# setuptools is only used in the generated setup.py, not our code
+allowed-unresolved-imports = ["setuptools"]

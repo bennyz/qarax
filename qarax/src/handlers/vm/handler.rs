@@ -104,7 +104,7 @@ pub async fn get(
     path = "/vms",
     request_body = NewVm,
     responses(
-        (status = 201, description = "VM created successfully (synchronous)", body = String),
+        (status = 201, description = "VM created successfully (synchronous)", body = String, content_type = "application/json"),
         (status = 202, description = "VM creation started asynchronously", body = CreateVmResponse),
         (status = 422, description = "Invalid input"),
         (status = 500, description = "Internal server error")

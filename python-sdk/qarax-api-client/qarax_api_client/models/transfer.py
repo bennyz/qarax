@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
@@ -156,7 +155,7 @@ class Transfer:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
         id = UUID(d.pop("id"))
 

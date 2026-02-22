@@ -39,12 +39,10 @@ openapi:
 	cargo run $(CARGO_TARGET) -p qarax --bin generate-openapi
 
 sdk: openapi
-	@if ! command -v openapi-python-client >/dev/null 2>&1; then \
-		echo "openapi-python-client is required. Install it in python-sdk/.venv or globally."; \
-		echo "Example: cd python-sdk && uv pip install openapi-python-client"; \
-		exit 1; \
-	fi
-	cd python-sdk && openapi-python-client generate --path ../openapi.yaml --meta setup --overwrite
+	cd python-sdk && uv run openapi-python-client generate --path ../openapi.yaml --meta setup --overwrite --custom-template-path templates
+	cd python-sdk && ruff format .
+	cd python-sdk && ruff check --fix .
+	cd python-sdk && uvx ty check .
 
 # Database env vars point config to localhost (overrides local.yaml's host: postgres)
 # Credentials match both the standalone start_db.sh postgres and the E2E compose postgres.

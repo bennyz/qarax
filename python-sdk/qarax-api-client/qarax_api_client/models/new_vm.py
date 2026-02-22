@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
@@ -30,6 +29,9 @@ class NewVm:
         config (Any | Unset):
         cpu_topology (Any | Unset):
         description (None | str | Unset):
+        image_ref (None | str | Unset): OCI image reference to use as root filesystem (e.g.
+            "docker.io/library/ubuntu:22.04").
+            When set, qarax-node will pull and convert the image using Nydus and serve it via virtiofs.
         kvm_hyperv (bool | None | Unset):
         memory_hotplug_size (int | None | Unset):
         memory_hugepage_size (int | None | Unset):
@@ -51,6 +53,7 @@ class NewVm:
     config: Any | Unset = UNSET
     cpu_topology: Any | Unset = UNSET
     description: None | str | Unset = UNSET
+    image_ref: None | str | Unset = UNSET
     kvm_hyperv: bool | None | Unset = UNSET
     memory_hotplug_size: int | None | Unset = UNSET
     memory_hugepage_size: int | None | Unset = UNSET
@@ -90,6 +93,12 @@ class NewVm:
             description = UNSET
         else:
             description = self.description
+
+        image_ref: None | str | Unset
+        if isinstance(self.image_ref, Unset):
+            image_ref = UNSET
+        else:
+            image_ref = self.image_ref
 
         kvm_hyperv: bool | None | Unset
         if isinstance(self.kvm_hyperv, Unset):
@@ -170,6 +179,8 @@ class NewVm:
             field_dict["cpu_topology"] = cpu_topology
         if description is not UNSET:
             field_dict["description"] = description
+        if image_ref is not UNSET:
+            field_dict["image_ref"] = image_ref
         if kvm_hyperv is not UNSET:
             field_dict["kvm_hyperv"] = kvm_hyperv
         if memory_hotplug_size is not UNSET:
@@ -192,7 +203,7 @@ class NewVm:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         from ..models.new_vm_network import NewVmNetwork
 
         d = dict(src_dict)
@@ -235,6 +246,15 @@ class NewVm:
             return cast(None | str | Unset, data)
 
         description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_image_ref(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        image_ref = _parse_image_ref(d.pop("image_ref", UNSET))
 
         def _parse_kvm_hyperv(data: object) -> bool | None | Unset:
             if data is None:
@@ -340,6 +360,7 @@ class NewVm:
             config=config,
             cpu_topology=cpu_topology,
             description=description,
+            image_ref=image_ref,
             kvm_hyperv=kvm_hyperv,
             memory_hotplug_size=memory_hotplug_size,
             memory_hugepage_size=memory_hugepage_size,

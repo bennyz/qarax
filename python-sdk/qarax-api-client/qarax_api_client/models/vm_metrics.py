@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
@@ -61,7 +60,7 @@ class VmMetrics:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         from ..models.vm_metrics_counters import VmMetricsCounters
 
         d = dict(src_dict)
