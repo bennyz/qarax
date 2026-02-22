@@ -44,17 +44,18 @@ trap cleanup EXIT
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="../target/${MUSL_TARGET}/release/qarax-node"
 if [ -z "$SKIP_BUILD" ]; then
-    if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ]; then
-        echo -e "${YELLOW}Building qarax-node binary...${NC}"
+    INIT_BINARY="../target/${MUSL_TARGET}/release/qarax-init"
+    if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ]; then
+        echo -e "${YELLOW}Building qarax-node and qarax-init binaries...${NC}"
         cd ..
         if [ "$(uname -s)" = "Darwin" ]; then
             if ! command -v cross &>/dev/null; then
                 echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
                 exit 1
             fi
-            cross build --target "${MUSL_TARGET}" --release -p qarax-node
+            cross build --target "${MUSL_TARGET}" --release -p qarax-node -p qarax-init
         else
-            cargo build --release -p qarax-node
+            cargo build --release -p qarax-node -p qarax-init
         fi
         cd e2e
     else
@@ -78,13 +79,13 @@ while [ $elapsed -lt $timeout ]; do
     # Check if all services are healthy
     healthy_count=$(docker-compose ps 2>/dev/null | grep -c "(healthy)" || echo "0")
     total_services=3  # postgres, qarax, qarax-node
-    
+
     if [ "$healthy_count" -ge "$total_services" ]; then
         echo ""
         echo -e "${GREEN}All services are healthy!${NC}"
         break
     fi
-    
+
     # Check for failed services
     if docker-compose ps 2>/dev/null | grep -q "Exit"; then
         echo ""
@@ -93,7 +94,7 @@ while [ $elapsed -lt $timeout ]; do
         docker-compose logs
         exit 1
     fi
-    
+
     echo -n "."
     sleep 2
     elapsed=$((elapsed + 2))
@@ -133,12 +134,12 @@ else
     echo -e "${YELLOW}Service logs:${NC}"
     docker-compose logs --tail=50
     echo ""
-    
+
     if [ -z "$KEEP" ]; then
         echo -e "${YELLOW}To keep services running for debugging:${NC}"
         echo -e "${GREEN}  KEEP=1 ./run_e2e_tests.sh${NC}"
         echo ""
     fi
-    
+
     exit 1
 fi

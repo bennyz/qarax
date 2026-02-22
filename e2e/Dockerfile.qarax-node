@@ -18,8 +18,9 @@ RUN dnf install -y \
     cpio \
     gzip \
     busybox \
-    kernel-core \
-    && dnf clean all
+    virtiofsd \
+    && dnf clean all \
+    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
 
 # Install Cloud Hypervisor (static binary)
 RUN curl -fsSL \
@@ -28,9 +29,10 @@ RUN curl -fsSL \
     chmod +x /usr/local/bin/cloud-hypervisor && \
     cloud-hypervisor --version
 
-# Copy qarax-node binary
+# Copy qarax-node and qarax-init binaries
 COPY target/x86_64-unknown-linux-musl/release/qarax-node /usr/local/bin/qarax-node
-RUN chmod +x /usr/local/bin/qarax-node
+COPY target/x86_64-unknown-linux-musl/release/qarax-init /usr/local/bin/qarax-init
+RUN chmod +x /usr/local/bin/qarax-node /usr/local/bin/qarax-init
 
 # Create directories for VM data
 RUN mkdir -p /var/lib/qarax/vms \
@@ -38,10 +40,11 @@ RUN mkdir -p /var/lib/qarax/vms \
     /var/lib/qarax/disks \
     /etc/qarax-node
 
-# Extract vmlinux from installed kernel
-# The kernel-core package provides /lib/modules/*/vmlinuz which we can use
-RUN KERNEL_VERSION=$(ls /lib/modules/ | head -1) && \
-    cp /lib/modules/${KERNEL_VERSION}/vmlinuz /var/lib/qarax/images/vmlinux && \
+# Download Cloud Hypervisor kernel (vmlinux)
+# This kernel has CONFIG_VIRTIO_FS=y (built-in)
+RUN curl -fsSL \
+    "https://github.com/cloud-hypervisor/linux/releases/download/ch-release-v6.16.9-20251112/vmlinux-x86_64" \
+    -o /var/lib/qarax/images/vmlinux && \
     chmod 644 /var/lib/qarax/images/vmlinux && \
     ls -la /var/lib/qarax/images/
 
@@ -57,6 +60,8 @@ RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
     find . | cpio -o -H newc 2>/dev/null | gzip > /var/lib/qarax/images/test-initramfs.gz && \
     rm -rf /tmp/initramfs /tmp/init-test.sh && \
     ls -la /var/lib/qarax/images/
+
+
 
 EXPOSE 50051
 

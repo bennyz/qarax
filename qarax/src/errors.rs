@@ -3,7 +3,7 @@ use validator::ValidationErrors;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("an internal database error occurred")]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(sqlx::Error),
 
     #[error("validation error in request body")]
     InvalidEntity(#[from] ValidationErrors),
@@ -19,4 +19,13 @@ pub enum Error {
 
     #[error("not found")]
     NotFound,
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(err: sqlx::Error) -> Self {
+        match err {
+            sqlx::Error::RowNotFound => Error::NotFound,
+            _ => Error::Sqlx(err),
+        }
+    }
 }

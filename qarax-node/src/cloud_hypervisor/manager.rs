@@ -16,7 +16,8 @@ use bytes::Bytes;
 use cloud_hypervisor_sdk::client::TokioIo;
 use cloud_hypervisor_sdk::machine::{Machine, MachineConfig, VM};
 use cloud_hypervisor_sdk::models::{
-    self, CpusConfig, MemoryConfig, PayloadConfig, VmConfig, console_config::Mode as ConsoleMode,
+    self, CpusConfig, FsConfig, MemoryConfig, PayloadConfig, VmConfig,
+    console_config::Mode as ConsoleMode,
 };
 use futures::stream::StreamExt;
 use http_body_util::{Empty, Full, combinators::BoxBody};
@@ -25,10 +26,11 @@ use tokio::net::UnixStream;
 
 use prost::Message;
 
+use crate::image_store::ImageStoreManager;
 use crate::rpc::node::{
     ConsoleConfig as ProtoConsoleConfig, ConsoleMode as ProtoConsoleMode,
     CpuTopology as ProtoCpuTopology, CpusConfig as ProtoCpusConfig, DiskConfig as ProtoDiskConfig,
-    MemoryConfig as ProtoMemoryConfig, NetConfig as ProtoNetConfig,
+    FsConfig as ProtoFsConfig, MemoryConfig as ProtoMemoryConfig, NetConfig as ProtoNetConfig,
     PayloadConfig as ProtoPayloadConfig, RateLimiterConfig as ProtoRateLimiterConfig,
     RngConfig as ProtoRngConfig, TokenBucket as ProtoTokenBucket, VhostMode as ProtoVhostMode,
     VmConfig as ProtoVmConfig, VmState, VmStatus,
@@ -92,11 +94,17 @@ pub struct VmManager {
     ch_binary: PathBuf,
     /// Running VM instances
     vms: Arc<Mutex<HashMap<String, VmInstance>>>,
+    /// Optional image store manager for OCI image boot support
+    image_store_manager: Option<Arc<ImageStoreManager>>,
 }
 
 impl VmManager {
     /// Create a new VM manager
-    pub fn new(runtime_dir: impl Into<PathBuf>, ch_binary: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        runtime_dir: impl Into<PathBuf>,
+        ch_binary: impl Into<PathBuf>,
+        image_store_manager: Option<Arc<ImageStoreManager>>,
+    ) -> Self {
         let runtime_dir = runtime_dir.into();
         let ch_binary = ch_binary.into();
 
@@ -110,7 +118,23 @@ impl VmManager {
             runtime_dir,
             ch_binary,
             vms: Arc::new(Mutex::new(HashMap::new())),
+            image_store_manager,
         }
+    }
+
+    /// Get the image store manager if configured
+    pub fn image_store_manager(&self) -> Option<&Arc<ImageStoreManager>> {
+        self.image_store_manager.as_ref()
+    }
+
+    /// Get the runtime directory path
+    pub fn runtime_dir(&self) -> &std::path::Path {
+        &self.runtime_dir
+    }
+
+    /// Get the path to the Cloud Hypervisor binary
+    pub fn ch_binary(&self) -> &std::path::Path {
+        &self.ch_binary
     }
 
     /// Get the socket path for a VM
@@ -325,6 +349,37 @@ impl VmManager {
                 }
                 net.tap = Some(tap_name.clone());
                 tap_devices.push(tap_name);
+            }
+        }
+
+        // If FsConfig entries have a bootstrap_path, start virtiofsd for each
+        // and inject the socket path into the FsConfig.
+        if !config.fs.is_empty() {
+            if let Some(store) = &self.image_store_manager {
+                for (i, fs) in config.fs.iter_mut().enumerate() {
+                    if let Some(rootfs_path) = &fs.bootstrap_path {
+                        let vm_fs_id = format!("{}-fs{}", vm_id, i);
+                        match store
+                            .start_virtiofsd(&vm_fs_id, std::path::Path::new(rootfs_path))
+                            .await
+                        {
+                            Ok(socket_path) => {
+                                fs.socket = socket_path.to_string_lossy().to_string();
+                                info!(
+                                    "virtiofsd started for VM {} fs{} at {}",
+                                    vm_id, i, fs.socket
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to start virtiofsd for VM {} fs{}: {}", vm_id, i, e);
+                            }
+                        }
+                    }
+                }
+            } else {
+                debug!(
+                    "FsConfig entries present but no ImageStoreManager configured — skipping virtiofsd startup"
+                );
             }
         }
 
@@ -546,6 +601,13 @@ impl VmManager {
         // Clean up TAP devices created by qarax-node
         for tap in &instance.tap_devices {
             Self::delete_tap_device(tap).await;
+        }
+
+        // Clean up any virtiofsd processes for this VM's fs devices
+        if let Some(store) = &self.image_store_manager {
+            for i in 0..8 {
+                store.cleanup_vm(&format!("{}-fs{}", vm_id, i)).await;
+            }
         }
 
         info!("VM {} deleted successfully", vm_id);
@@ -841,6 +903,11 @@ impl VmManager {
             sdk_config.console = Some(Box::new(self.proto_console_to_sdk(console)));
         }
 
+        // Filesystems (virtiofs)
+        if !config.fs.is_empty() {
+            sdk_config.fs = Some(config.fs.iter().map(|f| self.proto_fs_to_sdk(f)).collect());
+        }
+
         Ok(sdk_config)
     }
 
@@ -856,6 +923,7 @@ impl VmManager {
             max_phys_bits: cpus.max_phys_bits,
             affinity: None,
             features: None,
+            nested: None,
         }
     }
 
@@ -914,6 +982,9 @@ impl VmManager {
             serial: disk.serial.clone(),
             rate_limit_group: disk.rate_limit_group.clone(),
             queue_affinity: None,
+            backing_files: None,
+            image_type: None,
+            sparse: None,
         }
     }
 
@@ -973,6 +1044,66 @@ impl VmManager {
             mode,
             iommu: console.iommu,
         }
+    }
+
+    fn proto_fs_to_sdk(&self, fs: &ProtoFsConfig) -> FsConfig {
+        FsConfig {
+            tag: fs.tag.clone(),
+            socket: fs.socket.clone(),
+            num_queues: fs.num_queues,
+            queue_size: fs.queue_size,
+            pci_segment: fs.pci_segment,
+            id: fs.id.clone(),
+        }
+    }
+
+    /// Add a filesystem (virtiofs) device to a running VM
+    pub async fn add_fs_device(
+        &self,
+        vm_id: &str,
+        config: &ProtoFsConfig,
+    ) -> Result<(), VmManagerError> {
+        let vms = self.vms.lock().await;
+        let instance = vms
+            .get(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        let sdk_config = self.proto_fs_to_sdk(config);
+        let body = serde_json::to_string(&sdk_config)
+            .map_err(|e| VmManagerError::InvalidConfig(e.to_string()))?;
+
+        self.send_api_request(
+            &instance.socket_path,
+            "PUT",
+            "/api/v1/vm.add-fs",
+            Some(&body),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Remove a filesystem device from a running VM
+    pub async fn remove_fs_device(
+        &self,
+        vm_id: &str,
+        device_id: &str,
+    ) -> Result<(), VmManagerError> {
+        let vms = self.vms.lock().await;
+        let instance = vms
+            .get(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        let body = serde_json::json!({ "id": device_id }).to_string();
+        self.send_api_request(
+            &instance.socket_path,
+            "PUT",
+            "/api/v1/vm.remove-device",
+            Some(&body),
+        )
+        .await?;
+
+        Ok(())
     }
 
     fn proto_rate_limiter_to_sdk(

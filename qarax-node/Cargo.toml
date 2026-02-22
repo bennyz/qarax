@@ -25,7 +25,8 @@ uuid = { version = "1.6.1", features = ["v4"] }
 openssl = { version = "0.10.60", features = ["vendored"] }
 
 # Cloud Hypervisor SDK
-cloud-hypervisor-sdk = { git = "https://github.com/qarax/cloud-hypervisor-sdk.git" }
+cloud-hypervisor-sdk = { git = "https://github.com/qarax/cloud-hypervisor-sdk.git", tag = "v51.0.0" }
+gethostname = "0.4"
 
 # HTTP client dependencies (same as SDK uses)
 bytes = "1.5.0"
@@ -37,6 +38,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "stream"] }
+oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio-stream = { version = "0.1.14", features = ["net"] }

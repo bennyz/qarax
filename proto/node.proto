@@ -40,6 +40,23 @@ message VmConfig {
 
   // Rate limiting groups (shared across devices)
   repeated RateLimitGroupConfig rate_limit_groups = 10;
+
+  // Filesystem (virtiofs) devices
+  repeated FsConfig fs = 11;
+}
+
+// ============================================================================
+// Filesystem (virtiofs) Configuration
+// ============================================================================
+
+message FsConfig {
+  string tag = 1;                      // Virtiofs mount tag (used as mount source in guest)
+  string socket = 2;                   // Unix socket path for the virtiofs backend (nydusd)
+  int32 num_queues = 3;                // Number of virtqueues (default: 1)
+  int32 queue_size = 4;                // Size of each queue (default: 1024)
+  optional int32 pci_segment = 5;      // PCI segment number
+  optional string id = 6;              // Device identifier
+  optional string bootstrap_path = 7;  // RAFS bootstrap path (for nydusd)
 }
 
 message VmState {
@@ -234,11 +251,25 @@ message VmCounters {
   map<string, DeviceCounters> counters = 1;
 }
 
+message ConsoleLogResponse {
+  string content = 1;     // Console log text
+  bool available = 2;     // false if console logging was not enabled
+}
+
+message NodeInfo {
+  string hostname = 1;
+  string cloud_hypervisor_version = 2;
+  string kernel_version = 3;
+}
+
 // ============================================================================
 // gRPC Service Definition
 // ============================================================================
 
 service VmService {
+  // Node information
+  rpc GetNodeInfo(google.protobuf.Empty) returns (NodeInfo) {}
+
   // VM lifecycle operations
   rpc CreateVM(VmConfig) returns (VmState) {}
   rpc StartVM(VmID) returns (google.protobuf.Empty) {}
@@ -251,12 +282,21 @@ service VmService {
   rpc GetVmInfo(VmID) returns (VmState) {}
   rpc ListVms(google.protobuf.Empty) returns (VmList) {}
   rpc GetVmCounters(VmID) returns (VmCounters) {}
+  rpc ReadConsoleLog(VmID) returns (ConsoleLogResponse) {}
 
   // Hot-attach operations (for future use)
   rpc AddNetworkDevice(AddNetworkDeviceRequest) returns (google.protobuf.Empty) {}
   rpc RemoveNetworkDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
   rpc AddDiskDevice(AddDiskDeviceRequest) returns (google.protobuf.Empty) {}
   rpc RemoveDiskDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
+
+  // Filesystem (virtiofs) hot-attach operations
+  rpc AddFsDevice(AddFsDeviceRequest) returns (google.protobuf.Empty) {}
+  rpc RemoveFsDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
+
+  // OCI image management
+  rpc PullImage(OciImageRequest) returns (OciImageResponse) {}
+  rpc GetImageStatus(OciImageRequest) returns (OciImageResponse) {}
 }
 
 // ============================================================================
@@ -301,7 +341,28 @@ message AddDiskDeviceRequest {
   DiskConfig config = 2;
 }
 
+message AddFsDeviceRequest {
+  string vm_id = 1;
+  FsConfig config = 2;
+}
+
 message RemoveDeviceRequest {
   string vm_id = 1;
   string device_id = 2;
+}
+
+// ============================================================================
+// OCI Image Management
+// ============================================================================
+
+message OciImageRequest {
+  string image_ref = 1;   // OCI image reference (e.g. "docker.io/library/ubuntu:22.04")
+}
+
+message OciImageResponse {
+  string image_ref = 1;   // OCI image reference
+  string digest = 2;      // Content digest (sha256:...)
+  string bootstrap_path = 3;  // Path to RAFS bootstrap file on host
+  string socket_path = 4;     // Path to nydusd socket (set after start_nydusd)
+  bool available = 5;     // Whether the image is locally cached
 }

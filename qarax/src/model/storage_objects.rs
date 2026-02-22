@@ -53,6 +53,7 @@ pub enum StorageObjectType {
     Initrd,
     Iso,
     Snapshot,
+    OciImage,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]

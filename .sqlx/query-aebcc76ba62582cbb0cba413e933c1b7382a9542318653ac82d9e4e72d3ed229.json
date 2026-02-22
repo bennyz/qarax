@@ -67,7 +67,8 @@
                 "KERNEL",
                 "INITRD",
                 "ISO",
-                "SNAPSHOT"
+                "SNAPSHOT",
+                "OCI_IMAGE"
               ]
             }
           }

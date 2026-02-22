@@ -183,6 +183,30 @@ paths:
           description: Invalid input
         '500':
           description: Internal server error
+  /hosts/{host_id}/init:
+    post:
+      tags:
+      - hosts
+      operationId: init
+      parameters:
+      - name: host_id
+        in: path
+        description: Host unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Host initialized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '404':
+          description: Host not found
+        '500':
+          description: Internal server error
   /storage-objects:
     get:
       tags:
@@ -509,6 +533,30 @@ paths:
           description: VM not found
         '500':
           description: Internal server error
+  /vms/{vm_id}/console:
+    get:
+      tags:
+      - vms
+      operationId: console_log
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Console log content
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Console logging not available for this VM
+        '500':
+          description: Internal server error
   /vms/{vm_id}/metrics:
     get:
       tags:
@@ -587,8 +635,8 @@ paths:
           type: string
           format: uuid
       responses:
-        '200':
-          description: VM started successfully
+        '202':
+          description: VM start accepted
         '404':
           description: VM not found
         '500':
@@ -695,11 +743,19 @@ components:
       properties:
         address:
           type: string
+        cloud_hypervisor_version:
+          type:
+          - string
+          - 'null'
         host_user:
           type: string
         id:
           type: string
           format: uuid
+        kernel_version:
+          type:
+          - string
+          - 'null'
         name:
           type: string
         port:
@@ -932,6 +988,13 @@ components:
           - 'null'
         hypervisor:
           $ref: '#/components/schemas/Hypervisor'
+        image_ref:
+          type:
+          - string
+          - 'null'
+          description: |-
+            OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
+            When set, qarax-node will pull and convert the image using Nydus and serve it via virtiofs.
         kvm_hyperv:
           type:
           - boolean
@@ -981,6 +1044,40 @@ components:
           items:
             $ref: '#/components/schemas/NewVmNetwork'
           description: Optional network interfaces to attach at create time (passed to qarax-node).
+    NewVmFilesystem:
+      type: object
+      required:
+      - vm_id
+      - tag
+      properties:
+        image_digest:
+          type:
+          - string
+          - 'null'
+        image_ref:
+          type:
+          - string
+          - 'null'
+        num_queues:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        pci_segment:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        queue_size:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        tag:
+          type: string
+        vm_id:
+          type: string
+          format: uuid
     NewVmNetwork:
       type: object
       description: Network interface config for create-VM request. Passed to qarax-node; id is required.
@@ -1132,6 +1229,7 @@ components:
       - initrd
       - iso
       - snapshot
+      - oci_image
     StoragePool:
       type: object
       required:
@@ -1325,6 +1423,10 @@ components:
         id:
           type: string
           format: uuid
+        image_ref:
+          type:
+          - string
+          - 'null'
         kvm_hyperv:
           type: boolean
         max_vcpus:
@@ -1357,6 +1459,42 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/VmStatus'
+    VmFilesystem:
+      type: object
+      required:
+      - id
+      - vm_id
+      - tag
+      - num_queues
+      - queue_size
+      properties:
+        id:
+          type: string
+          format: uuid
+        image_digest:
+          type:
+          - string
+          - 'null'
+        image_ref:
+          type:
+          - string
+          - 'null'
+        num_queues:
+          type: integer
+          format: int32
+        pci_segment:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        queue_size:
+          type: integer
+          format: int32
+        tag:
+          type: string
+        vm_id:
+          type: string
+          format: uuid
     VmMetrics:
       type: object
       required:

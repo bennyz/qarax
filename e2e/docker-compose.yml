@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U qarax"]
+      test: [ "CMD-SHELL", "pg_isready -U qarax" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -21,6 +21,7 @@ services:
       dockerfile: e2e/Dockerfile.qarax
     environment:
       DATABASE_URL: postgres://qarax:qarax@postgres:5432/qarax
+      DATABASE_HOST: postgres
       APP_ENVIRONMENT: local
       QARAX_CONFIG_DIR: /app/configuration
       # VM defaults - can be overridden from environment
@@ -36,7 +37,7 @@ services:
       qarax-node:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -54,13 +55,15 @@ services:
       # Default location: ./local-test-images (created by run-local.sh --with-vm)
       # Note: rw is needed because rootfs.img needs to be writable by VMs
       - ${PRODUCTION_IMAGES_DIR:-/tmp/qarax-no-production-images}:/var/lib/qarax/production-images:rw
+      - qarax_vms:/var/lib/qarax/vms
     ports:
       - "50051:50051"
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      test: [ "CMD", "nc", "-z", "localhost", "50051" ]
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
   postgres_data:
+  qarax_vms:

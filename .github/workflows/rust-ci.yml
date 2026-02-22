@@ -101,6 +101,7 @@ jobs:
           path: |
             target/x86_64-unknown-linux-musl/release/qarax
             target/x86_64-unknown-linux-musl/release/qarax-node
+            target/x86_64-unknown-linux-musl/release/qarax-init
           retention-days: 1
 
   test:

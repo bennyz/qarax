@@ -13,8 +13,9 @@ pub mod node {
 }
 
 use node::{
-    ConsoleConfig, CopyFileRequest, CpusConfig, DiskConfig, DownloadFileRequest, MemoryConfig,
-    NetConfig, PayloadConfig, VmConfig, VmCounters, VmId, VmState,
+    ConsoleConfig, ConsoleLogResponse, CopyFileRequest, CpusConfig, DiskConfig,
+    DownloadFileRequest, FsConfig, MemoryConfig, NetConfig, NodeInfo, OciImageRequest,
+    OciImageResponse, PayloadConfig, VmConfig, VmCounters, VmId, VmState,
     file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
 };
 
@@ -34,6 +35,10 @@ pub struct CreateVmRequest {
     pub kernel: String,
     pub initramfs: Option<String>,
     pub cmdline: String,
+    /// Filesystem (virtiofs) devices for OCI image boot
+    pub fs_configs: Vec<FsConfig>,
+    /// Whether to enable shared memory (required for vhost-user-fs)
+    pub memory_shared: bool,
 }
 
 /// Convert API network list to proto NetConfig for the node.
@@ -108,6 +113,8 @@ impl NodeClient {
             kernel,
             initramfs,
             cmdline,
+            fs_configs,
+            memory_shared,
         } = req;
         debug!("Creating VM {} on node {}", vm_id, self.address);
 
@@ -150,7 +157,7 @@ impl NodeClient {
                 size: memory_size,
                 hotplug_size: None,
                 mergeable: None,
-                shared: None,
+                shared: if memory_shared { Some(true) } else { None },
                 hugepages: None,
                 hugepage_size: None,
                 prefault: None,
@@ -159,7 +166,7 @@ impl NodeClient {
             payload: Some(PayloadConfig {
                 kernel: Some(kernel),
                 cmdline: Some(cmdline),
-                initramfs: initramfs.filter(|s| !s.is_empty()), // Skip empty initramfs
+                initramfs: initramfs.filter(|s| !s.trim().is_empty()), // Skip empty initramfs
                 firmware: None,
             }),
             disks,
@@ -174,6 +181,7 @@ impl NodeClient {
             }),
             console: None,
             rate_limit_groups: vec![],
+            fs: fs_configs,
         };
 
         client
@@ -383,6 +391,25 @@ impl NodeClient {
         }
     }
 
+    /// Pull an OCI image on the qarax-node via Nydus
+    #[instrument(skip(self))]
+    pub async fn pull_image(&self, image_ref: &str) -> Result<OciImageResponse> {
+        debug!("Pulling image {} on node {}", image_ref, self.address);
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .pull_image(OciImageRequest {
+                image_ref: image_ref.to_string(),
+            })
+            .await
+            .map_err(|s| anyhow::anyhow!("Failed to pull image on qarax-node: {}", s.message()))?;
+
+        Ok(response.into_inner())
+    }
+
     /// Delete a VM on the qarax-node
     #[instrument(skip(self))]
     pub async fn delete_vm(&self, vm_id: Uuid) -> Result<()> {
@@ -401,5 +428,44 @@ impl NodeClient {
 
         debug!("VM {} deleted successfully", vm_id);
         Ok(())
+    }
+
+    /// Read the console log for a VM on the qarax-node
+    #[instrument(skip(self))]
+    pub async fn read_console_log(&self, vm_id: Uuid) -> Result<ConsoleLogResponse> {
+        debug!(
+            "Reading console log for VM {} from node {}",
+            vm_id, self.address
+        );
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .read_console_log(VmId {
+                id: vm_id.to_string(),
+            })
+            .await
+            .context("Failed to read console log from qarax-node")?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Get node information (versions, hostname) from the qarax-node
+    #[instrument(skip(self))]
+    pub async fn get_node_info(&self) -> Result<NodeInfo> {
+        debug!("Getting node info from {}", self.address);
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .get_node_info(())
+            .await
+            .context("Failed to get node info from qarax-node")?;
+
+        Ok(response.into_inner())
     }
 }
