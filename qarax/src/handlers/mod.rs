@@ -19,6 +19,7 @@ use validator::ValidationErrors;
 
 mod boot_source;
 mod host;
+mod job;
 mod storage_object;
 mod storage_pool;
 mod transfer;
@@ -59,6 +60,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         transfer::handler::create,
         transfer::handler::list,
         transfer::handler::get,
+        job::handler::get,
     ),
     components(
         schemas(
@@ -93,6 +95,10 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::transfers::TransferStatus,
             crate::model::vm_filesystems::VmFilesystem,
             crate::model::vm_filesystems::NewVmFilesystem,
+            crate::model::jobs::Job,
+            crate::model::jobs::JobStatus,
+            crate::model::jobs::JobType,
+            crate::handlers::vm::handler::CreateVmResponse,
         )
     ),
     tags(
@@ -101,7 +107,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         (name = "storage-objects", description = "Storage object management endpoints"),
         (name = "storage-pools", description = "Storage pool management endpoints"),
         (name = "boot-sources", description = "Boot source management endpoints"),
-        (name = "transfers", description = "File transfer management endpoints")
+        (name = "transfers", description = "File transfer management endpoints"),
+        (name = "jobs", description = "Async job management endpoints")
     ),
     info(
         title = "Qarax API",
@@ -121,6 +128,7 @@ pub fn app(env: App) -> Router {
         .merge(storage_pools())
         .merge(boot_sources())
         .merge(transfers())
+        .merge(jobs())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(
             ServiceBuilder::new()
@@ -203,6 +211,10 @@ fn transfers() -> Router {
             "/storage-pools/{pool_id}/transfers/{transfer_id}",
             get(transfer::handler::get),
         )
+}
+
+fn jobs() -> Router {
+    Router::new().route("/jobs/{job_id}", get(job::handler::get))
 }
 
 fn boot_sources() -> Router {

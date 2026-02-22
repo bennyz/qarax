@@ -424,23 +424,44 @@ if [[ $WITH_VM -eq 0 ]]; then
 	echo "Create and start a VM (bash):"
 	echo '  VM_ID=$(curl -s -X POST http://localhost:8000/vms \'
 	echo '    -H "Content-Type: application/json" \'
-	echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' )'
+	echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' | jq -r .)'
 	echo '  curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
 	echo ""
 	echo "Create and start a VM (fish):"
-	echo '  set VM_ID (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'')'
+	echo '  set VM_ID (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' | jq -r .)'
 	echo '  curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
 	echo ""
 	echo "Create a VM with a network interface (id + optional mac, tap, ip, mask):"
 	echo '  curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" \'
 	echo '    -d '\''{"name":"my-vm-net","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"networks":[{"id":"net0","mac":"52:54:00:12:34:56"}]}'\'''
 	echo ""
+	echo "Create a VM from an OCI image (returns 202 + job_id, poll until complete):"
+	echo "  bash:"
+	echo '    RESP=$(curl -s -X POST http://localhost:8000/vms \'
+	echo '      -H "Content-Type: application/json" \'
+	echo '      -d '\''{"name":"alpine-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"image_ref":"public.ecr.aws/docker/library/alpine:latest"}'\'')'
+	echo '    VM_ID=$(echo $RESP | jq -r .vm_id)'
+	echo '    JOB_ID=$(echo $RESP | jq -r .job_id)'
+	echo '    # Poll until status is completed or failed:'
+	echo '    while true; do'
+	echo '      STATUS=$(curl -s http://localhost:8000/jobs/$JOB_ID | jq -r .status)'
+	echo '      echo "Job status: $STATUS"; [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break; sleep 3; done'
+	echo '    curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
+	echo ""
+	echo "  fish:"
+	echo '    set RESP (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"alpine-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"image_ref":"public.ecr.aws/docker/library/alpine:latest"}'\'')'
+	echo '    set VM_ID (echo $RESP | jq -r .vm_id)'
+	echo '    set JOB_ID (echo $RESP | jq -r .job_id)'
+	echo '    # Poll until status is completed or failed:'
+	echo '    while true; set STATUS (curl -s http://localhost:8000/jobs/$JOB_ID | jq -r .status); echo "Job status: $STATUS"; [ "$STATUS" = completed ] || [ "$STATUS" = failed ]; and break; sleep 3; end'
+	echo '    curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
+	echo ""
 	echo "Useful commands:"
 	echo "  docker compose -f e2e/docker-compose.yml logs -f    # Follow all logs"
 	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
 	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
 	echo "  docker compose -f e2e/docker-compose.yml up -d --force-recreate qarax-node  # Apply device/compose changes"
-	echo "  ./hack/run-local.sh --cleanup                        # Stop and remove stack + volumes"
+	echo "  make stop-local                                      # Stop and remove stack + volumes"
 	echo ""
 else
 	# With --with-vm, show concise summary

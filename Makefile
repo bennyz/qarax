@@ -1,4 +1,4 @@
-.PHONY: build test test-deps clean openapi sdk help lint fmt shfmt ruff-check ruff-fmt appliance-build appliance-push
+.PHONY: build test test-deps clean openapi sdk help lint fmt shfmt ruff-check ruff-fmt appliance-build appliance-push run-local stop-local
 
 # On macOS, override default musl target (linker fails cross-compiling from Mac)
 UNAME_S := $(shell uname -s)
@@ -28,6 +28,8 @@ help:
 	@echo "  make ruff-fmt   - Run ruff format on Python SDK"
 	@echo "  make appliance-build - Build bootc appliance image locally"
 	@echo "  make appliance-push  - Push appliance image to registry"
+	@echo "  make run-local       - Run full stack locally (qarax + qarax-node + Postgres) via Docker"
+	@echo "  make stop-local      - Stop and remove the local Docker stack and volumes"
 
 build:
 	cargo build $(CARGO_TARGET)
@@ -94,3 +96,9 @@ appliance-build:
 
 appliance-push:
 	$(CONTAINER_ENGINE) push $(APPLIANCE_IMAGE):$(APPLIANCE_TAG)
+
+run-local:
+	./hack/run-local.sh
+
+stop-local:
+	./hack/run-local.sh --cleanup
