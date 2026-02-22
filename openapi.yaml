@@ -507,7 +507,7 @@ paths:
         '201':
           description: VM created successfully (synchronous)
           content:
-            text/plain:
+            application/json:
               schema:
                 type: string
         '202':

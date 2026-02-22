@@ -35,7 +35,7 @@ class Client:
     """
 
     raise_on_unexpected_status: bool = field(default=False, kw_only=True)
-    _base_url: str = field(alias="base_url")
+    _base_url: str = field(alias="base_url", kw_only=True)
     _cookies: dict[str, str] = field(factory=dict, kw_only=True, alias="cookies")
     _headers: dict[str, str] = field(factory=dict, kw_only=True, alias="headers")
     _timeout: httpx.Timeout | None = field(default=None, kw_only=True, alias="timeout")
@@ -165,7 +165,7 @@ class AuthenticatedClient:
     """
 
     raise_on_unexpected_status: bool = field(default=False, kw_only=True)
-    _base_url: str = field(alias="base_url")
+    _base_url: str = field(alias="base_url", kw_only=True)
     _cookies: dict[str, str] = field(factory=dict, kw_only=True, alias="cookies")
     _headers: dict[str, str] = field(factory=dict, kw_only=True, alias="headers")
     _timeout: httpx.Timeout | None = field(default=None, kw_only=True, alias="timeout")
@@ -175,7 +175,7 @@ class AuthenticatedClient:
     _client: httpx.Client | None = field(default=None, init=False)
     _async_client: httpx.AsyncClient | None = field(default=None, init=False)
 
-    token: str
+    token: str = ""
     prefix: str = "Bearer"
     auth_header_name: str = "Authorization"
 

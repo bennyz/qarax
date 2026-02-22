@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
@@ -73,7 +72,7 @@ class NewBootSource:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
         kernel_image_id = UUID(d.pop("kernel_image_id"))
 

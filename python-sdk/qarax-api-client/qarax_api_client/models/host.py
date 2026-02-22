@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.host_status import HostStatus
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="Host")
 
@@ -22,6 +22,8 @@ class Host:
         name (str):
         port (int):
         status (HostStatus):
+        cloud_hypervisor_version (None | str | Unset):
+        kernel_version (None | str | Unset):
     """
 
     address: str
@@ -30,6 +32,8 @@ class Host:
     name: str
     port: int
     status: HostStatus
+    cloud_hypervisor_version: None | str | Unset = UNSET
+    kernel_version: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,6 +49,18 @@ class Host:
 
         status = self.status.value
 
+        cloud_hypervisor_version: None | str | Unset
+        if isinstance(self.cloud_hypervisor_version, Unset):
+            cloud_hypervisor_version = UNSET
+        else:
+            cloud_hypervisor_version = self.cloud_hypervisor_version
+
+        kernel_version: None | str | Unset
+        if isinstance(self.kernel_version, Unset):
+            kernel_version = UNSET
+        else:
+            kernel_version = self.kernel_version
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -57,11 +73,15 @@ class Host:
                 "status": status,
             }
         )
+        if cloud_hypervisor_version is not UNSET:
+            field_dict["cloud_hypervisor_version"] = cloud_hypervisor_version
+        if kernel_version is not UNSET:
+            field_dict["kernel_version"] = kernel_version
 
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
         address = d.pop("address")
 
@@ -75,6 +95,24 @@ class Host:
 
         status = HostStatus(d.pop("status"))
 
+        def _parse_cloud_hypervisor_version(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        cloud_hypervisor_version = _parse_cloud_hypervisor_version(d.pop("cloud_hypervisor_version", UNSET))
+
+        def _parse_kernel_version(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        kernel_version = _parse_kernel_version(d.pop("kernel_version", UNSET))
+
         host = cls(
             address=address,
             host_user=host_user,
@@ -82,6 +120,8 @@ class Host:
             name=name,
             port=port,
             status=status,
+            cloud_hypervisor_version=cloud_hypervisor_version,
+            kernel_version=kernel_version,
         )
 
         host.additional_properties = d

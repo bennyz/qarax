@@ -6,6 +6,7 @@ class StorageObjectType(str, Enum):
     INITRD = "initrd"
     ISO = "iso"
     KERNEL = "kernel"
+    OCI_IMAGE = "oci_image"
     SNAPSHOT = "snapshot"
 
     def __str__(self) -> str:
