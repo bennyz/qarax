@@ -1,12 +1,16 @@
+use futures::Stream;
+use std::pin::Pin;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::cloud_hypervisor::VmManager;
 use crate::rpc::node::{
-    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, ConsoleLogResponse,
-    DeviceCounters, NodeInfo, OciImageRequest, OciImageResponse, RemoveDeviceRequest, VmConfig,
-    VmCounters, VmId, VmList, VmState, vm_service_server::VmService,
+    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, ConsoleInput,
+    ConsoleLogResponse, ConsoleOutput, ConsolePtyPathResponse, DeviceCounters, NodeInfo,
+    OciImageRequest, OciImageResponse, RemoveDeviceRequest, VmConfig, VmCounters, VmId, VmList,
+    VmState, vm_service_server::VmService,
 };
 
 /// Implementation of VmService using Cloud Hypervisor
@@ -468,6 +472,152 @@ impl VmService for VmServiceImpl {
             kernel_version,
         }))
     }
+
+    async fn attach_console(
+        &self,
+        request: Request<tonic::Streaming<ConsoleInput>>,
+    ) -> Result<Response<Self::AttachConsoleStream>, Status> {
+        let mut input_stream = request.into_inner();
+
+        // Read first message to get VM ID
+        let first_msg = input_stream
+            .message()
+            .await
+            .map_err(|e| Status::invalid_argument(format!("Failed to read first message: {}", e)))?
+            .ok_or_else(|| Status::invalid_argument("Empty input stream"))?;
+
+        let vm_id = first_msg.vm_id.clone();
+        info!("Attaching to console for VM: {}", vm_id);
+
+        // Get PTY path from VM manager
+        let pty_path = self
+            .manager
+            .get_serial_pty_path(&vm_id)
+            .await
+            .map_err(|e| {
+                error!("Failed to get PTY path for VM {}: {}", vm_id, e);
+                map_manager_error(e)
+            })?
+            .ok_or_else(|| {
+                Status::failed_precondition("VM console is not configured for PTY mode")
+            })?;
+
+        info!("Opening PTY for VM {}: {}", vm_id, pty_path);
+
+        // Open PTY device
+        let pty_file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pty_path)
+            .await
+            .map_err(|e| {
+                error!("Failed to open PTY {}: {}", pty_path, e);
+                Status::internal(format!("Failed to open PTY: {}", e))
+            })?;
+
+        let (pty_reader, mut pty_writer) = tokio::io::split(pty_file);
+
+        // Channel for sending output to client
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+
+        // Spawn task to read from PTY and send to client
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(pty_reader);
+            let mut buffer = vec![0u8; 4096];
+
+            loop {
+                match reader.read(&mut buffer).await {
+                    Ok(0) => {
+                        debug!("PTY read EOF");
+                        break;
+                    }
+                    Ok(n) => {
+                        let output = ConsoleOutput {
+                            data: buffer[..n].to_vec(),
+                            error: false,
+                            error_message: String::new(),
+                        };
+                        if tx_clone.send(Ok(output)).await.is_err() {
+                            debug!("Client disconnected");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("PTY read error: {}", e);
+                        let error_output = ConsoleOutput {
+                            data: vec![],
+                            error: true,
+                            error_message: format!("PTY read error: {}", e),
+                        };
+                        let _ = tx_clone.send(Ok(error_output)).await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Spawn task to read from client and write to PTY
+        tokio::spawn(async move {
+            // Process first message if it has data
+            if !first_msg.data.is_empty()
+                && let Err(e) = pty_writer.write_all(&first_msg.data).await
+            {
+                warn!("Failed to write to PTY: {}", e);
+                return;
+            }
+
+            // Process remaining messages
+            while let Ok(Some(msg)) = input_stream.message().await {
+                if msg.resize {
+                    // Handle terminal resize (would need ioctl TIOCSWINSZ)
+                    debug!("Terminal resize requested: {}x{}", msg.cols, msg.rows);
+                    // TODO: Implement terminal resize using nix crate
+                } else if !msg.data.is_empty() {
+                    if let Err(e) = pty_writer.write_all(&msg.data).await {
+                        warn!("Failed to write to PTY: {}", e);
+                        break;
+                    }
+                    if let Err(e) = pty_writer.flush().await {
+                        warn!("Failed to flush PTY: {}", e);
+                        break;
+                    }
+                }
+            }
+            debug!("Console input stream ended");
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::AttachConsoleStream
+        ))
+    }
+
+    async fn get_console_pty_path(
+        &self,
+        request: Request<VmId>,
+    ) -> Result<Response<ConsolePtyPathResponse>, Status> {
+        let vm_id = request.into_inner().id;
+        info!("Getting console PTY path for VM: {}", vm_id);
+
+        match self.manager.get_serial_pty_path(&vm_id).await {
+            Ok(Some(pty_path)) => Ok(Response::new(ConsolePtyPathResponse {
+                pty_path,
+                available: true,
+            })),
+            Ok(None) => Ok(Response::new(ConsolePtyPathResponse {
+                pty_path: String::new(),
+                available: false,
+            })),
+            Err(e) => {
+                error!("Failed to get PTY path for VM {}: {}", vm_id, e);
+                Err(map_manager_error(e))
+            }
+        }
+    }
+
+    type AttachConsoleStream =
+        Pin<Box<dyn Stream<Item = Result<ConsoleOutput, Status>> + Send + 'static>>;
 }
 fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
     use crate::cloud_hypervisor::VmManagerError;

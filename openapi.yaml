@@ -587,6 +587,29 @@ paths:
           description: Console logging not available for this VM
         '500':
           description: Internal server error
+  /vms/{vm_id}/console/attach:
+    get:
+      tags:
+      - vms
+      summary: WebSocket console attachment for interactive terminal access
+      operationId: console_attach
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '101':
+          description: Switching Protocols - WebSocket connection established
+        '404':
+          description: VM not found
+        '422':
+          description: VM console not available or not in PTY mode
+        '500':
+          description: Internal server error
   /vms/{vm_id}/metrics:
     get:
       tags:

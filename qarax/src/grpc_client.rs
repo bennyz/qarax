@@ -1,6 +1,7 @@
 // gRPC client for communicating with qarax-node
 
 use anyhow::{Context, Result};
+use tokio::sync::mpsc;
 use tracing::{debug, instrument};
 use uuid::Uuid;
 
@@ -13,7 +14,7 @@ pub mod node {
 }
 
 use node::{
-    ConsoleConfig, ConsoleLogResponse, CopyFileRequest, CpusConfig, DiskConfig,
+    ConsoleConfig, ConsoleInput, ConsoleLogResponse, CopyFileRequest, CpusConfig, DiskConfig,
     DownloadFileRequest, FsConfig, MemoryConfig, NetConfig, NodeInfo, OciImageRequest,
     OciImageResponse, PayloadConfig, VmConfig, VmCounters, VmId, VmState,
     file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
@@ -172,10 +173,10 @@ impl NodeClient {
             disks,
             networks,
             rng: None,
-            // Serial console to file so VM output can be viewed: /var/lib/qarax/vms/{vm_id}.console.log
+            // Serial console in PTY mode for interactive access
             serial: Some(ConsoleConfig {
-                mode: 3, // CONSOLE_MODE_FILE
-                file: Some(format!("/var/lib/qarax/vms/{}.console.log", vm_id)),
+                mode: 1, // CONSOLE_MODE_PTY
+                file: None,
                 socket: None,
                 iommu: None,
             }),
@@ -468,4 +469,70 @@ impl NodeClient {
 
         Ok(response.into_inner())
     }
+
+    /// Attach to VM console for interactive bidirectional I/O
+    /// Returns (input_sender, output_receiver) channels for WebSocket proxying
+    #[instrument(skip(self))]
+    pub async fn attach_console(&self, vm_id: Uuid) -> Result<ConsoleChannel> {
+        debug!("Attaching to console for VM {} via {}", vm_id, self.address);
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        // Create channels for bidirectional communication
+        let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(128);
+        let (output_tx, output_rx) = mpsc::channel::<Result<Vec<u8>>>(128);
+
+        // Create gRPC input stream
+        let input_stream = async_stream::stream! {
+            // Send initial message with VM ID
+            yield ConsoleInput {
+                vm_id: vm_id.to_string(),
+                data: vec![],
+                resize: false,
+                rows: 0,
+                cols: 0,
+            };
+
+            // Forward data from input channel to gRPC
+            while let Some(data) = input_rx.recv().await {
+                yield ConsoleInput {
+                    vm_id: String::new(), // Only needed in first message
+                    data,
+                    resize: false,
+                    rows: 0,
+                    cols: 0,
+                };
+            }
+        };
+
+        // Call the streaming RPC
+        let response = client
+            .attach_console(input_stream)
+            .await
+            .context("Failed to attach to console")?;
+
+        let mut output_stream = response.into_inner();
+
+        // Spawn task to forward gRPC output to our channel
+        tokio::spawn(async move {
+            while let Ok(Some(msg)) = output_stream.message().await {
+                let result = if msg.error {
+                    Err(anyhow::anyhow!(msg.error_message))
+                } else {
+                    Ok(msg.data)
+                };
+
+                if output_tx.send(result).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok((input_tx, output_rx))
+    }
 }
+
+/// Type alias for console channel used in attach_console
+pub type ConsoleChannel = (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Result<Vec<u8>>>);

@@ -74,6 +74,10 @@ struct VmInstance {
     status: VmStatus,
     /// TAP devices created by qarax-node for this VM (cleaned up on delete)
     tap_devices: Vec<String>,
+    /// PTY path for serial console (if PTY mode is enabled)
+    serial_pty_path: Option<String>,
+    /// PTY path for console device (if PTY mode is enabled)
+    console_pty_path: Option<String>,
 }
 
 impl VmInstance {
@@ -259,6 +263,8 @@ impl VmManager {
                 socket_path,
                 status,
                 tap_devices,
+                serial_pty_path: None,
+                console_pty_path: None,
             };
 
             let mut vms = self.vms.lock().await;
@@ -446,6 +452,10 @@ impl VmManager {
 
         info!("VM {} created on Cloud Hypervisor", vm_id);
 
+        // Parse log file to discover PTY paths (if PTY mode is enabled)
+        // Cloud Hypervisor logs PTY paths like: "Serial PTY: /dev/pts/3"
+        let (serial_pty, console_pty) = self.discover_pty_paths(&log_path, &config).await;
+
         // Persist proto config (as protobuf binary) for recovery after restart
         let config_bytes = config.encode_to_vec();
         if let Err(e) = tokio::fs::write(&config_path, config_bytes).await {
@@ -472,9 +482,11 @@ impl VmManager {
             proto_config: config.clone(),
             process: Some(process),
             vm,
-            socket_path,
+            socket_path: socket_path.clone(),
             status: VmStatus::Created,
             tap_devices,
+            serial_pty_path: serial_pty,
+            console_pty_path: console_pty,
         };
 
         let state = instance.to_vm_state();
@@ -1128,6 +1140,174 @@ impl VmManager {
             refill_time: bucket.refill_time,
             one_time_burst: bucket.one_time_burst,
         }
+    }
+
+    /// Get the PTY path for a VM's serial or console device.
+    /// This queries Cloud Hypervisor's API to retrieve PTY device paths.
+    /// Returns (serial_pty_path, console_pty_path) if available.
+    pub async fn get_pty_paths(
+        &self,
+        vm_id: &str,
+    ) -> Result<(Option<String>, Option<String>), VmManagerError> {
+        let vms = self.vms.lock().await;
+        let instance = vms
+            .get(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        // Query Cloud Hypervisor for PTY info via vm.info
+        // The v1 API doesn't expose PTY paths directly via HTTP, so we need to check
+        // if the PTY paths are in the filesystem based on CH's behavior.
+        // CH creates PTY devices and links them predictably.
+
+        let serial_pty = if matches!(
+            instance.proto_config.serial.as_ref().map(|s| s.mode),
+            Some(1) // PTY mode
+        ) {
+            // Cloud Hypervisor uses /dev/pts/X for PTY devices
+            // We need to query the actual path via the /proc filesystem or API
+            // For now, we'll track this in the instance after creation
+            instance.serial_pty_path.clone()
+        } else {
+            None
+        };
+
+        let console_pty = if matches!(
+            instance.proto_config.console.as_ref().map(|c| c.mode),
+            Some(1) // PTY mode
+        ) {
+            instance.console_pty_path.clone()
+        } else {
+            None
+        };
+
+        Ok((serial_pty, console_pty))
+    }
+
+    /// Query Cloud Hypervisor for PTY paths and update the instance.
+    /// This must be called after VM is created/started to discover PTY paths.
+    pub async fn update_pty_paths(&self, _vm_id: &str) -> Result<(), VmManagerError> {
+        // Cloud Hypervisor doesn't expose PTY paths via HTTP API in v1
+        // The PTY devices are created in /dev/pts/ but we can't reliably determine
+        // which ones belong to our VM without process introspection.
+        //
+        // For now, we'll use a socket-based console approach instead of PTY.
+        // PTY mode works but is hard to multiplex. Socket mode is better for
+        // remote access.
+        Ok(())
+    }
+
+    /// Discover PTY paths by parsing Cloud Hypervisor's log output.
+    /// Returns (serial_pty_path, console_pty_path) if found.
+    async fn discover_pty_paths(
+        &self,
+        log_path: &std::path::Path,
+        config: &ProtoVmConfig,
+    ) -> (Option<String>, Option<String>) {
+        // Only parse if PTY mode is configured
+        let serial_is_pty = config.serial.as_ref().map(|s| s.mode == 1).unwrap_or(false);
+        let console_is_pty = config
+            .console
+            .as_ref()
+            .map(|c| c.mode == 1)
+            .unwrap_or(false);
+
+        if !serial_is_pty && !console_is_pty {
+            return (None, None);
+        }
+
+        // Read log file (with retry, as CH may not have written yet)
+        let mut retries = 0;
+        let log_content = loop {
+            if let Ok(content) = tokio::fs::read_to_string(log_path).await
+                && !content.is_empty()
+            {
+                break content;
+            }
+            if retries >= 10 {
+                warn!("Could not read log file for PTY discovery: {:?}", log_path);
+                return (None, None);
+            }
+            retries += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        };
+
+        let mut serial_pty = None;
+        let mut console_pty = None;
+
+        // Parse log for PTY paths
+        // Cloud Hypervisor debug output includes: "Serial PTY: /dev/pts/X"
+        for line in log_content.lines() {
+            if serial_is_pty
+                && line.contains("Serial")
+                && line.contains("/dev/pts/")
+                && let Some(path_start) = line.find("/dev/pts/")
+            {
+                let path_end = line[path_start..]
+                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                    .unwrap_or(line.len() - path_start);
+                serial_pty = Some(line[path_start..path_start + path_end].to_string());
+                info!("Discovered serial PTY: {:?}", serial_pty);
+            }
+            if console_is_pty
+                && line.contains("Console")
+                && line.contains("/dev/pts/")
+                && let Some(path_start) = line.find("/dev/pts/")
+            {
+                let path_end = line[path_start..]
+                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                    .unwrap_or(line.len() - path_start);
+                console_pty = Some(line[path_start..path_start + path_end].to_string());
+                info!("Discovered console PTY: {:?}", console_pty);
+            }
+        }
+
+        if serial_is_pty && serial_pty.is_none() {
+            warn!("Serial PTY mode enabled but PTY path not found in logs");
+        }
+        if console_is_pty && console_pty.is_none() {
+            warn!("Console PTY mode enabled but PTY path not found in logs");
+        }
+
+        (serial_pty, console_pty)
+    }
+
+    /// Get the serial console PTY path if available
+    pub async fn get_serial_pty_path(&self, vm_id: &str) -> Result<Option<String>, VmManagerError> {
+        let vms = self.vms.lock().await;
+        let instance = vms
+            .get(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        // Check if serial is configured in PTY mode
+        if let Some(serial) = &instance.proto_config.serial
+            && serial.mode == 1
+        {
+            // PTY mode
+            return Ok(instance.serial_pty_path.clone());
+        }
+
+        Ok(None)
+    }
+
+    /// Get the console device PTY path if available
+    pub async fn get_console_pty_path(
+        &self,
+        vm_id: &str,
+    ) -> Result<Option<String>, VmManagerError> {
+        let vms = self.vms.lock().await;
+        let instance = vms
+            .get(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        // Check if console is configured in PTY mode
+        if let Some(console) = &instance.proto_config.console
+            && console.mode == 1
+        {
+            // PTY mode
+            return Ok(instance.console_pty_path.clone());
+        }
+
+        Ok(None)
     }
 }
 
