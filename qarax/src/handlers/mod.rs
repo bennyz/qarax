@@ -45,6 +45,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         vm::handler::delete,
         vm::handler::metrics,
         vm::handler::console_log,
+        vm::handler::console_attach,
         storage_object::handler::list,
         storage_object::handler::get,
         storage_object::handler::create,
@@ -175,6 +176,10 @@ fn vms() -> Router {
         .route("/vms/{vm_id}/resume", post(vm::handler::resume))
         .route("/vms/{vm_id}/metrics", get(vm::handler::metrics))
         .route("/vms/{vm_id}/console", get(vm::handler::console_log))
+        .route(
+            "/vms/{vm_id}/console/attach",
+            get(vm::handler::console_attach),
+        )
 }
 
 fn storage_objects() -> Router {

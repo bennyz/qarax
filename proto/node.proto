@@ -256,6 +256,25 @@ message ConsoleLogResponse {
   bool available = 2;     // false if console logging was not enabled
 }
 
+message ConsoleInput {
+  string vm_id = 1;       // VM identifier (only needed in first message)
+  bytes data = 2;         // Input data to send to console
+  bool resize = 3;        // If true, this is a resize request
+  uint32 rows = 4;        // Terminal rows (for resize)
+  uint32 cols = 5;        // Terminal columns (for resize)
+}
+
+message ConsoleOutput {
+  bytes data = 1;         // Output data from console
+  bool error = 2;         // If true, this is an error message
+  string error_message = 3; // Error description (if error=true)
+}
+
+message ConsolePtyPathResponse {
+  string pty_path = 1;    // Path to PTY device
+  bool available = 2;     // Whether PTY console is available
+}
+
 message NodeInfo {
   string hostname = 1;
   string cloud_hypervisor_version = 2;
@@ -283,6 +302,10 @@ service VmService {
   rpc ListVms(google.protobuf.Empty) returns (VmList) {}
   rpc GetVmCounters(VmID) returns (VmCounters) {}
   rpc ReadConsoleLog(VmID) returns (ConsoleLogResponse) {}
+
+  // Console streaming (for PTY/interactive console access)
+  rpc AttachConsole(stream ConsoleInput) returns (stream ConsoleOutput) {}
+  rpc GetConsolePtyPath(VmID) returns (ConsolePtyPathResponse) {}
 
   // Hot-attach operations (for future use)
   rpc AddNetworkDevice(AddNetworkDeviceRequest) returns (google.protobuf.Empty) {}

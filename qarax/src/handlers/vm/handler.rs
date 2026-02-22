@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::{Extension, Json, extract::Path, response::IntoResponse};
+use futures::{SinkExt, StreamExt};
 use http::StatusCode;
 use serde::Serialize;
-use tracing::instrument;
+use tracing::{error, info, instrument, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -643,4 +645,113 @@ pub async fn console_log(
         .header("Content-Type", "text/plain; charset=utf-8")
         .body(axum::body::Body::from(response.content))
         .unwrap())
+}
+
+/// WebSocket console attachment for interactive terminal access
+#[utoipa::path(
+    get,
+    path = "/vms/{vm_id}/console/attach",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 101, description = "Switching Protocols - WebSocket connection established"),
+        (status = 404, description = "VM not found"),
+        (status = 422, description = "VM console not available or not in PTY mode"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env, ws))]
+pub async fn console_attach(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+    ws: WebSocketUpgrade,
+) -> Result<axum::response::Response> {
+    info!("WebSocket console attachment requested for VM: {}", vm_id);
+
+    // Verify VM exists and get host
+    let host = host_for_vm(&env, vm_id).await?;
+
+    Ok(ws.on_upgrade(move |socket| handle_console_websocket(socket, vm_id, host)))
+}
+
+async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model::hosts::Host) {
+    info!("WebSocket connection established for VM: {}", vm_id);
+
+    let (mut ws_sender, mut ws_receiver) = ws.split();
+
+    // Connect to qarax-node gRPC console stream
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    match node_client.attach_console(vm_id).await {
+        Ok((grpc_input_tx, mut grpc_output_rx)) => {
+            // Spawn task to forward WebSocket -> gRPC
+            let ws_to_grpc = tokio::spawn(async move {
+                while let Some(msg) = ws_receiver.next().await {
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if grpc_input_tx.send(text.as_bytes().to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Message::Binary(data)) => {
+                            if grpc_input_tx.send(data.to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Message::Close(_)) => {
+                            info!("WebSocket client closed connection for VM {}", vm_id);
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("WebSocket error for VM {}: {}", vm_id, e);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+            // Spawn task to forward gRPC -> WebSocket
+            let grpc_to_ws = tokio::spawn(async move {
+                while let Some(result) = grpc_output_rx.recv().await {
+                    match result {
+                        Ok(data) => {
+                            if ws_sender.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(error_msg) => {
+                            error!("gRPC console error for VM {}: {}", vm_id, error_msg);
+                            let _ = ws_sender
+                                .send(Message::Text(format!("Error: {}", error_msg).into()))
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Wait for either task to complete
+            tokio::select! {
+                _ = ws_to_grpc => {
+                    info!("WebSocket to gRPC task completed for VM {}", vm_id);
+                }
+                _ = grpc_to_ws => {
+                    info!("gRPC to WebSocket task completed for VM {}", vm_id);
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to attach to console for VM {}: {}", vm_id, e);
+            let _ = ws_sender
+                .send(Message::Text(
+                    format!("Failed to attach to console: {}", e).into(),
+                ))
+                .await;
+        }
+    }
+
+    info!("WebSocket console session ended for VM: {}", vm_id);
 }

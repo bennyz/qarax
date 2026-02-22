@@ -3242,11 +3242,13 @@ name = "qarax"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "axum 0.8.8",
  "chrono",
  "common",
  "config",
+ "futures",
  "http 1.4.0",
  "hyper 1.8.1",
  "macaddr",
@@ -4952,6 +4954,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
