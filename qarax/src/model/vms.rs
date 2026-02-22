@@ -40,6 +40,9 @@ pub struct Vm {
     pub memory_prefault: bool,
     pub memory_thp: bool,
 
+    // OCI image boot support
+    pub image_ref: Option<String>,
+
     // Legacy config field for flexibility
     pub config: serde_json::Value,
 }
@@ -70,6 +73,8 @@ pub struct VmRow {
     pub memory_prefault: bool,
     pub memory_thp: bool,
 
+    pub image_ref: Option<String>,
+
     pub config: Json<serde_json::Value>,
 }
 
@@ -97,6 +102,8 @@ impl From<VmRow> for Vm {
             memory_hugepage_size: row.memory_hugepage_size,
             memory_prefault: row.memory_prefault,
             memory_thp: row.memory_thp,
+
+            image_ref: row.image_ref,
 
             config: row.config.0,
         }
@@ -198,6 +205,10 @@ pub struct NewVm {
     pub boot_source_id: Option<Uuid>,
     pub description: Option<String>,
 
+    /// OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
+    /// When set, qarax-node will pull and convert the image using Nydus and serve it via virtiofs.
+    pub image_ref: Option<String>,
+
     /// Optional network interfaces to attach at create time (passed to qarax-node).
     #[serde(default)]
     pub networks: Option<Vec<NewVmNetwork>>,
@@ -229,6 +240,7 @@ SELECT id,
         memory_hugepage_size as "memory_hugepage_size?",
         memory_prefault as "memory_prefault!",
         memory_thp as "memory_thp!",
+        image_ref as "image_ref?",
         config as "config: _"
 FROM vms
         "#
@@ -263,6 +275,7 @@ SELECT id,
         memory_hugepage_size as "memory_hugepage_size?",
         memory_prefault as "memory_prefault!",
         memory_thp as "memory_thp!",
+        image_ref as "image_ref?",
         config as "config: _"
 FROM vms
 WHERE id = $1
@@ -298,14 +311,14 @@ INSERT INTO vms (
     boot_vcpus, max_vcpus, cpu_topology, kvm_hyperv,
     memory_size, memory_hotplug_size, memory_mergeable, memory_shared,
     memory_hugepages, memory_hugepage_size, memory_prefault, memory_thp,
-    boot_source_id, description, config
+    boot_source_id, description, image_ref, config
 )
 VALUES (
     $1, $2, $3, $4,
     $5, $6, $7, $8,
     $9, $10, $11, $12,
     $13, $14, $15, $16,
-    $17, $18, $19
+    $17, $18, $19, $20
 )
         "#,
     )
@@ -327,6 +340,7 @@ VALUES (
     .bind(vm.memory_thp.unwrap_or(false))
     .bind(vm.boot_source_id)
     .bind(&vm.description)
+    .bind(&vm.image_ref)
     .bind(config)
     .execute(tx.as_mut())
     .await?;
@@ -356,6 +370,7 @@ SELECT id,
         memory_hugepage_size,
         memory_prefault,
         memory_thp,
+        image_ref,
         config
 FROM vms
 WHERE status NOT IN ('SHUTDOWN', 'UNKNOWN')

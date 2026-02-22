@@ -33,6 +33,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         host::handler::add,
         host::handler::update,
         host::handler::deploy,
+        host::handler::init,
         vm::handler::list,
         vm::handler::get,
         vm::handler::create,
@@ -42,6 +43,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         vm::handler::resume,
         vm::handler::delete,
         vm::handler::metrics,
+        vm::handler::console_log,
         storage_object::handler::list,
         storage_object::handler::get,
         storage_object::handler::create,
@@ -89,6 +91,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::transfers::NewTransfer,
             crate::model::transfers::TransferType,
             crate::model::transfers::TransferStatus,
+            crate::model::vm_filesystems::VmFilesystem,
+            crate::model::vm_filesystems::NewVmFilesystem,
         )
     ),
     tags(
@@ -147,6 +151,7 @@ fn hosts() -> Router {
         .route("/hosts", get(host::handler::list).post(host::handler::add))
         .route("/hosts/{host_id}", patch(host::handler::update))
         .route("/hosts/{host_id}/deploy", post(host::handler::deploy))
+        .route("/hosts/{host_id}/init", post(host::handler::init))
 }
 
 fn vms() -> Router {
@@ -161,6 +166,7 @@ fn vms() -> Router {
         .route("/vms/{vm_id}/pause", post(vm::handler::pause))
         .route("/vms/{vm_id}/resume", post(vm::handler::resume))
         .route("/vms/{vm_id}/metrics", get(vm::handler::metrics))
+        .route("/vms/{vm_id}/console", get(vm::handler::console_log))
 }
 
 fn storage_objects() -> Router {

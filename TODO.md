@@ -1,0 +1,5 @@
+- match e2e container cloud hv version
+- ty check python sdk
+- generate rust cli
+- shared storage for OCI
+- console access to VMs

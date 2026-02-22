@@ -1,4 +1,4 @@
 [workspace]
 default-members = ["qarax", "common", "qarax-node"]
-members = ["qarax", "common", "qarax-node"]
+members = ["qarax", "common", "qarax-node", "qarax-init"]
 resolver = "2"

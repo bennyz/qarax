@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, name, address, port, host_user, password, status as \"status: _\"\n        FROM hosts\n        WHERE name = $1\n        ",
+  "query": "\n        SELECT id, name, address, port, host_user, password,\n               status as \"status: _\",\n               cloud_hypervisor_version, kernel_version\n        FROM hosts\n        ",
   "describe": {
     "columns": [
       {
@@ -51,12 +51,20 @@
             }
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "cloud_hypervisor_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "kernel_version",
+        "type_info": "Text"
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -65,8 +73,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "5ed3014ae4941944d82db216db4b65e045c2c90f1b974fdf11190151bcc6ef8f"
+  "hash": "52acf304c7e8efe5e873dd899e993a054f67bf46423de7b758681351a8ffc221"
 }

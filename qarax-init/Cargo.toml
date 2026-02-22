@@ -1,0 +1,14 @@
+[package]
+name = "qarax-init"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "qarax-init"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+nix = { version = "0.29", features = ["mount", "process", "signal", "socket"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

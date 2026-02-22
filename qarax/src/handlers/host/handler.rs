@@ -138,3 +138,60 @@ pub async fn deploy(
 
     Ok((StatusCode::ACCEPTED, "Host deployment started".to_string()))
 }
+
+#[utoipa::path(
+    post,
+    path = "/hosts/{host_id}/init",
+    params(
+        ("host_id" = uuid::Uuid, Path, description = "Host unique identifier")
+    ),
+    responses(
+        (status = 200, description = "Host initialized successfully", body = Host),
+        (status = 404, description = "Host not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "hosts"
+)]
+#[instrument(skip(env))]
+pub async fn init(
+    Extension(env): Extension<App>,
+    Path(host_id): Path<Uuid>,
+) -> Result<ApiResponse<Host>> {
+    let host = hosts::get_by_id(env.pool(), host_id)
+        .await?
+        .ok_or(crate::errors::Error::NotFound)?;
+
+    let node_client = crate::grpc_client::NodeClient::new(&host.address, host.port as u16);
+
+    let node_info = node_client.get_node_info().await.map_err(|e| {
+        tracing::error!("Failed to get node info for host {}: {}", host_id, e);
+        crate::errors::Error::InternalServerError
+    })?;
+
+    info!(
+        host_id = %host_id,
+        hostname = %node_info.hostname,
+        ch_version = %node_info.cloud_hypervisor_version,
+        kernel_version = %node_info.kernel_version,
+        "Node info retrieved"
+    );
+
+    hosts::update_versions(
+        env.pool(),
+        host_id,
+        &node_info.cloud_hypervisor_version,
+        &node_info.kernel_version,
+    )
+    .await?;
+
+    hosts::update_status(env.pool(), host_id, HostStatus::Up).await?;
+
+    let updated_host = hosts::get_by_id(env.pool(), host_id)
+        .await?
+        .ok_or(crate::errors::Error::NotFound)?;
+
+    Ok(ApiResponse {
+        data: updated_host,
+        code: StatusCode::OK,
+    })
+}

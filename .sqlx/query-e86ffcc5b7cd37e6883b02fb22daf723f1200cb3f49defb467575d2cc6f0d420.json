@@ -30,7 +30,8 @@
                 "KERNEL",
                 "INITRD",
                 "ISO",
-                "SNAPSHOT"
+                "SNAPSHOT",
+                "OCI_IMAGE"
               ]
             }
           }
@@ -63,7 +64,8 @@
                 "KERNEL",
                 "INITRD",
                 "ISO",
-                "SNAPSHOT"
+                "SNAPSHOT",
+                "OCI_IMAGE"
               ]
             }
           }

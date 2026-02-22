@@ -17,6 +17,9 @@ pub struct Host {
 
     #[serde(skip_deserializing)]
     pub password: Vec<u8>,
+
+    pub cloud_hypervisor_version: Option<String>,
+    pub kernel_version: Option<String>,
 }
 
 #[derive(
@@ -139,7 +142,9 @@ pub async fn list(pool: &PgPool) -> Result<Vec<Host>, sqlx::Error> {
     let hosts = sqlx::query_as!(
         Host,
         r#"
-        SELECT id, name, address, port, host_user, password, status as "status: _"
+        SELECT id, name, address, port, host_user, password,
+               status as "status: _",
+               cloud_hypervisor_version, kernel_version
         FROM hosts
         "#,
     )
@@ -186,7 +191,7 @@ pub async fn update_status(pool: &PgPool, id: Uuid, status: HostStatus) -> Resul
 /// Returns a host by id, if it exists.
 pub async fn get_by_id(pool: &PgPool, host_id: Uuid) -> Result<Option<Host>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, name, address, port, host_user, password, status FROM hosts WHERE id = $1",
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE id = $1",
     )
     .bind(host_id)
     .fetch_optional(pool)
@@ -200,13 +205,15 @@ pub async fn get_by_id(pool: &PgPool, host_id: Uuid) -> Result<Option<Host>, sql
         host_user: r.get("host_user"),
         password: r.get("password"),
         status: r.get("status"),
+        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
+        kernel_version: r.get("kernel_version"),
     }))
 }
 
 /// Pick a random UP host for VM scheduling.
 pub async fn pick_up_host(pool: &PgPool) -> Result<Option<Host>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, name, address, port, host_user, password, status FROM hosts WHERE status = 'UP' ORDER BY RANDOM() LIMIT 1",
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE status = 'UP' ORDER BY RANDOM() LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -219,7 +226,27 @@ pub async fn pick_up_host(pool: &PgPool) -> Result<Option<Host>, sqlx::Error> {
         host_user: r.get("host_user"),
         password: r.get("password"),
         status: r.get("status"),
+        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
+        kernel_version: r.get("kernel_version"),
     }))
+}
+
+/// Update version information for a host (called after GetNodeInfo).
+pub async fn update_versions(
+    pool: &PgPool,
+    id: Uuid,
+    ch_version: &str,
+    kernel_version: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE hosts SET cloud_hypervisor_version = $1, kernel_version = $2 WHERE id = $3",
+    )
+    .bind(ch_version)
+    .bind(kernel_version)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // TODO: figure out how to not fetch the entire host. Maybe with SELECT exists()?
@@ -227,7 +254,9 @@ pub async fn by_name(pool: &PgPool, name: &str) -> Result<Option<Host>, sqlx::Er
     let host = sqlx::query_as!(
         Host,
         r#"
-        SELECT id, name, address, port, host_user, password, status as "status: _"
+        SELECT id, name, address, port, host_user, password,
+               status as "status: _",
+               cloud_hypervisor_version, kernel_version
         FROM hosts
         WHERE name = $1
         "#,

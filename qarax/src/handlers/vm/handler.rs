@@ -9,11 +9,12 @@ use uuid::Uuid;
 
 use crate::{
     App,
-    grpc_client::{CreateVmRequest, NodeClient, net_configs_from_api},
+    grpc_client::{CreateVmRequest, NodeClient, net_configs_from_api, node::FsConfig},
     model::{
         boot_sources, hosts,
         hosts::Host,
         network_interfaces,
+        vm_filesystems::{self, NewVmFilesystem},
         vms::{self, NewVm, Vm, VmStatus},
     },
 };
@@ -140,10 +141,53 @@ pub async fn create(
 
     // Pick a host before touching the node, so we fail fast with a clear error
     let host = pick_host(&env).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    // If an OCI image_ref is provided, pull the image and configure virtiofs
+    let (fs_configs, memory_shared, effective_cmdline, filesystem_record) = if let Some(image_ref) =
+        &vm.image_ref
+    {
+        // Pull (or verify cached) image on the target node
+        let image_info = node_client.pull_image(image_ref).await.map_err(|e| {
+            tracing::error!("Failed to pull OCI image {}: {}", image_ref, e);
+            crate::errors::Error::UnprocessableEntity(format!("Failed to pull OCI image: {}", e))
+        })?;
+
+        // Build the virtiofs socket path (nydusd will be started by qarax-node on CreateVM)
+        // The socket path follows the convention: {runtime_dir}/{vm_id}-fs0.sock
+        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", id);
+
+        let fs_config = FsConfig {
+            tag: "rootfs".to_string(),
+            socket: socket_path,
+            num_queues: 1,
+            queue_size: 1024,
+            pci_segment: None,
+            id: Some("fs0".to_string()),
+            bootstrap_path: Some(image_info.bootstrap_path.clone()),
+        };
+
+        // Override cmdline to mount virtiofs as root, with serial console and custom init
+        let oci_cmdline =
+            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
+
+        let fs_record = NewVmFilesystem {
+            vm_id: id,
+            tag: "rootfs".to_string(),
+            num_queues: Some(1),
+            queue_size: Some(1024),
+            pci_segment: None,
+            image_ref: Some(image_ref.clone()),
+            image_digest: Some(image_info.digest.clone()),
+        };
+
+        (vec![fs_config], true, oci_cmdline, Some(fs_record))
+    } else {
+        (vec![], vm.memory_shared.unwrap_or(false), cmdline, None)
+    };
 
     // Call qarax-node to create the VM; on failure we return before commit so the insert is rolled back
     let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
-    let node_client = NodeClient::new(&host.address, host.port as u16);
     if let Err(e) = node_client
         .create_vm(CreateVmRequest {
             vm_id: id,
@@ -153,7 +197,9 @@ pub async fn create(
             networks,
             kernel,
             initramfs,
-            cmdline,
+            cmdline: effective_cmdline,
+            fs_configs,
+            memory_shared,
         })
         .await
     {
@@ -167,6 +213,13 @@ pub async fn create(
     // Store network interfaces in DB (inside tx, so rolls back if any insert fails)
     for net in vm.networks.as_deref().unwrap_or(&[]) {
         network_interfaces::create(&mut tx, id, net)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+    }
+
+    // Persist filesystem record if OCI image was specified
+    if let Some(fs_record) = filesystem_record {
+        vm_filesystems::create_tx(&mut tx, &fs_record)
             .await
             .map_err(crate::errors::Error::Sqlx)?;
     }
@@ -186,7 +239,7 @@ pub async fn create(
         ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
     ),
     responses(
-        (status = 200, description = "VM started successfully"),
+        (status = 202, description = "VM start accepted"),
         (status = 404, description = "VM not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -197,6 +250,25 @@ pub async fn start(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
+    let vm = vms::get(env.pool(), vm_id).await?;
+
+    match vm.status {
+        VmStatus::Running => {
+            return Ok(ApiResponse {
+                data: (),
+                code: StatusCode::ACCEPTED,
+            });
+        }
+        VmStatus::Paused => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "VM is paused; use POST /vms/{vm_id}/resume instead".into(),
+            ));
+        }
+        VmStatus::Created | VmStatus::Shutdown | VmStatus::Unknown => {
+            // Valid states to start from
+        }
+    }
+
     let host = host_for_vm(&env, vm_id).await?;
     let node_client = NodeClient::new(&host.address, host.port as u16);
     node_client.start_vm(vm_id).await.map_err(|e| {
@@ -208,7 +280,7 @@ pub async fn start(
 
     Ok(ApiResponse {
         data: (),
-        code: StatusCode::OK,
+        code: StatusCode::ACCEPTED,
     })
 }
 
@@ -330,11 +402,7 @@ pub async fn metrics(
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<VmMetrics>> {
     // Verify VM exists in DB and resolve its host
-    let vm = match vms::get(env.pool(), vm_id).await {
-        Ok(vm) => vm,
-        Err(sqlx::Error::RowNotFound) => return Err(crate::errors::Error::NotFound),
-        Err(e) => return Err(crate::errors::Error::Sqlx(e)),
-    };
+    let vm = vms::get(env.pool(), vm_id).await?;
 
     let host = host_for_vm(&env, vm_id).await?;
     let node_client = NodeClient::new(&host.address, host.port as u16);
@@ -409,4 +477,41 @@ pub async fn delete(
         data: (),
         code: StatusCode::NO_CONTENT,
     })
+}
+
+#[utoipa::path(
+    get,
+    path = "/vms/{vm_id}/console",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 200, description = "Console log content", body = String, content_type = "text/plain"),
+        (status = 404, description = "Console logging not available for this VM"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn console_log(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<axum::response::Response> {
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    let response = node_client.read_console_log(vm_id).await.map_err(|e| {
+        tracing::error!("Failed to read console log: {}", e);
+        crate::errors::Error::InternalServerError
+    })?;
+
+    if !response.available {
+        return Err(crate::errors::Error::NotFound);
+    }
+
+    Ok(axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(axum::body::Body::from(response.content))
+        .unwrap())
 }

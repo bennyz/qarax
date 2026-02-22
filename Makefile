@@ -69,7 +69,7 @@ clean:
 
 # Linting and formatting
 lint:
-	cargo clippy -- -D warnings
+	cargo clippy --workspace -- -D warnings
 
 fmt: shfmt
 	cargo fmt

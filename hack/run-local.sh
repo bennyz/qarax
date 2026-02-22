@@ -83,23 +83,24 @@ fi
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-node"
 QARAX_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
+INIT_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-init"
 if [[ -z "${SKIP_BUILD}" ]]; then
-	if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
-		echo -e "${YELLOW}Building qarax and qarax-node (release, musl)...${NC}"
+	if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]] || [[ ! -f "${INIT_BINARY}" ]]; then
+		echo -e "${YELLOW}Building qarax, qarax-node, and qarax-init (release, musl)...${NC}"
 		if [[ "$(uname -s)" == "Darwin" ]]; then
 			if ! command -v cross &>/dev/null; then
 				echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
 				exit 1
 			fi
-			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node
+			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init
 		else
-			cargo build --release -p qarax -p qarax-node
+			cargo build --release -p qarax -p qarax-node -p qarax-init
 		fi
 	else
 		echo -e "${GREEN}Using existing binaries${NC}"
 	fi
 else
-	if [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]]; then
+	if [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]] || [[ ! -f "${INIT_BINARY}" ]]; then
 		echo -e "${RED}SKIP_BUILD=1 but binaries not found. Build first or remove SKIP_BUILD.${NC}"
 		exit 1
 	fi
