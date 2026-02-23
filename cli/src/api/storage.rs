@@ -1,0 +1,45 @@
+use uuid::Uuid;
+
+use crate::client::Client;
+
+use super::models::{NewStorageObject, NewStoragePool, StorageObject, StoragePool};
+
+// ─── Storage pools ────────────────────────────────────────────────────────────
+
+pub async fn list_pools(client: &Client) -> anyhow::Result<Vec<StoragePool>> {
+    client.get("/storage-pools").await
+}
+
+pub async fn get_pool(client: &Client, pool_id: Uuid) -> anyhow::Result<StoragePool> {
+    client.get(&format!("/storage-pools/{pool_id}")).await
+}
+
+/// Create a storage pool. Returns the new pool's UUID as plain text.
+pub async fn create_pool(client: &Client, pool: &NewStoragePool) -> anyhow::Result<String> {
+    client.post_text("/storage-pools", pool).await
+}
+
+pub async fn delete_pool(client: &Client, pool_id: Uuid) -> anyhow::Result<()> {
+    client.delete(&format!("/storage-pools/{pool_id}")).await
+}
+
+// ─── Storage objects ──────────────────────────────────────────────────────────
+
+pub async fn list_objects(client: &Client) -> anyhow::Result<Vec<StorageObject>> {
+    client.get("/storage-objects").await
+}
+
+pub async fn get_object(client: &Client, object_id: Uuid) -> anyhow::Result<StorageObject> {
+    client.get(&format!("/storage-objects/{object_id}")).await
+}
+
+/// Create a storage object. Returns the new object's UUID as plain text.
+pub async fn create_object(client: &Client, obj: &NewStorageObject) -> anyhow::Result<String> {
+    client.post_text("/storage-objects", obj).await
+}
+
+pub async fn delete_object(client: &Client, object_id: Uuid) -> anyhow::Result<()> {
+    client
+        .delete(&format!("/storage-objects/{object_id}"))
+        .await
+}

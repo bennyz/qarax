@@ -377,8 +377,8 @@ INIT
 		echo "View VM console output:"
 		echo "  docker compose -f e2e/docker-compose.yml exec qarax-node tail -f /var/lib/qarax/vms/${vm_id}.console.log"
 		echo ""
-		echo "Stop VM:   curl -X POST http://localhost:8000/vms/${vm_id}/stop"
-		echo "Delete VM: curl -X DELETE http://localhost:8000/vms/${vm_id}"
+		echo "Stop VM:   qarax vm stop ${vm_id}"
+		echo "Delete VM: qarax vm delete ${vm_id}"
 		echo ""
 	else
 		echo -e "${RED}VM was not created. Check logs above for errors.${NC}"
@@ -417,46 +417,31 @@ if [[ $WITH_VM -eq 0 ]]; then
 	echo "  Swagger UI:   http://localhost:8000/swagger-ui"
 	echo "  OpenAPI JSON: http://localhost:8000/api-docs/openapi.json"
 	echo ""
-	echo "Quick try:"
-	echo "  curl -s http://localhost:8000/vms"
-	echo "  curl -s http://localhost:8000/hosts"
+	echo "Quick try (qarax):"
+	echo "  qarax vm list"
+	echo "  qarax host list"
 	echo ""
-	echo "Create and start a VM (bash):"
-	echo '  VM_ID=$(curl -s -X POST http://localhost:8000/vms \'
-	echo '    -H "Content-Type: application/json" \'
-	echo '    -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' | jq -r .)'
-	echo '  curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
+	echo "Create and start a VM:"
+	echo '  qarax vm create --name my-vm --vcpus 1 --memory 268435456'
+	echo '  qarax vm start <VM_ID>'
 	echo ""
-	echo "Create and start a VM (fish):"
-	echo '  set VM_ID (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"my-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456}'\'' | jq -r .)'
-	echo '  curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
+	echo "Create a VM from an OCI image (async — polls the job automatically):"
+	echo '  qarax vm create --name alpine-vm --vcpus 1 --memory 268435456 \'
+	echo '    --image-ref public.ecr.aws/docker/library/alpine:latest'
+	echo '  qarax vm start <VM_ID>'
 	echo ""
-	echo "Create a VM with a network interface (id + optional mac, tap, ip, mask):"
-	echo '  curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" \'
-	echo '    -d '\''{"name":"my-vm-net","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"networks":[{"id":"net0","mac":"52:54:00:12:34:56"}]}'\'''
+	echo "Other useful commands:"
+	echo "  qarax vm get <VM_ID>"
+	echo "  qarax vm stop <VM_ID>"
+	echo "  qarax vm delete <VM_ID>"
+	echo "  qarax host init <HOST_ID>         # connect via gRPC, mark host UP"
+	echo "  qarax --json vm list              # raw JSON output"
+	echo "  qarax boot-source list"
+	echo "  qarax storage-pool list"
+	echo "  qarax transfer list --pool <POOL_ID>"
+	echo "  qarax job get <JOB_ID>"
 	echo ""
-	echo "Create a VM from an OCI image (returns 202 + job_id, poll until complete):"
-	echo "  bash:"
-	echo '    RESP=$(curl -s -X POST http://localhost:8000/vms \'
-	echo '      -H "Content-Type: application/json" \'
-	echo '      -d '\''{"name":"alpine-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"image_ref":"public.ecr.aws/docker/library/alpine:latest"}'\'')'
-	echo '    VM_ID=$(echo $RESP | jq -r .vm_id)'
-	echo '    JOB_ID=$(echo $RESP | jq -r .job_id)'
-	echo '    # Poll until status is completed or failed:'
-	echo '    while true; do'
-	echo '      STATUS=$(curl -s http://localhost:8000/jobs/$JOB_ID | jq -r .status)'
-	echo '      echo "Job status: $STATUS"; [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break; sleep 3; done'
-	echo '    curl -s -X POST "http://localhost:8000/vms/${VM_ID}/start"'
-	echo ""
-	echo "  fish:"
-	echo '    set RESP (curl -s -X POST http://localhost:8000/vms -H "Content-Type: application/json" -d '\''{"name":"alpine-vm","hypervisor":"cloud_hv","boot_vcpus":1,"max_vcpus":1,"memory_size":268435456,"image_ref":"public.ecr.aws/docker/library/alpine:latest"}'\'')'
-	echo '    set VM_ID (echo $RESP | jq -r .vm_id)'
-	echo '    set JOB_ID (echo $RESP | jq -r .job_id)'
-	echo '    # Poll until status is completed or failed:'
-	echo '    while true; set STATUS (curl -s http://localhost:8000/jobs/$JOB_ID | jq -r .status); echo "Job status: $STATUS"; [ "$STATUS" = completed ] || [ "$STATUS" = failed ]; and break; sleep 3; end'
-	echo '    curl -s -X POST "http://localhost:8000/vms/$VM_ID/start"'
-	echo ""
-	echo "Useful commands:"
+	echo "Docker stack commands:"
 	echo "  docker compose -f e2e/docker-compose.yml logs -f    # Follow all logs"
 	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
 	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"

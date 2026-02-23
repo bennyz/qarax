@@ -452,9 +452,11 @@ impl VmManager {
 
         info!("VM {} created on Cloud Hypervisor", vm_id);
 
-        // Parse log file to discover PTY paths (if PTY mode is enabled)
-        // Cloud Hypervisor logs PTY paths like: "Serial PTY: /dev/pts/3"
-        let (serial_pty, console_pty) = self.discover_pty_paths(&log_path, &config).await;
+        // Query vm.info API to discover PTY paths.
+        // Cloud Hypervisor exposes the allocated PTY device path in the
+        // vm.info response (config.serial.file / config.console.file) after
+        // vm.create completes.
+        let (serial_pty, console_pty) = self.query_pty_paths(&socket_path, &config).await;
 
         // Persist proto config (as protobuf binary) for recovery after restart
         let config_bytes = config.encode_to_vec();
@@ -504,13 +506,30 @@ impl VmManager {
     pub async fn start_vm(&self, vm_id: &str) -> Result<(), VmManagerError> {
         info!("Starting VM: {}", vm_id);
 
-        let mut vms = self.vms.lock().await;
-        let instance = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+        let (socket_path, proto_config) = {
+            let mut vms = self.vms.lock().await;
+            let instance = vms
+                .get_mut(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
 
-        instance.vm.boot().await?;
-        instance.status = VmStatus::Running;
+            instance.vm.boot().await?;
+            instance.status = VmStatus::Running;
+            (instance.socket_path.clone(), instance.proto_config.clone())
+        };
+
+        // Re-query PTY paths after boot in case they weren't available at create time.
+        let (serial_pty, console_pty) = self.query_pty_paths(&socket_path, &proto_config).await;
+        if serial_pty.is_some() || console_pty.is_some() {
+            let mut vms = self.vms.lock().await;
+            if let Some(instance) = vms.get_mut(vm_id) {
+                if serial_pty.is_some() {
+                    instance.serial_pty_path = serial_pty;
+                }
+                if console_pty.is_some() {
+                    instance.console_pty_path = console_pty;
+                }
+            }
+        }
 
         info!("VM {} started successfully", vm_id);
         Ok(())
@@ -1196,14 +1215,17 @@ impl VmManager {
         Ok(())
     }
 
-    /// Discover PTY paths by parsing Cloud Hypervisor's log output.
-    /// Returns (serial_pty_path, console_pty_path) if found.
-    async fn discover_pty_paths(
+    /// Query Cloud Hypervisor's vm.info API to obtain PTY device paths.
+    ///
+    /// When a serial or console device is configured in PTY mode, CH allocates
+    /// a PTY and exposes the slave device path in the vm.info response under
+    /// `config.serial.file` / `config.console.file`. This is more reliable than
+    /// log parsing because CH doesn't necessarily log the PTY path at all log levels.
+    async fn query_pty_paths(
         &self,
-        log_path: &std::path::Path,
+        socket_path: &PathBuf,
         config: &ProtoVmConfig,
     ) -> (Option<String>, Option<String>) {
-        // Only parse if PTY mode is configured
         let serial_is_pty = config.serial.as_ref().map(|s| s.mode == 1).unwrap_or(false);
         let console_is_pty = config
             .console
@@ -1215,78 +1237,120 @@ impl VmManager {
             return (None, None);
         }
 
-        // Read log file (with retry, as CH may not have written yet)
-        let mut retries = 0;
-        let log_content = loop {
-            if let Ok(content) = tokio::fs::read_to_string(log_path).await
-                && !content.is_empty()
-            {
-                break content;
-            }
-            if retries >= 10 {
-                warn!("Could not read log file for PTY discovery: {:?}", log_path);
+        let body = match self
+            .send_api_request(socket_path, "GET", "/api/v1/vm.info", None)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                debug!("Failed to query vm.info for PTY paths: {}", e);
                 return (None, None);
             }
-            retries += 1;
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         };
 
-        let mut serial_pty = None;
-        let mut console_pty = None;
-
-        // Parse log for PTY paths
-        // Cloud Hypervisor debug output includes: "Serial PTY: /dev/pts/X"
-        for line in log_content.lines() {
-            if serial_is_pty
-                && line.contains("Serial")
-                && line.contains("/dev/pts/")
-                && let Some(path_start) = line.find("/dev/pts/")
-            {
-                let path_end = line[path_start..]
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-                    .unwrap_or(line.len() - path_start);
-                serial_pty = Some(line[path_start..path_start + path_end].to_string());
-                info!("Discovered serial PTY: {:?}", serial_pty);
+        let info: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to parse vm.info response: {}", e);
+                return (None, None);
             }
-            if console_is_pty
-                && line.contains("Console")
-                && line.contains("/dev/pts/")
-                && let Some(path_start) = line.find("/dev/pts/")
-            {
-                let path_end = line[path_start..]
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-                    .unwrap_or(line.len() - path_start);
-                console_pty = Some(line[path_start..path_start + path_end].to_string());
-                info!("Discovered console PTY: {:?}", console_pty);
-            }
-        }
+        };
 
-        if serial_is_pty && serial_pty.is_none() {
-            warn!("Serial PTY mode enabled but PTY path not found in logs");
-        }
-        if console_is_pty && console_pty.is_none() {
-            warn!("Console PTY mode enabled but PTY path not found in logs");
-        }
+        let serial_pty = if serial_is_pty {
+            info["config"]["serial"]["file"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    info!("Discovered serial PTY path via vm.info: {}", s);
+                    s.to_string()
+                })
+        } else {
+            None
+        };
+
+        let console_pty = if console_is_pty {
+            info["config"]["console"]["file"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    info!("Discovered console PTY path via vm.info: {}", s);
+                    s.to_string()
+                })
+        } else {
+            None
+        };
 
         (serial_pty, console_pty)
     }
 
-    /// Get the serial console PTY path if available
+    /// Get the serial console PTY path if available.
+    ///
+    /// If the path was not discovered at create/start time (e.g. for recovered
+    /// VMs), queries Cloud Hypervisor's vm.info API to obtain it on demand and
+    /// caches the result in the instance for subsequent calls.
     pub async fn get_serial_pty_path(&self, vm_id: &str) -> Result<Option<String>, VmManagerError> {
-        let vms = self.vms.lock().await;
-        let instance = vms
-            .get(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        // Check if serial is configured in PTY mode
-        if let Some(serial) = &instance.proto_config.serial
-            && serial.mode == 1
+        // Fast path: return cached value if available
         {
-            // PTY mode
-            return Ok(instance.serial_pty_path.clone());
+            let vms = self.vms.lock().await;
+            let instance = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+            // Serial not in PTY mode — nothing to do
+            if !instance
+                .proto_config
+                .serial
+                .as_ref()
+                .map(|s| s.mode == 1)
+                .unwrap_or(false)
+            {
+                return Ok(None);
+            }
+
+            if let Some(path) = &instance.serial_pty_path {
+                return Ok(Some(path.clone()));
+            }
+
+            // Cache miss: need to query the API.  Drop the lock before doing async I/O.
         }
 
-        Ok(None)
+        // Query CH API for the PTY path
+        let socket_path = {
+            let vms = self.vms.lock().await;
+            let instance = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+            instance.socket_path.clone()
+        };
+
+        let pty_path = match self
+            .send_api_request(&socket_path, "GET", "/api/v1/vm.info", None)
+            .await
+        {
+            Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|info| {
+                    info["config"]["serial"]["file"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                }),
+            Err(e) => {
+                debug!("Failed to query vm.info for serial PTY path: {}", e);
+                None
+            }
+        };
+
+        // Cache the result so subsequent calls don't re-query the API
+        if let Some(path) = &pty_path {
+            info!("Discovered serial PTY path via vm.info: {}", path);
+            let mut vms = self.vms.lock().await;
+            if let Some(instance) = vms.get_mut(vm_id) {
+                instance.serial_pty_path = Some(path.clone());
+            }
+        }
+
+        Ok(pty_path)
     }
 
     /// Get the console device PTY path if available
