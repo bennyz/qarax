@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, TypeVar, cast
-from uuid import UUID
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -20,14 +19,12 @@ class NewStoragePool:
         pool_type (StoragePoolType):
         capacity_bytes (int | None | Unset):
         config (Any | Unset):
-        host_id (None | Unset | UUID):
     """
 
     name: str
     pool_type: StoragePoolType
     capacity_bytes: int | None | Unset = UNSET
     config: Any | Unset = UNSET
-    host_id: None | Unset | UUID = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,14 +40,6 @@ class NewStoragePool:
 
         config = self.config
 
-        host_id: None | str | Unset
-        if isinstance(self.host_id, Unset):
-            host_id = UNSET
-        elif isinstance(self.host_id, UUID):
-            host_id = str(self.host_id)
-        else:
-            host_id = self.host_id
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -63,8 +52,6 @@ class NewStoragePool:
             field_dict["capacity_bytes"] = capacity_bytes
         if config is not UNSET:
             field_dict["config"] = config
-        if host_id is not UNSET:
-            field_dict["host_id"] = host_id
 
         return field_dict
 
@@ -86,29 +73,11 @@ class NewStoragePool:
 
         config = d.pop("config", UNSET)
 
-        def _parse_host_id(data: object) -> None | Unset | UUID:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                host_id_type_0 = UUID(data)
-
-                return host_id_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(None | Unset | UUID, data)
-
-        host_id = _parse_host_id(d.pop("host_id", UNSET))
-
         new_storage_pool = cls(
             name=name,
             pool_type=pool_type,
             capacity_bytes=capacity_bytes,
             config=config,
-            host_id=host_id,
         )
 
         new_storage_pool.additional_properties = d

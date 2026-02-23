@@ -4,6 +4,8 @@ use strum_macros::{Display, EnumString};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::model::storage_pools;
+
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct StorageObject {
     pub id: Uuid,
@@ -59,7 +61,8 @@ pub enum StorageObjectType {
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewStorageObject {
     pub name: String,
-    pub storage_pool_id: Uuid,
+    /// Storage pool to place this object in. If omitted, a random active pool is chosen.
+    pub storage_pool_id: Option<Uuid>,
     pub object_type: StorageObjectType,
     pub size_bytes: i64,
 
@@ -171,21 +174,29 @@ WHERE object_type = $1
 }
 
 pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid, sqlx::Error> {
+    // Resolve pool: use the one provided, or pick a random active pool.
+    let pool_id = match new_object.storage_pool_id {
+        Some(id) => id,
+        None => storage_pools::pick_active(pool)
+            .await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)?,
+    };
+
     let id = Uuid::new_v4();
 
-    sqlx::query!(
+    sqlx::query(
         r#"
 INSERT INTO storage_objects (id, name, storage_pool_id, object_type, size_bytes, config, parent_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
-        id,
-        new_object.name,
-        new_object.storage_pool_id,
-        new_object.object_type as StorageObjectType,
-        new_object.size_bytes,
-        new_object.config,
-        new_object.parent_id
     )
+    .bind(id)
+    .bind(&new_object.name)
+    .bind(pool_id)
+    .bind(new_object.object_type)
+    .bind(new_object.size_bytes)
+    .bind(new_object.config)
+    .bind(new_object.parent_id)
     .execute(pool)
     .await?;
 

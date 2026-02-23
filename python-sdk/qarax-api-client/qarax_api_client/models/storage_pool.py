@@ -24,7 +24,6 @@ class StoragePool:
         status (StoragePoolStatus):
         allocated_bytes (int | None | Unset):
         capacity_bytes (int | None | Unset):
-        host_id (None | Unset | UUID):
     """
 
     config: Any
@@ -34,7 +33,6 @@ class StoragePool:
     status: StoragePoolStatus
     allocated_bytes: int | None | Unset = UNSET
     capacity_bytes: int | None | Unset = UNSET
-    host_id: None | Unset | UUID = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,14 +58,6 @@ class StoragePool:
         else:
             capacity_bytes = self.capacity_bytes
 
-        host_id: None | str | Unset
-        if isinstance(self.host_id, Unset):
-            host_id = UNSET
-        elif isinstance(self.host_id, UUID):
-            host_id = str(self.host_id)
-        else:
-            host_id = self.host_id
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -83,8 +73,6 @@ class StoragePool:
             field_dict["allocated_bytes"] = allocated_bytes
         if capacity_bytes is not UNSET:
             field_dict["capacity_bytes"] = capacity_bytes
-        if host_id is not UNSET:
-            field_dict["host_id"] = host_id
 
         return field_dict
 
@@ -119,23 +107,6 @@ class StoragePool:
 
         capacity_bytes = _parse_capacity_bytes(d.pop("capacity_bytes", UNSET))
 
-        def _parse_host_id(data: object) -> None | Unset | UUID:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                host_id_type_0 = UUID(data)
-
-                return host_id_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(None | Unset | UUID, data)
-
-        host_id = _parse_host_id(d.pop("host_id", UNSET))
-
         storage_pool = cls(
             config=config,
             id=id,
@@ -144,7 +115,6 @@ class StoragePool:
             status=status,
             allocated_bytes=allocated_bytes,
             capacity_bytes=capacity_bytes,
-            host_id=host_id,
         )
 
         storage_pool.additional_properties = d

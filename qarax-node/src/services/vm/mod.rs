@@ -1,3 +1,4 @@
+use anyhow::Result as AnyhowResult;
 use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -7,10 +8,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::cloud_hypervisor::VmManager;
 use crate::rpc::node::{
-    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, ConsoleInput,
-    ConsoleLogResponse, ConsoleOutput, ConsolePtyPathResponse, DeviceCounters, NodeInfo,
-    OciImageRequest, OciImageResponse, RemoveDeviceRequest, VmConfig, VmCounters, VmId, VmList,
-    VmState, vm_service_server::VmService,
+    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, AttachStoragePoolRequest,
+    AttachStoragePoolResponse, ConsoleInput, ConsoleLogResponse, ConsoleOutput,
+    ConsolePtyPathResponse, DetachStoragePoolRequest, DeviceCounters, ImportOverlayBdRequest,
+    ImportOverlayBdResponse, NodeInfo, OciImageRequest, OciImageResponse, RemoveDeviceRequest,
+    StoragePoolKind, VmConfig, VmCounters, VmId, VmList, VmState, vm_service_server::VmService,
 };
 
 /// Implementation of VmService using Cloud Hypervisor
@@ -406,6 +408,40 @@ impl VmService for VmServiceImpl {
         }
     }
 
+    async fn import_overlay_bd_image(
+        &self,
+        request: Request<ImportOverlayBdRequest>,
+    ) -> Result<Response<ImportOverlayBdResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            "Importing OverlayBD image: {} to registry {}",
+            req.image_ref, req.registry_url
+        );
+
+        let obd_manager = self
+            .manager
+            .overlaybd_manager()
+            .ok_or_else(|| Status::unimplemented("OverlayBD not configured on this node"))?;
+
+        match obd_manager
+            .import_image(&req.image_ref, &req.registry_url)
+            .await
+        {
+            Ok(target_ref) => {
+                info!("OverlayBD image imported: {}", target_ref);
+                Ok(Response::new(ImportOverlayBdResponse {
+                    image_ref: target_ref,
+                    digest: String::new(), // digest resolved by node at mount time
+                    available: true,
+                }))
+            }
+            Err(e) => {
+                error!("Failed to import OverlayBD image {}: {}", req.image_ref, e);
+                Err(Status::internal(format!("OverlayBD import failed: {}", e)))
+            }
+        }
+    }
+
     async fn read_console_log(
         &self,
         request: Request<VmId>,
@@ -647,9 +683,162 @@ impl VmService for VmServiceImpl {
         }
     }
 
+    async fn attach_storage_pool(
+        &self,
+        request: Request<AttachStoragePoolRequest>,
+    ) -> Result<Response<AttachStoragePoolResponse>, Status> {
+        let req = request.into_inner();
+        let pool_id = &req.pool_id;
+        info!(
+            "Attaching storage pool {} (kind={:?})",
+            pool_id, req.pool_kind
+        );
+
+        let kind = StoragePoolKind::try_from(req.pool_kind).unwrap_or(StoragePoolKind::Local);
+
+        let result = match kind {
+            StoragePoolKind::Local => attach_local_pool(pool_id, &req.config_json).await,
+            StoragePoolKind::Nfs => attach_nfs_pool(pool_id, &req.config_json).await,
+            StoragePoolKind::Overlaybd => check_overlaybd_registry(&req.config_json).await,
+        };
+
+        match result {
+            Ok(msg) => {
+                info!("Storage pool {} attached: {}", pool_id, msg);
+                Ok(Response::new(AttachStoragePoolResponse {
+                    success: true,
+                    message: msg,
+                }))
+            }
+            Err(e) => {
+                error!("Failed to attach storage pool {}: {}", pool_id, e);
+                Ok(Response::new(AttachStoragePoolResponse {
+                    success: false,
+                    message: e.to_string(),
+                }))
+            }
+        }
+    }
+
+    async fn detach_storage_pool(
+        &self,
+        request: Request<DetachStoragePoolRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        let pool_id = &req.pool_id;
+        info!(
+            "Detaching storage pool {} (kind={:?})",
+            pool_id, req.pool_kind
+        );
+
+        let kind = StoragePoolKind::try_from(req.pool_kind).unwrap_or(StoragePoolKind::Local);
+
+        if kind == StoragePoolKind::Nfs {
+            // Local and OverlayBD: nothing to undo on detach
+            if let Err(e) = detach_nfs_pool(pool_id).await {
+                error!("Failed to unmount NFS pool {}: {}", pool_id, e);
+                return Err(Status::internal(format!("NFS umount failed: {}", e)));
+            }
+        }
+
+        Ok(Response::new(()))
+    }
+
     type AttachConsoleStream =
         Pin<Box<dyn Stream<Item = Result<ConsoleOutput, Status>> + Send + 'static>>;
 }
+// ─── Storage pool attachment helpers ─────────────────────────────────────────
+
+/// Ensure the local directory for this pool exists.
+async fn attach_local_pool(pool_id: &str, config_json: &str) -> AnyhowResult<String> {
+    let cfg: serde_json::Value =
+        serde_json::from_str(config_json).unwrap_or_else(|_| serde_json::json!({}));
+
+    // Fall back to a standard per-pool directory if config has no path.
+    let path_str = cfg.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+
+    let dir = if path_str.is_empty() {
+        std::path::PathBuf::from(format!("/var/lib/qarax/pools/{}", pool_id))
+    } else {
+        std::path::PathBuf::from(path_str)
+    };
+
+    tokio::fs::create_dir_all(&dir).await?;
+    Ok(format!("local dir {} ready", dir.display()))
+}
+
+/// Mount an NFS export for this pool.
+async fn attach_nfs_pool(pool_id: &str, config_json: &str) -> AnyhowResult<String> {
+    let cfg: serde_json::Value = serde_json::from_str(config_json)
+        .map_err(|e| anyhow::anyhow!("Invalid NFS pool config JSON: {}", e))?;
+
+    let url = cfg
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("NFS pool config missing 'url' field"))?;
+
+    let mount_point = format!("/var/lib/qarax/pools/{}", pool_id);
+    tokio::fs::create_dir_all(&mount_point).await?;
+
+    let output = tokio::process::Command::new("mount")
+        .args(["-t", "nfs", url, &mount_point])
+        .output()
+        .await?;
+
+    if output.status.success() {
+        Ok(format!("NFS {} mounted at {}", url, mount_point))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("mount failed: {}", stderr.trim()))
+    }
+}
+
+/// Unmount the NFS export for this pool.
+async fn detach_nfs_pool(pool_id: &str) -> AnyhowResult<()> {
+    let mount_point = format!("/var/lib/qarax/pools/{}", pool_id);
+
+    let output = tokio::process::Command::new("umount")
+        .arg(&mount_point)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("umount failed: {}", stderr.trim()))
+    }
+}
+
+/// Verify that an OverlayBD registry is reachable at the configured URL.
+async fn check_overlaybd_registry(config_json: &str) -> AnyhowResult<String> {
+    let cfg: serde_json::Value = serde_json::from_str(config_json)
+        .map_err(|e| anyhow::anyhow!("Invalid OverlayBD pool config JSON: {}", e))?;
+
+    let url = cfg
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("OverlayBD pool config missing 'url' field"))?;
+
+    // Probe the OCI registry v2 endpoint.
+    let probe = format!("{}/v2/", url.trim_end_matches('/'));
+    let response = reqwest::get(&probe)
+        .await
+        .map_err(|e| anyhow::anyhow!("Cannot reach registry at {}: {}", probe, e))?;
+
+    // A v2 registry returns 200 or 401 (auth required); both mean it is alive.
+    let status = response.status();
+    if status.is_success() || status.as_u16() == 401 {
+        Ok(format!("OverlayBD registry {} reachable ({})", url, status))
+    } else {
+        Err(anyhow::anyhow!(
+            "OverlayBD registry {} returned unexpected status {}",
+            url,
+            status
+        ))
+    }
+}
+
 fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
     use crate::cloud_hypervisor::VmManagerError;
 
@@ -665,5 +854,6 @@ fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
         }
         VmManagerError::ProcessError(msg) => Status::internal(msg),
         VmManagerError::TapError(msg) => Status::internal(format!("TAP device error: {}", msg)),
+        VmManagerError::OverlayBdError(e) => Status::internal(format!("OverlayBD error: {}", e)),
     }
 }

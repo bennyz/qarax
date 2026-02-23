@@ -231,6 +231,65 @@ pub async fn pick_up_host(pool: &PgPool) -> Result<Option<Host>, sqlx::Error> {
     }))
 }
 
+/// Pick a random UP host that is attached to a specific storage pool.
+/// Used for storage-affinity scheduling when the required pool is known.
+pub async fn pick_up_host_for_pool(
+    pool: &PgPool,
+    pool_id: Uuid,
+) -> Result<Option<Host>, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+SELECT h.id, h.name, h.address, h.port, h.host_user, h.password,
+       h.status, h.cloud_hypervisor_version, h.kernel_version
+FROM hosts h
+JOIN host_storage_pools hsp ON hsp.host_id = h.id
+WHERE h.status = 'UP'
+  AND hsp.storage_pool_id = $1
+ORDER BY RANDOM()
+LIMIT 1
+        "#,
+    )
+    .bind(pool_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| Host {
+        id: r.get("id"),
+        name: r.get("name"),
+        address: r.get("address"),
+        port: r.get("port"),
+        host_user: r.get("host_user"),
+        password: r.get("password"),
+        status: r.get("status"),
+        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
+        kernel_version: r.get("kernel_version"),
+    }))
+}
+
+/// Return all UP hosts.
+pub async fn list_up(pool: &PgPool) -> Result<Vec<Host>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE status = 'UP'",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| Host {
+            id: r.get("id"),
+            name: r.get("name"),
+            address: r.get("address"),
+            port: r.get("port"),
+            host_user: r.get("host_user"),
+            password: r.get("password"),
+            status: r.get("status"),
+            cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
+            kernel_version: r.get("kernel_version"),
+        })
+        .collect())
+}
+
 /// Update version information for a host (called after GetNodeInfo).
 pub async fn update_versions(
     pool: &PgPool,

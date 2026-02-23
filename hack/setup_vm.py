@@ -74,8 +74,8 @@ def ensure_host(base_url: str, name: str, address: str, port: int) -> str:
         else:
             resp.raise_for_status()
 
-    api("PATCH", f"/hosts/{host_id}", base_url, json={"status": "up"})
-    log("Host status set to up")
+    api("POST", f"/hosts/{host_id}/init", base_url)
+    log("Host initialized and set to up")
     return host_id
 
 

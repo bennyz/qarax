@@ -27,6 +27,7 @@ use tokio::net::UnixStream;
 use prost::Message;
 
 use crate::image_store::ImageStoreManager;
+use crate::overlaybd::OverlayBdManager;
 use crate::rpc::node::{
     ConsoleConfig as ProtoConsoleConfig, ConsoleMode as ProtoConsoleMode,
     CpuTopology as ProtoCpuTopology, CpusConfig as ProtoCpusConfig, DiskConfig as ProtoDiskConfig,
@@ -58,6 +59,9 @@ pub enum VmManagerError {
 
     #[error("TAP device error: {0}")]
     TapError(String),
+
+    #[error("OverlayBD error: {0}")]
+    OverlayBdError(#[from] crate::overlaybd::OverlayBdError),
 }
 
 /// Represents a running VM instance
@@ -78,6 +82,8 @@ struct VmInstance {
     serial_pty_path: Option<String>,
     /// PTY path for console device (if PTY mode is enabled)
     console_pty_path: Option<String>,
+    /// Whether this VM uses an OverlayBD block device (needs cleanup on delete)
+    has_overlaybd: bool,
 }
 
 impl VmInstance {
@@ -98,8 +104,10 @@ pub struct VmManager {
     ch_binary: PathBuf,
     /// Running VM instances
     vms: Arc<Mutex<HashMap<String, VmInstance>>>,
-    /// Optional image store manager for OCI image boot support
+    /// Optional image store manager for OCI image boot support (virtiofs path)
     image_store_manager: Option<Arc<ImageStoreManager>>,
+    /// Optional OverlayBD manager for lazy block-level OCI image boot
+    overlaybd_manager: Option<Arc<OverlayBdManager>>,
 }
 
 impl VmManager {
@@ -108,6 +116,16 @@ impl VmManager {
         runtime_dir: impl Into<PathBuf>,
         ch_binary: impl Into<PathBuf>,
         image_store_manager: Option<Arc<ImageStoreManager>>,
+    ) -> Self {
+        Self::with_overlaybd(runtime_dir, ch_binary, image_store_manager, None)
+    }
+
+    /// Create a new VM manager with optional OverlayBD support
+    pub fn with_overlaybd(
+        runtime_dir: impl Into<PathBuf>,
+        ch_binary: impl Into<PathBuf>,
+        image_store_manager: Option<Arc<ImageStoreManager>>,
+        overlaybd_manager: Option<Arc<OverlayBdManager>>,
     ) -> Self {
         let runtime_dir = runtime_dir.into();
         let ch_binary = ch_binary.into();
@@ -123,12 +141,18 @@ impl VmManager {
             ch_binary,
             vms: Arc::new(Mutex::new(HashMap::new())),
             image_store_manager,
+            overlaybd_manager,
         }
     }
 
     /// Get the image store manager if configured
     pub fn image_store_manager(&self) -> Option<&Arc<ImageStoreManager>> {
         self.image_store_manager.as_ref()
+    }
+
+    /// Get the OverlayBD manager if configured
+    pub fn overlaybd_manager(&self) -> Option<&Arc<OverlayBdManager>> {
+        self.overlaybd_manager.as_ref()
     }
 
     /// Get the runtime directory path
@@ -265,6 +289,7 @@ impl VmManager {
                 tap_devices,
                 serial_pty_path: None,
                 console_pty_path: None,
+                has_overlaybd: false, // Recovery doesn't restore OverlayBD state
             };
 
             let mut vms = self.vms.lock().await;
@@ -355,6 +380,33 @@ impl VmManager {
                 }
                 net.tap = Some(tap_name.clone());
                 tap_devices.push(tap_name);
+            }
+        }
+
+        // Resolve OverlayBD disks: mount each disk that has oci_image_ref set and replace
+        // the path with the resulting block device.
+        let mut has_overlaybd = false;
+        if let Some(obd_manager) = &self.overlaybd_manager {
+            for disk in config.disks.iter_mut() {
+                if let (Some(image_ref), Some(registry_url)) =
+                    (disk.oci_image_ref.clone(), disk.registry_url.clone())
+                {
+                    let mounted = obd_manager.mount(&vm_id, &image_ref, &registry_url).await?;
+                    disk.path = Some(mounted.device_path);
+                    disk.oci_image_ref = None;
+                    disk.registry_url = None;
+                    has_overlaybd = true;
+                }
+            }
+        } else {
+            // No OverlayBD manager — log a warning if any disks request it
+            for disk in &config.disks {
+                if disk.oci_image_ref.is_some() {
+                    warn!(
+                        "Disk {} requests OverlayBD but no OverlayBD manager is configured",
+                        disk.id
+                    );
+                }
             }
         }
 
@@ -489,6 +541,7 @@ impl VmManager {
             tap_devices,
             serial_pty_path: serial_pty,
             console_pty_path: console_pty,
+            has_overlaybd,
         };
 
         let state = instance.to_vm_state();
@@ -639,6 +692,13 @@ impl VmManager {
             for i in 0..8 {
                 store.cleanup_vm(&format!("{}-fs{}", vm_id, i)).await;
             }
+        }
+
+        // Unmount OverlayBD device if this VM used one
+        if instance.has_overlaybd
+            && let Some(obd_manager) = &self.overlaybd_manager
+        {
+            obd_manager.unmount(vm_id).await;
         }
 
         info!("VM {} deleted successfully", vm_id);

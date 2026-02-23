@@ -1,4 +1,16 @@
 services:
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry_data:/var/lib/registry
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "5000" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -56,8 +68,15 @@ services:
       # Note: rw is needed because rootfs.img needs to be writable by VMs
       - ${PRODUCTION_IMAGES_DIR:-/tmp/qarax-no-production-images}:/var/lib/qarax/production-images:rw
       - qarax_vms:/var/lib/qarax/vms
+      - qarax_overlaybd:/var/lib/qarax/overlaybd
+    environment:
+      # Registry URL for OverlayBD image imports
+      OVERLAYBD_REGISTRY_URL: http://registry:5000
     ports:
       - "50051:50051"
+    depends_on:
+      registry:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "nc", "-z", "localhost", "50051" ]
       interval: 5s
@@ -66,4 +85,6 @@ services:
 
 volumes:
   postgres_data:
+  registry_data:
   qarax_vms:
+  qarax_overlaybd:

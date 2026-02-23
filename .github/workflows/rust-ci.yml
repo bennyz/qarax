@@ -202,7 +202,7 @@ jobs:
           elapsed=0
           while [ $elapsed -lt $timeout ]; do
             healthy_count=$(docker compose ps 2>/dev/null | grep -c "(healthy)" || echo "0")
-            if [ "$healthy_count" -ge "3" ]; then
+            if [ "$healthy_count" -ge "4" ]; then
               echo "All services are healthy!"
               break
             fi

@@ -6,6 +6,7 @@ use tracing::{Level, info};
 
 use qarax_node::cloud_hypervisor::VmManager;
 use qarax_node::image_store::ImageStoreManager;
+use qarax_node::overlaybd::OverlayBdManager;
 use qarax_node::rpc::node::file_transfer_service_server::FileTransferServiceServer;
 use qarax_node::rpc::node::vm_service_server::VmServiceServer;
 use qarax_node::services::file_transfer::FileTransferServiceImpl;
@@ -42,6 +43,14 @@ pub struct Args {
     /// Directory for OCI image cache
     #[clap(long, default_value = "/var/lib/qarax/images")]
     image_cache_dir: PathBuf,
+
+    /// Path to obdconv binary (OverlayBD image converter)
+    #[clap(long, default_value = "/usr/local/bin/obdconv")]
+    overlaybd_binary: PathBuf,
+
+    /// Directory for OverlayBD cache and per-VM config files
+    #[clap(long, default_value = "/var/lib/qarax/overlaybd")]
+    overlaybd_cache_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -61,10 +70,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("virtiofsd binary: {}", args.virtiofsd_binary.display());
     info!("qarax-init binary: {}", args.qarax_init_binary.display());
     info!("Image cache dir: {}", args.image_cache_dir.display());
+    info!("OverlayBD binary: {}", args.overlaybd_binary.display());
+    info!(
+        "OverlayBD cache dir: {}",
+        args.overlaybd_cache_dir.display()
+    );
 
     // Ensure directories exist
     tokio::fs::create_dir_all(&args.runtime_dir).await?;
     tokio::fs::create_dir_all(&args.image_cache_dir).await?;
+    tokio::fs::create_dir_all(&args.overlaybd_cache_dir).await?;
 
     // Build ImageStoreManager if virtiofsd is present
     let image_store_manager = if args.virtiofsd_binary.exists() {
@@ -83,11 +98,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Build VmManager with optional ImageStoreManager
-    let vm_manager = Arc::new(VmManager::new(
+    // Build OverlayBdManager if obdconv binary is present
+    let overlaybd_manager = if args.overlaybd_binary.exists() {
+        info!("obdconv found — OverlayBD lazy image boot enabled");
+        let mgr = Arc::new(OverlayBdManager::new(
+            &args.overlaybd_binary,
+            &args.overlaybd_cache_dir,
+        ));
+        mgr.recover().await;
+        Some(mgr)
+    } else {
+        info!(
+            "obdconv not found at {} — OverlayBD disabled",
+            args.overlaybd_binary.display()
+        );
+        None
+    };
+
+    // Build VmManager with optional ImageStoreManager and OverlayBdManager
+    let vm_manager = Arc::new(VmManager::with_overlaybd(
         &args.runtime_dir,
         &args.cloud_hypervisor_binary,
         image_store_manager,
+        overlaybd_manager,
     ));
     vm_manager.recover_vms().await;
 

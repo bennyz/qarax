@@ -35,7 +35,6 @@ if [ -z "$host_id" ]; then
   exit 1
 fi
 
-curl -s -X PATCH "${QARAX_URL}/hosts/${host_id}" \
-  -H "Content-Type: application/json" -d '{"status":"up"}' -o /dev/null
+curl -s -X POST "${QARAX_URL}/hosts/${host_id}/init" -o /dev/null
 
-echo "Host set to UP (id: ${host_id})"
+echo "Host initialized and set to UP (id: ${host_id})"

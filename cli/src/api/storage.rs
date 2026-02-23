@@ -2,7 +2,9 @@ use uuid::Uuid;
 
 use crate::client::Client;
 
-use super::models::{NewStorageObject, NewStoragePool, StorageObject, StoragePool};
+use super::models::{
+    AttachHostToPoolRequest, NewStorageObject, NewStoragePool, StorageObject, StoragePool,
+};
 
 // ─── Storage pools ────────────────────────────────────────────────────────────
 
@@ -21,6 +23,30 @@ pub async fn create_pool(client: &Client, pool: &NewStoragePool) -> anyhow::Resu
 
 pub async fn delete_pool(client: &Client, pool_id: Uuid) -> anyhow::Result<()> {
     client.delete(&format!("/storage-pools/{pool_id}")).await
+}
+
+pub async fn attach_host_to_pool(
+    client: &Client,
+    pool_id: Uuid,
+    host_id: Uuid,
+) -> anyhow::Result<()> {
+    client
+        .post_response(
+            &format!("/storage-pools/{pool_id}/hosts"),
+            &AttachHostToPoolRequest { host_id },
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn detach_host_from_pool(
+    client: &Client,
+    pool_id: Uuid,
+    host_id: Uuid,
+) -> anyhow::Result<()> {
+    client
+        .delete(&format!("/storage-pools/{pool_id}/hosts/{host_id}"))
+        .await
 }
 
 // ─── Storage objects ──────────────────────────────────────────────────────────

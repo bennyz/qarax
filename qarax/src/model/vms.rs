@@ -207,7 +207,8 @@ pub struct NewVm {
     pub description: Option<String>,
 
     /// OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
-    /// When set, qarax-node will pull and convert the image using Nydus and serve it via virtiofs.
+    /// When set, the handler will check whether the selected host has an OverlayBD storage pool.
+    /// If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
     pub image_ref: Option<String>,
 
     /// Optional network interfaces to attach at create time (passed to qarax-node).

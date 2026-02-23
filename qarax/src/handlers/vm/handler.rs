@@ -11,13 +11,17 @@ use uuid::Uuid;
 
 use crate::{
     App,
-    grpc_client::{CreateVmRequest, NodeClient, net_configs_from_api, node::FsConfig},
+    grpc_client::{
+        CreateVmRequest, NodeClient, OverlaybdDiskSpec, net_configs_from_api, node::FsConfig,
+    },
     model::{
         boot_sources, hosts,
         hosts::Host,
         jobs::{self, JobType, NewJob},
         network_interfaces,
+        storage_pools::{self, OverlayBdPoolConfig},
         vm_filesystems::{self, NewVmFilesystem},
+        vm_overlaybd_disks::{self, NewVmOverlaybdDisk},
         vms::{self, NewVm, Vm, VmStatus},
     },
 };
@@ -171,6 +175,7 @@ pub async fn create(
             cmdline,
             fs_configs: vec![],
             memory_shared,
+            overlaybd_disk: None,
         })
         .await
     {
@@ -209,6 +214,14 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
 
     // Pick host eagerly so we return 422 immediately if none are UP
     let host = pick_host(&env).await?;
+
+    // Check if the selected host has an OverlayBD storage pool; if so, use that path.
+    let overlaybd_pool = storage_pools::find_overlaybd_for_host(env.pool(), host.id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to query OverlayBD pool for host {}: {}", host.id, e);
+            crate::errors::Error::InternalServerError
+        })?;
 
     // Resolve boot source or use defaults (needed by background task)
     let (kernel, initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
@@ -278,76 +291,41 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
 
         let node_client = NodeClient::new(&host.address, host.port as u16);
 
-        // Step 1: Pull image
-        let image_info = match node_client.pull_image(&image_ref).await {
-            Ok(info) => info,
-            Err(e) => {
-                let msg = format!("Failed to pull OCI image: {}", e);
-                tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
-                let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
-                let _ = vms::update_status(&db_pool, vm_id, VmStatus::Unknown).await;
-                return;
-            }
-        };
-
-        let _ = jobs::update_progress(&db_pool, job_id, 50).await;
-
-        // Step 2: Create VM on node with virtiofs config
-        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
-        let fs_config = FsConfig {
-            tag: "rootfs".to_string(),
-            socket: socket_path,
-            num_queues: 1,
-            queue_size: 1024,
-            pci_segment: None,
-            id: Some("fs0".to_string()),
-            bootstrap_path: Some(image_info.bootstrap_path.clone()),
-        };
-        let oci_cmdline =
-            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
-
-        if let Err(e) = node_client
-            .create_vm(CreateVmRequest {
+        if let Some(pool) = overlaybd_pool {
+            // OverlayBD path: import image to local registry, then boot via virtio-blk
+            run_overlaybd_create(
+                &node_client,
+                &db_pool,
                 vm_id,
-                boot_vcpus: vm.boot_vcpus,
-                max_vcpus: vm.max_vcpus,
-                memory_size: vm.memory_size,
+                job_id,
+                &image_ref,
+                &pool.config,
+                vm.boot_vcpus,
+                vm.max_vcpus,
+                vm.memory_size,
                 networks,
                 kernel,
                 initramfs,
-                cmdline: oci_cmdline,
-                fs_configs: vec![fs_config],
-                memory_shared: true,
-            })
-            .await
-        {
-            let msg = format!("Failed to create VM on qarax-node: {}", e);
-            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
-            let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
-            let _ = vms::update_status(&db_pool, vm_id, VmStatus::Unknown).await;
-            return;
+                pool.id,
+            )
+            .await;
+        } else {
+            // Virtiofs path: pull image via Nydus, serve rootfs via virtiofs
+            run_virtiofs_create(
+                &node_client,
+                &db_pool,
+                vm_id,
+                job_id,
+                &image_ref,
+                vm.boot_vcpus,
+                vm.max_vcpus,
+                vm.memory_size,
+                networks,
+                kernel,
+                initramfs,
+            )
+            .await;
         }
-
-        // Step 3: Persist virtiofs filesystem record
-        let fs_record = NewVmFilesystem {
-            vm_id,
-            tag: "rootfs".to_string(),
-            num_queues: Some(1),
-            queue_size: Some(1024),
-            pci_segment: None,
-            image_ref: Some(image_ref.clone()),
-            image_digest: Some(image_info.digest.clone()),
-        };
-        if let Err(e) = vm_filesystems::create(&db_pool, &fs_record).await {
-            tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist filesystem record");
-        }
-
-        // Mark VM as created and job as completed
-        let _ = vms::update_status(&db_pool, vm_id, VmStatus::Created).await;
-        let result = serde_json::json!({ "digest": image_info.digest });
-        let _ = jobs::mark_completed(&db_pool, job_id, Some(result)).await;
-
-        tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM creation job completed");
     });
 
     use axum::response::IntoResponse as _;
@@ -356,6 +334,197 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
         code: StatusCode::ACCEPTED,
     }
     .into_response())
+}
+
+/// Background task for the virtiofs (Nydus) OCI image boot path.
+#[allow(clippy::too_many_arguments)]
+async fn run_virtiofs_create(
+    node_client: &NodeClient,
+    db_pool: &sqlx::PgPool,
+    vm_id: uuid::Uuid,
+    job_id: uuid::Uuid,
+    image_ref: &str,
+    boot_vcpus: i32,
+    max_vcpus: i32,
+    memory_size: i64,
+    networks: Vec<crate::grpc_client::node::NetConfig>,
+    kernel: String,
+    initramfs: Option<String>,
+) {
+    // Step 1: Pull image
+    let image_info = match node_client.pull_image(image_ref).await {
+        Ok(info) => info,
+        Err(e) => {
+            let msg = format!("Failed to pull OCI image: {}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
+    };
+
+    let _ = jobs::update_progress(db_pool, job_id, 50).await;
+
+    // Step 2: Create VM on node with virtiofs config
+    let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
+    let fs_config = FsConfig {
+        tag: "rootfs".to_string(),
+        socket: socket_path,
+        num_queues: 1,
+        queue_size: 1024,
+        pci_segment: None,
+        id: Some("fs0".to_string()),
+        bootstrap_path: Some(image_info.bootstrap_path.clone()),
+    };
+    let oci_cmdline =
+        "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
+
+    if let Err(e) = node_client
+        .create_vm(CreateVmRequest {
+            vm_id,
+            boot_vcpus,
+            max_vcpus,
+            memory_size,
+            networks,
+            kernel,
+            initramfs,
+            cmdline: oci_cmdline,
+            fs_configs: vec![fs_config],
+            memory_shared: true,
+            overlaybd_disk: None,
+        })
+        .await
+    {
+        let msg = format!("Failed to create VM on qarax-node: {}", e);
+        tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+        let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+        let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+        return;
+    }
+
+    // Step 3: Persist virtiofs filesystem record
+    let fs_record = NewVmFilesystem {
+        vm_id,
+        tag: "rootfs".to_string(),
+        num_queues: Some(1),
+        queue_size: Some(1024),
+        pci_segment: None,
+        image_ref: Some(image_ref.to_string()),
+        image_digest: Some(image_info.digest.clone()),
+    };
+    if let Err(e) = vm_filesystems::create(db_pool, &fs_record).await {
+        tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist filesystem record");
+    }
+
+    // Mark VM as created and job as completed
+    let _ = vms::update_status(db_pool, vm_id, VmStatus::Created).await;
+    let result = serde_json::json!({ "digest": image_info.digest });
+    let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
+
+    tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM creation job completed (virtiofs)");
+}
+
+/// Background task for the OverlayBD lazy block loading path.
+#[allow(clippy::too_many_arguments)]
+async fn run_overlaybd_create(
+    node_client: &NodeClient,
+    db_pool: &sqlx::PgPool,
+    vm_id: uuid::Uuid,
+    job_id: uuid::Uuid,
+    image_ref: &str,
+    pool_config: &serde_json::Value,
+    boot_vcpus: i32,
+    max_vcpus: i32,
+    memory_size: i64,
+    networks: Vec<crate::grpc_client::node::NetConfig>,
+    kernel: String,
+    initramfs: Option<String>,
+    storage_pool_id: uuid::Uuid,
+) {
+    // Extract registry URL from pool config
+    let registry_url = match OverlayBdPoolConfig::from_value(pool_config) {
+        Some(cfg) => cfg.url,
+        None => {
+            let msg = "OverlayBD pool config missing 'url' field".to_string();
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
+    };
+
+    // Step 1: Import (convert + push) image to local registry
+    let import_result = match node_client
+        .import_overlaybd_image(image_ref, &registry_url)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("Failed to import OverlayBD image: {}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
+    };
+
+    let _ = jobs::update_progress(db_pool, job_id, 50).await;
+
+    // Step 2: Create VM on node with OverlayBD disk (path resolved by node)
+    let obd_cmdline = "console=ttyS0 root=/dev/vda rw".to_string();
+    let disk_id = "vda".to_string();
+
+    if let Err(e) = node_client
+        .create_vm(CreateVmRequest {
+            vm_id,
+            boot_vcpus,
+            max_vcpus,
+            memory_size,
+            networks,
+            kernel,
+            initramfs,
+            cmdline: obd_cmdline,
+            fs_configs: vec![],
+            memory_shared: false,
+            overlaybd_disk: Some(OverlaybdDiskSpec {
+                disk_id: disk_id.clone(),
+                oci_image_ref: import_result.image_ref.clone(),
+                registry_url: registry_url.clone(),
+            }),
+        })
+        .await
+    {
+        let msg = format!("Failed to create OverlayBD VM on qarax-node: {}", e);
+        tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+        let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+        let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+        return;
+    }
+
+    // Step 3: Persist OverlayBD disk record (boot_order = 0 marks it as the boot disk)
+    let disk_record = NewVmOverlaybdDisk {
+        vm_id,
+        disk_id,
+        image_ref: import_result.image_ref.clone(),
+        image_digest: if import_result.digest.is_empty() {
+            None
+        } else {
+            Some(import_result.digest.clone())
+        },
+        registry_url,
+        storage_pool_id: Some(storage_pool_id),
+        boot_order: 0,
+    };
+    if let Err(e) = vm_overlaybd_disks::create(db_pool, &disk_record).await {
+        tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist OverlayBD disk record");
+    }
+
+    // Mark VM as created and job as completed
+    let _ = vms::update_status(db_pool, vm_id, VmStatus::Created).await;
+    let result = serde_json::json!({ "digest": import_result.digest });
+    let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
+
+    tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM creation job completed (overlaybd)");
 }
 
 #[utoipa::path(

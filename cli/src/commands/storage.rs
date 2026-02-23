@@ -34,20 +34,34 @@ enum StoragePoolCommand {
         /// Pool name
         #[arg(long)]
         name: String,
-        /// Pool type (local or nfs)
+        /// Pool type (local, nfs, or overlaybd)
         #[arg(long, value_name = "TYPE")]
         pool_type: String,
-        /// Host name or ID to associate the pool with
-        #[arg(long)]
-        host: Option<String>,
         /// Capacity in bytes
         #[arg(long)]
         capacity: Option<i64>,
+        /// Pool config as JSON (e.g. '{"url":"http://registry:5000"}' for overlaybd)
+        #[arg(long, value_name = "JSON")]
+        config: Option<String>,
     },
     /// Delete a storage pool
     Delete {
         /// Pool name or ID
         pool: String,
+    },
+    /// Attach a host to a storage pool
+    AttachHost {
+        /// Pool name or ID
+        pool: String,
+        /// Host name or ID
+        host: String,
+    },
+    /// Detach a host from a storage pool
+    DetachHost {
+        /// Pool name or ID
+        pool: String,
+        /// Host name or ID
+        host: String,
     },
 }
 
@@ -61,8 +75,6 @@ struct PoolRow {
     pool_type: String,
     #[tabled(rename = "Status")]
     status: String,
-    #[tabled(rename = "Host")]
-    host_id: String,
     #[tabled(rename = "Capacity")]
     capacity: String,
     #[tabled(rename = "Allocated")]
@@ -83,10 +95,6 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
                         name: p.name.clone(),
                         pool_type: p.pool_type.clone(),
                         status: p.status.clone(),
-                        host_id: p
-                            .host_id
-                            .map(|h| h.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
                         capacity: p
                             .capacity_bytes
                             .map(format_bytes)
@@ -112,12 +120,6 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
                 println!("Type:     {}", pool.pool_type);
                 println!("Status:   {}", pool.status);
                 println!(
-                    "Host:     {}",
-                    pool.host_id
-                        .map(|h| h.to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
-                println!(
                     "Capacity: {}",
                     pool.capacity_bytes
                         .map(format_bytes)
@@ -135,18 +137,18 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
         StoragePoolCommand::Create {
             name,
             pool_type,
-            host,
             capacity,
+            config,
         } => {
-            let host_id = match host {
-                Some(ref s) => Some(resolve_host_id(client, s).await?),
-                None => None,
+            let config = match config {
+                Some(s) => serde_json::from_str(&s)
+                    .map_err(|e| anyhow::anyhow!("Invalid JSON for --config: {e}"))?,
+                None => serde_json::json!({}),
             };
             let new_pool = NewStoragePool {
                 name,
                 pool_type,
-                host_id,
-                config: serde_json::json!({}),
+                config,
                 capacity_bytes: capacity,
             };
             let id = api::storage::create_pool(client, &new_pool).await?;
@@ -161,6 +163,28 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
             let id = resolve_pool_id(client, &pool).await?;
             api::storage::delete_pool(client, id).await?;
             println!("Deleted storage pool: {id}");
+        }
+
+        StoragePoolCommand::AttachHost { pool, host } => {
+            let pool_id = resolve_pool_id(client, &pool).await?;
+            let host_id = resolve_host_id(client, &host).await?;
+            api::storage::attach_host_to_pool(client, pool_id, host_id).await?;
+            if json {
+                print_json(&serde_json::json!({ "pool_id": pool_id, "host_id": host_id }))?;
+            } else {
+                println!("Attached host {host} to pool {pool}");
+            }
+        }
+
+        StoragePoolCommand::DetachHost { pool, host } => {
+            let pool_id = resolve_pool_id(client, &pool).await?;
+            let host_id = resolve_host_id(client, &host).await?;
+            api::storage::detach_host_from_pool(client, pool_id, host_id).await?;
+            if json {
+                print_json(&serde_json::json!({ "pool_id": pool_id, "host_id": host_id }))?;
+            } else {
+                println!("Detached host {host} from pool {pool}");
+            }
         }
     }
 
@@ -189,9 +213,9 @@ enum StorageObjectCommand {
         /// Object name
         #[arg(long)]
         name: String,
-        /// Storage pool name or ID
+        /// Storage pool name or ID (optional; a random active pool is chosen if omitted)
         #[arg(long)]
-        pool: String,
+        pool: Option<String>,
         /// Object type (disk, kernel, initrd, iso, snapshot, oci_image)
         #[arg(long, value_name = "TYPE")]
         object_type: String,
@@ -272,7 +296,10 @@ pub async fn run_object(
             size,
             parent,
         } => {
-            let pool_id = resolve_pool_id(client, &pool).await?;
+            let pool_id = match pool {
+                Some(ref s) => Some(resolve_pool_id(client, s).await?),
+                None => None,
+            };
             let new_obj = NewStorageObject {
                 name,
                 storage_pool_id: pool_id,

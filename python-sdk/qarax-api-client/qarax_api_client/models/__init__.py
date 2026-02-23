@@ -1,5 +1,6 @@
 """Contains all the data models used in inputs/outputs"""
 
+from .attach_host_request import AttachHostRequest
 from .boot_source import BootSource
 from .create_vm_response import CreateVmResponse
 from .deploy_host_request import DeployHostRequest
@@ -19,6 +20,7 @@ from .new_transfer import NewTransfer
 from .new_vm import NewVm
 from .new_vm_filesystem import NewVmFilesystem
 from .new_vm_network import NewVmNetwork
+from .new_vm_overlaybd_disk import NewVmOverlaybdDisk
 from .rate_limiter_config import RateLimiterConfig
 from .storage_object import StorageObject
 from .storage_object_type import StorageObjectType
@@ -36,9 +38,11 @@ from .vm_filesystem import VmFilesystem
 from .vm_metrics import VmMetrics
 from .vm_metrics_counters import VmMetricsCounters
 from .vm_metrics_counters_additional_property import VmMetricsCountersAdditionalProperty
+from .vm_overlaybd_disk import VmOverlaybdDisk
 from .vm_status import VmStatus
 
 __all__ = (
+    "AttachHostRequest",
     "BootSource",
     "CreateVmResponse",
     "DeployHostRequest",
@@ -58,6 +62,7 @@ __all__ = (
     "NewVm",
     "NewVmFilesystem",
     "NewVmNetwork",
+    "NewVmOverlaybdDisk",
     "RateLimiterConfig",
     "StorageObject",
     "StorageObjectType",
@@ -75,5 +80,6 @@ __all__ = (
     "VmMetrics",
     "VmMetricsCounters",
     "VmMetricsCountersAdditionalProperty",
+    "VmOverlaybdDisk",
     "VmStatus",
 )
