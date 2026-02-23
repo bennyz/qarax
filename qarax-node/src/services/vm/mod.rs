@@ -504,18 +504,49 @@ impl VmService for VmServiceImpl {
 
         info!("Opening PTY for VM {}: {}", vm_id, pty_path);
 
-        // Open PTY device
-        let pty_file = tokio::fs::OpenOptions::new()
+        // Open two independent file descriptors for the PTY slave — one for
+        // reading (VM output) and one for writing (user input).
+        //
+        // Using a single tokio::fs::File with tokio::io::split does NOT work
+        // here: tokio::fs::File serialises all I/O through one file handle via
+        // spawn_blocking.  When the read task is blocked in the thread pool
+        // waiting for VM output, the write task cannot acquire the handle and
+        // deadlocks — the user's keystrokes never reach the VM.  Two separate
+        // fds solve this: reads and writes run independently.
+        let pty_read_std = std::fs::OpenOptions::new()
             .read(true)
-            .write(true)
             .open(&pty_path)
-            .await
             .map_err(|e| {
-                error!("Failed to open PTY {}: {}", pty_path, e);
+                error!("Failed to open PTY {} for reading: {}", pty_path, e);
                 Status::internal(format!("Failed to open PTY: {}", e))
             })?;
 
-        let (pty_reader, mut pty_writer) = tokio::io::split(pty_file);
+        // Put the PTY slave into raw mode (termios is device-wide, so one
+        // tcsetattr call covers both fds).
+        {
+            use nix::sys::termios::{self, SetArg};
+            use std::os::unix::io::AsFd;
+            match termios::tcgetattr(pty_read_std.as_fd()) {
+                Ok(mut t) => {
+                    termios::cfmakeraw(&mut t);
+                    if let Err(e) = termios::tcsetattr(pty_read_std.as_fd(), SetArg::TCSANOW, &t) {
+                        warn!("Failed to set PTY to raw mode: {}", e);
+                    }
+                }
+                Err(e) => warn!("Failed to get PTY termios: {}", e),
+            }
+        }
+
+        let pty_write_std = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&pty_path)
+            .map_err(|e| {
+                error!("Failed to open PTY {} for writing: {}", pty_path, e);
+                Status::internal(format!("Failed to open PTY: {}", e))
+            })?;
+
+        let pty_reader = tokio::fs::File::from(pty_read_std);
+        let mut pty_writer = tokio::fs::File::from(pty_write_std);
 
         // Channel for sending output to client
         let (tx, rx) = tokio::sync::mpsc::channel(128);
