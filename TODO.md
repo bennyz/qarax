@@ -4,3 +4,4 @@
 - shared storage for OCI
 - console access to VMs
 - cross workspace deps update
+- CLI vm names

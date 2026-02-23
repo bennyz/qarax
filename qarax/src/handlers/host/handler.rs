@@ -1,11 +1,16 @@
 use super::*;
 use crate::{
-    App, host_deployer,
-    model::hosts::{self, DeployHostRequest, Host, HostStatus, NewHost, UpdateHostRequest},
+    App,
+    grpc_client::NodeClient,
+    host_deployer,
+    model::{
+        hosts::{self, DeployHostRequest, Host, HostStatus, NewHost, UpdateHostRequest},
+        storage_pools,
+    },
 };
 use axum::{Extension, Json, extract::Path};
 use http::StatusCode;
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 #[utoipa::path(
@@ -189,6 +194,45 @@ pub async fn init(
     let updated_host = hosts::get_by_id(env.pool(), host_id)
         .await?
         .ok_or(crate::errors::Error::NotFound)?;
+
+    // Background: attach this host to every existing storage pool via gRPC, then record in DB.
+    let db_pool = env.pool_arc();
+    let host_address = host.address.clone();
+    let host_port = host.port;
+    tokio::spawn(async move {
+        let pools = match storage_pools::list(&db_pool).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(host_id = %host_id, error = %e, "Failed to list storage pools for host init");
+                return;
+            }
+        };
+
+        let client = NodeClient::new(&host_address, host_port as u16);
+        for pool in pools {
+            let pool_id = pool.id;
+            match client.attach_storage_pool(&pool).await {
+                Ok(()) => {
+                    if let Err(e) = storage_pools::attach_host(&db_pool, pool_id, host_id).await {
+                        warn!(
+                            host_id = %host_id,
+                            pool_id = %pool_id,
+                            error = %e,
+                            "Failed to record pool attachment in DB"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        host_id = %host_id,
+                        pool_id = %pool_id,
+                        error = %e,
+                        "Failed to attach storage pool to host via gRPC"
+                    );
+                }
+            }
+        }
+    });
 
     Ok(ApiResponse {
         data: updated_host,

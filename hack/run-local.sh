@@ -211,7 +211,7 @@ timeout=90
 elapsed=0
 while [[ $elapsed -lt $timeout ]]; do
 	healthy_count=$(docker compose ps 2>/dev/null | grep -c '(healthy)' || echo "0")
-	total_services=3
+	total_services=4 # registry, postgres, qarax, qarax-node
 
 	if [[ "$healthy_count" -ge "$total_services" ]]; then
 		echo ""
@@ -398,9 +398,8 @@ else
 	fi
 	host_id=$(curl -s http://localhost:8000/hosts | python3 -c "import sys,json; hosts=json.load(sys.stdin); print(next((h['id'] for h in hosts if h['name']=='local-node'),''))" 2>/dev/null)
 	if [[ -n "$host_id" ]]; then
-		curl -s -X PATCH "http://localhost:8000/hosts/${host_id}" \
-			-H "Content-Type: application/json" -d '{"status":"up"}' >/dev/null
-		echo -e "${GREEN}Host status set to up.${NC}"
+		curl -s -X POST "http://localhost:8000/hosts/${host_id}/init" >/dev/null
+		echo -e "${GREEN}Host initialized and set to up.${NC}"
 	fi
 fi
 

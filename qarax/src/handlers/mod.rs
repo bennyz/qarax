@@ -54,6 +54,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         storage_pool::handler::get,
         storage_pool::handler::create,
         storage_pool::handler::delete,
+        storage_pool::handler::attach_host,
+        storage_pool::handler::detach_host,
         boot_source::handler::list,
         boot_source::handler::get,
         boot_source::handler::create,
@@ -82,6 +84,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::storage_pools::NewStoragePool,
             crate::model::storage_pools::StoragePoolType,
             crate::model::storage_pools::StoragePoolStatus,
+            crate::handlers::storage_pool::handler::AttachHostRequest,
             crate::model::boot_sources::BootSource,
             crate::model::boot_sources::NewBootSource,
             crate::model::network_interfaces::NetworkInterface,
@@ -96,6 +99,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::transfers::TransferStatus,
             crate::model::vm_filesystems::VmFilesystem,
             crate::model::vm_filesystems::NewVmFilesystem,
+            crate::model::vm_overlaybd_disks::VmOverlaybdDisk,
+            crate::model::vm_overlaybd_disks::NewVmOverlaybdDisk,
             crate::model::jobs::Job,
             crate::model::jobs::JobStatus,
             crate::model::jobs::JobType,
@@ -203,6 +208,14 @@ fn storage_pools() -> Router {
         .route(
             "/storage-pools/{pool_id}",
             get(storage_pool::handler::get).delete(storage_pool::handler::delete),
+        )
+        .route(
+            "/storage-pools/{pool_id}/hosts",
+            post(storage_pool::handler::attach_host),
+        )
+        .route(
+            "/storage-pools/{pool_id}/hosts/{host_id}",
+            axum::routing::delete(storage_pool::handler::detach_host),
         )
 }
 

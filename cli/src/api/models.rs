@@ -93,7 +93,6 @@ pub struct StoragePool {
     pub name: String,
     pub pool_type: String,
     pub status: String,
-    pub host_id: Option<Uuid>,
     pub capacity_bytes: Option<i64>,
     pub allocated_bytes: Option<i64>,
 }
@@ -102,11 +101,14 @@ pub struct StoragePool {
 pub struct NewStoragePool {
     pub name: String,
     pub pool_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host_id: Option<Uuid>,
     pub config: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capacity_bytes: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttachHostToPoolRequest {
+    pub host_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,7 +124,8 @@ pub struct StorageObject {
 #[derive(Debug, Serialize)]
 pub struct NewStorageObject {
     pub name: String,
-    pub storage_pool_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_pool_id: Option<Uuid>,
     pub object_type: String,
     pub size_bytes: i64,
     pub config: serde_json::Value,

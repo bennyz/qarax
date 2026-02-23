@@ -5,7 +5,7 @@ use tracing::debug;
 use crate::grpc_client::NodeClient;
 use crate::model::{
     hosts,
-    storage_pools::{StoragePool, StoragePoolType},
+    storage_pools::{self, StoragePool, StoragePoolType},
     transfers::{Transfer, TransferType},
 };
 
@@ -19,8 +19,8 @@ pub struct TransferResult {
 /// Error from a transfer execution.
 #[derive(Debug, thiserror::Error)]
 pub enum TransferError {
-    #[error("pool has no host_id assigned")]
-    NoHostId,
+    #[error("no host attached to pool")]
+    NoHostAttached,
 
     #[error("host not found: {0}")]
     HostNotFound(String),
@@ -47,8 +47,26 @@ pub trait TransferExecutor: Send + Sync {
 }
 
 /// Executor for LOCAL and NFS storage pools — uses the node gRPC client
-/// to download or copy files on the host where the pool resides.
+/// to download or copy files on any host attached to the pool.
 pub struct FilesystemTransferExecutor;
+
+/// Placeholder executor for OverlayBD pools: file-based transfers are not applicable.
+/// VM creation with OverlayBD pools uses the dedicated OCI import path instead.
+pub struct UnsupportedTransferExecutor;
+
+#[async_trait]
+impl TransferExecutor for UnsupportedTransferExecutor {
+    async fn execute(
+        &self,
+        _transfer: &Transfer,
+        _pool: &StoragePool,
+        _db_pool: &PgPool,
+    ) -> Result<TransferResult, TransferError> {
+        Err(TransferError::TransferFailed(
+            "OverlayBD pools do not support file transfers; use the OCI import path".to_string(),
+        ))
+    }
+}
 
 #[async_trait]
 impl TransferExecutor for FilesystemTransferExecutor {
@@ -58,8 +76,10 @@ impl TransferExecutor for FilesystemTransferExecutor {
         pool: &StoragePool,
         db_pool: &PgPool,
     ) -> Result<TransferResult, TransferError> {
-        // 1. Resolve the host for this pool
-        let host_id = pool.host_id.ok_or(TransferError::NoHostId)?;
+        // 1. Find a host attached to this pool
+        let host_id = storage_pools::find_host_for_pool(db_pool, pool.id)
+            .await?
+            .ok_or(TransferError::NoHostAttached)?;
         let host = hosts::get_by_id(db_pool, host_id)
             .await?
             .ok_or_else(|| TransferError::HostNotFound(host_id.to_string()))?;
@@ -105,5 +125,6 @@ impl TransferExecutor for FilesystemTransferExecutor {
 pub fn executor_for_pool(pool: &StoragePool) -> Box<dyn TransferExecutor> {
     match pool.pool_type {
         StoragePoolType::Local | StoragePoolType::Nfs => Box::new(FilesystemTransferExecutor),
+        StoragePoolType::OverlayBd => Box::new(UnsupportedTransferExecutor),
     }
 }

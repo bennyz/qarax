@@ -134,6 +134,10 @@ message DiskConfig {
   // Device metadata
   optional int32 pci_segment = 11;
   optional string serial = 12;         // Disk serial number
+
+  // OverlayBD lazy-loading support
+  optional string oci_image_ref = 13;  // OCI image ref in local registry
+  optional string registry_url  = 14;  // e.g. "http://my-registry:5000"
 }
 
 // ============================================================================
@@ -320,6 +324,13 @@ service VmService {
   // OCI image management
   rpc PullImage(OciImageRequest) returns (OciImageResponse) {}
   rpc GetImageStatus(OciImageRequest) returns (OciImageResponse) {}
+
+  // OverlayBD image import (convert OCI image for lazy block loading)
+  rpc ImportOverlayBdImage(ImportOverlayBdRequest) returns (ImportOverlayBdResponse) {}
+
+  // Storage pool lifecycle (mount NFS, verify OverlayBD registry, create local dir, etc.)
+  rpc AttachStoragePool(AttachStoragePoolRequest) returns (AttachStoragePoolResponse) {}
+  rpc DetachStoragePool(DetachStoragePoolRequest) returns (google.protobuf.Empty) {}
 }
 
 // ============================================================================
@@ -380,6 +391,52 @@ message RemoveDeviceRequest {
 
 message OciImageRequest {
   string image_ref = 1;   // OCI image reference (e.g. "docker.io/library/ubuntu:22.04")
+}
+
+// ============================================================================
+// OverlayBD Image Import
+// ============================================================================
+
+message ImportOverlayBdRequest {
+  string image_ref    = 1;   // source: e.g. "docker.io/library/ubuntu:22.04"
+  string registry_url = 2;   // target registry URL, e.g. "http://my-registry:5000"
+}
+
+message ImportOverlayBdResponse {
+  string image_ref = 1;   // converted ref in target registry
+  string digest    = 2;   // sha256:...
+  bool available   = 3;
+}
+
+// ============================================================================
+// Storage Pool Attachment
+// ============================================================================
+
+enum StoragePoolKind {
+  STORAGE_POOL_KIND_LOCAL    = 0;
+  STORAGE_POOL_KIND_NFS      = 1;
+  STORAGE_POOL_KIND_OVERLAYBD = 2;
+}
+
+// Request to physically attach a storage pool on a node.
+// The config_json field carries pool-type-specific configuration:
+//   LOCAL:     {"path": "/var/lib/qarax/storage/..."}
+//   NFS:       {"url": "nfs-server:/export/path"}
+//   OVERLAYBD: {"url": "http://registry:5000"}
+message AttachStoragePoolRequest {
+  string pool_id    = 1;   // UUID of the storage pool
+  StoragePoolKind pool_kind = 2;
+  string config_json = 3;  // JSON-encoded pool config
+}
+
+message AttachStoragePoolResponse {
+  bool success       = 1;
+  string message     = 2;
+}
+
+message DetachStoragePoolRequest {
+  string pool_id    = 1;
+  StoragePoolKind pool_kind = 2;
 }
 
 message OciImageResponse {

@@ -79,7 +79,7 @@ elapsed=0
 while [ $elapsed -lt $timeout ]; do
     # Check if all services are healthy
     healthy_count=$(docker-compose ps 2>/dev/null | grep -c "(healthy)" || echo "0")
-    total_services=3  # postgres, qarax, qarax-node
+    total_services=4  # registry, postgres, qarax, qarax-node
 
     if [ "$healthy_count" -ge "$total_services" ]; then
         echo ""

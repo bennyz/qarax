@@ -391,6 +391,59 @@ paths:
           description: Storage pool not found
         '500':
           description: Internal server error
+  /storage-pools/{pool_id}/hosts:
+    post:
+      tags:
+      - storage-pools
+      operationId: attach_host
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachHostRequest'
+        required: true
+      responses:
+        '204':
+          description: Host attached to storage pool
+        '404':
+          description: Storage pool or host not found
+        '500':
+          description: Internal server error
+  /storage-pools/{pool_id}/hosts/{host_id}:
+    delete:
+      tags:
+      - storage-pools
+      operationId: detach_host
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: host_id
+        in: path
+        description: Host unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Host detached from storage pool
+        '404':
+          description: Host not found
+        '500':
+          description: Internal server error
   /storage-pools/{pool_id}/transfers:
     get:
       tags:
@@ -716,6 +769,14 @@ paths:
           description: Internal server error
 components:
   schemas:
+    AttachHostRequest:
+      type: object
+      required:
+      - host_id
+      properties:
+        host_id:
+          type: string
+          format: uuid
     BootSource:
       type: object
       required:
@@ -1040,7 +1101,6 @@ components:
       type: object
       required:
       - name
-      - storage_pool_id
       - object_type
       - size_bytes
       properties:
@@ -1058,8 +1118,11 @@ components:
           type: integer
           format: int64
         storage_pool_id:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uuid
+          description: Storage pool to place this object in. If omitted, a random active pool is chosen.
     NewStoragePool:
       type: object
       required:
@@ -1072,11 +1135,6 @@ components:
           - 'null'
           format: int64
         config: {}
-        host_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
         name:
           type: string
         pool_type:
@@ -1125,7 +1183,8 @@ components:
           - 'null'
           description: |-
             OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
-            When set, qarax-node will pull and convert the image using Nydus and serve it via virtiofs.
+            When set, the handler will check whether the selected host has an OverlayBD storage pool.
+            If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
         kvm_hyperv:
           type:
           - boolean
@@ -1312,6 +1371,36 @@ components:
           - boolean
           - 'null'
           description: Enable vhost-user networking
+    NewVmOverlaybdDisk:
+      type: object
+      required:
+      - vm_id
+      - disk_id
+      - image_ref
+      - registry_url
+      - boot_order
+      properties:
+        boot_order:
+          type: integer
+          format: int32
+        disk_id:
+          type: string
+        image_digest:
+          type:
+          - string
+          - 'null'
+        image_ref:
+          type: string
+        registry_url:
+          type: string
+        storage_pool_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        vm_id:
+          type: string
+          format: uuid
     RateLimiterConfig:
       type: object
       properties:
@@ -1381,11 +1470,6 @@ components:
           - 'null'
           format: int64
         config: {}
-        host_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
         id:
           type: string
           format: uuid
@@ -1406,6 +1490,7 @@ components:
       enum:
       - local
       - nfs
+      - overlay_bd
     TokenBucket:
       type: object
       required:
@@ -1651,6 +1736,40 @@ components:
           format: int64
         status:
           $ref: '#/components/schemas/VmStatus'
+        vm_id:
+          type: string
+          format: uuid
+    VmOverlaybdDisk:
+      type: object
+      required:
+      - id
+      - vm_id
+      - disk_id
+      - image_ref
+      - registry_url
+      - boot_order
+      properties:
+        boot_order:
+          type: integer
+          format: int32
+        disk_id:
+          type: string
+        id:
+          type: string
+          format: uuid
+        image_digest:
+          type:
+          - string
+          - 'null'
+        image_ref:
+          type: string
+        registry_url:
+          type: string
+        storage_pool_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
         vm_id:
           type: string
           format: uuid

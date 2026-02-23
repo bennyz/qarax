@@ -14,15 +14,28 @@ pub mod node {
 }
 
 use node::{
-    ConsoleConfig, ConsoleInput, ConsoleLogResponse, CopyFileRequest, CpusConfig, DiskConfig,
-    DownloadFileRequest, FsConfig, MemoryConfig, NetConfig, NodeInfo, OciImageRequest,
-    OciImageResponse, PayloadConfig, VmConfig, VmCounters, VmId, VmState,
-    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
+    AttachStoragePoolRequest, ConsoleConfig, ConsoleInput, ConsoleLogResponse, CopyFileRequest,
+    CpusConfig, DetachStoragePoolRequest, DiskConfig, DownloadFileRequest, FsConfig,
+    ImportOverlayBdRequest, ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo,
+    OciImageRequest, OciImageResponse, PayloadConfig, StoragePoolKind, VmConfig, VmCounters, VmId,
+    VmState, file_transfer_service_client::FileTransferServiceClient,
+    vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
 pub struct NodeClient {
     address: String,
+}
+
+/// OverlayBD disk specification for block-based OCI image booting.
+#[derive(Debug, Clone)]
+pub struct OverlaybdDiskSpec {
+    /// Virtio device id, e.g. "vda"
+    pub disk_id: String,
+    /// OCI image reference in the target registry
+    pub oci_image_ref: String,
+    /// Target registry URL, e.g. "http://my-registry:5000"
+    pub registry_url: String,
 }
 
 /// Parameters for creating a VM on the node
@@ -40,6 +53,8 @@ pub struct CreateVmRequest {
     pub fs_configs: Vec<FsConfig>,
     /// Whether to enable shared memory (required for vhost-user-fs)
     pub memory_shared: bool,
+    /// OverlayBD disk for lazy block-level OCI image boot (mutually exclusive with fs_configs)
+    pub overlaybd_disk: Option<OverlaybdDiskSpec>,
 }
 
 /// Convert API network list to proto NetConfig for the node.
@@ -116,6 +131,7 @@ impl NodeClient {
             cmdline,
             fs_configs,
             memory_shared,
+            overlaybd_disk,
         } = req;
         debug!("Creating VM {} on node {}", vm_id, self.address);
 
@@ -142,6 +158,32 @@ impl NodeClient {
                 rate_limit_group: None,
                 pci_segment: None,
                 serial: None,
+                oci_image_ref: None,
+                registry_url: None,
+            });
+        }
+
+        // Add OverlayBD disk if specified (lazy block-level OCI image boot)
+        if let Some(obd) = overlaybd_disk {
+            debug!(
+                "Adding OverlayBD disk {} for image {}",
+                obd.disk_id, obd.oci_image_ref
+            );
+            disks.push(DiskConfig {
+                id: obd.disk_id,
+                path: None, // filled in by qarax-node after mounting
+                readonly: Some(false),
+                direct: None,
+                vhost_user: None,
+                vhost_socket: None,
+                num_queues: None,
+                queue_size: None,
+                rate_limiter: None,
+                rate_limit_group: None,
+                pci_segment: None,
+                serial: None,
+                oci_image_ref: Some(obd.oci_image_ref),
+                registry_url: Some(obd.registry_url),
             });
         }
 
@@ -392,6 +434,39 @@ impl NodeClient {
         }
     }
 
+    /// Import (convert + push) an OCI image for OverlayBD lazy loading
+    #[instrument(skip(self))]
+    pub async fn import_overlaybd_image(
+        &self,
+        image_ref: &str,
+        registry_url: &str,
+    ) -> Result<ImportOverlayBdResponse> {
+        debug!(
+            "Importing OverlayBD image {} to {} on node {}",
+            image_ref, registry_url, self.address
+        );
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .import_overlay_bd_image(ImportOverlayBdRequest {
+                image_ref: image_ref.to_string(),
+                registry_url: registry_url.to_string(),
+            })
+            .await
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC import_overlaybd_image failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?;
+
+        Ok(response.into_inner())
+    }
+
     /// Pull an OCI image on the qarax-node via Nydus
     #[instrument(skip(self))]
     pub async fn pull_image(&self, image_ref: &str) -> Result<OciImageResponse> {
@@ -428,6 +503,97 @@ impl NodeClient {
             .context("Failed to delete VM on qarax-node")?;
 
         debug!("VM {} deleted successfully", vm_id);
+        Ok(())
+    }
+
+    /// Attach a storage pool on the node (mount NFS, verify OverlayBD registry, create local dir).
+    /// Returns an error if the pool kind is unrecognised or the underlying operation fails.
+    #[instrument(skip(self))]
+    pub async fn attach_storage_pool(
+        &self,
+        pool: &crate::model::storage_pools::StoragePool,
+    ) -> Result<()> {
+        use crate::model::storage_pools::StoragePoolType;
+
+        debug!(
+            "Attaching storage pool {} ({}) on node {}",
+            pool.id, pool.pool_type, self.address
+        );
+
+        let pool_kind = match pool.pool_type {
+            StoragePoolType::Local => StoragePoolKind::Local,
+            StoragePoolType::Nfs => StoragePoolKind::Nfs,
+            StoragePoolType::OverlayBd => StoragePoolKind::Overlaybd,
+        };
+
+        let config_json = pool.config.to_string();
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        let response = client
+            .attach_storage_pool(AttachStoragePoolRequest {
+                pool_id: pool.id.to_string(),
+                pool_kind: pool_kind as i32,
+                config_json,
+            })
+            .await
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC attach_storage_pool failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?
+            .into_inner();
+
+        if response.success {
+            debug!("Storage pool {} attached: {}", pool.id, response.message);
+            Ok(())
+        } else {
+            anyhow::bail!("attach_storage_pool failed: {}", response.message)
+        }
+    }
+
+    /// Detach a storage pool from the node (unmount NFS, no-op for others).
+    #[instrument(skip(self))]
+    pub async fn detach_storage_pool(
+        &self,
+        pool: &crate::model::storage_pools::StoragePool,
+    ) -> Result<()> {
+        use crate::model::storage_pools::StoragePoolType;
+
+        debug!(
+            "Detaching storage pool {} ({}) on node {}",
+            pool.id, pool.pool_type, self.address
+        );
+
+        let pool_kind = match pool.pool_type {
+            StoragePoolType::Local => StoragePoolKind::Local,
+            StoragePoolType::Nfs => StoragePoolKind::Nfs,
+            StoragePoolType::OverlayBd => StoragePoolKind::Overlaybd,
+        };
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        client
+            .detach_storage_pool(DetachStoragePoolRequest {
+                pool_id: pool.id.to_string(),
+                pool_kind: pool_kind as i32,
+            })
+            .await
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC detach_storage_pool failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?;
+
+        debug!("Storage pool {} detached", pool.id);
         Ok(())
     }
 

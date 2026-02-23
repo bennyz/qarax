@@ -77,7 +77,7 @@ pub async fn create(
                 // Create the storage object
                 let new_object = NewStorageObject {
                     name: bg_transfer.name.clone(),
-                    storage_pool_id: bg_transfer.storage_pool_id,
+                    storage_pool_id: Some(bg_transfer.storage_pool_id),
                     object_type: bg_transfer.object_type.clone(),
                     size_bytes: result.bytes_written,
                     config: result.storage_config,

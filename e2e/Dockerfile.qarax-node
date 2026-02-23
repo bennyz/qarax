@@ -38,7 +38,9 @@ RUN chmod +x /usr/local/bin/qarax-node /usr/local/bin/qarax-init
 RUN mkdir -p /var/lib/qarax/vms \
     /var/lib/qarax/images \
     /var/lib/qarax/disks \
-    /etc/qarax-node
+    /var/lib/qarax/overlaybd \
+    /etc/qarax-node \
+    /etc/overlaybd
 
 # Download Cloud Hypervisor kernel (vmlinux)
 # This kernel has CONFIG_VIRTIO_FS=y (built-in)
@@ -63,6 +65,9 @@ RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
 
 
 
+COPY e2e/entrypoint-qarax-node.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 50051
 
-CMD ["/usr/local/bin/qarax-node", "--port", "50051"]
+CMD ["/entrypoint.sh"]
