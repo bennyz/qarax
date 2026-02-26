@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     api::{
         self,
-        models::{NewStorageObject, NewStoragePool},
+        models::{ImportToPoolRequest, NewStorageObject, NewStoragePool},
     },
     client::Client,
 };
@@ -62,6 +62,18 @@ enum StoragePoolCommand {
         pool: String,
         /// Host name or ID
         host: String,
+    },
+    /// Import an OCI image into the pool (convert to OverlayBD)
+    Import {
+        /// Pool name or ID
+        #[arg(long)]
+        pool: String,
+        /// OCI image reference (e.g. public.ecr.aws/docker/library/alpine:latest)
+        #[arg(long)]
+        image_ref: String,
+        /// Name for the resulting storage object
+        #[arg(long)]
+        name: String,
     },
 }
 
@@ -184,6 +196,46 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
                 print_json(&serde_json::json!({ "pool_id": pool_id, "host_id": host_id }))?;
             } else {
                 println!("Detached host {host} from pool {pool}");
+            }
+        }
+
+        StoragePoolCommand::Import {
+            pool,
+            image_ref,
+            name,
+        } => {
+            let pool_id = resolve_pool_id(client, &pool).await?;
+            let req = ImportToPoolRequest { name, image_ref };
+            let resp = api::storage::import_to_pool(client, pool_id, &req).await?;
+            if json {
+                print_json(&resp)?;
+            } else {
+                println!("Import job: {}", resp.job_id);
+                println!("Storage object: {}", resp.storage_object_id);
+                // Poll job to completion
+                use crate::api::jobs;
+                use std::io::Write as _;
+                loop {
+                    let job = jobs::get(client, resp.job_id).await?;
+                    match job.status.as_str() {
+                        "completed" => {
+                            eprintln!("\r[completed]                    ");
+                            break;
+                        }
+                        "failed" => {
+                            return Err(anyhow::anyhow!(
+                                "Import job {} failed: {}",
+                                resp.job_id,
+                                job.error.unwrap_or_else(|| "unknown error".to_string())
+                            ));
+                        }
+                        status => {
+                            eprint!("\r[{status}] {}%   ", job.progress.unwrap_or(0));
+                            let _ = std::io::stderr().flush();
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
             }
         }
     }

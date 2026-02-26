@@ -46,6 +46,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         vm::handler::metrics,
         vm::handler::console_log,
         vm::handler::console_attach,
+        vm::handler::attach_disk,
         storage_object::handler::list,
         storage_object::handler::get,
         storage_object::handler::create,
@@ -56,6 +57,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         storage_pool::handler::delete,
         storage_pool::handler::attach_host,
         storage_pool::handler::detach_host,
+        storage_pool::handler::import_to_pool,
         boot_source::handler::list,
         boot_source::handler::get,
         boot_source::handler::create,
@@ -105,6 +107,10 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::jobs::JobStatus,
             crate::model::jobs::JobType,
             crate::handlers::vm::handler::CreateVmResponse,
+            crate::handlers::vm::handler::VmStartResponse,
+            crate::handlers::vm::handler::AttachDiskRequest,
+            crate::handlers::storage_pool::handler::ImportToPoolRequest,
+            crate::handlers::storage_pool::handler::ImportToPoolResponse,
         )
     ),
     tags(
@@ -185,6 +191,7 @@ fn vms() -> Router {
             "/vms/{vm_id}/console/attach",
             get(vm::handler::console_attach),
         )
+        .route("/vms/{vm_id}/disks", post(vm::handler::attach_disk))
 }
 
 fn storage_objects() -> Router {
@@ -216,6 +223,10 @@ fn storage_pools() -> Router {
         .route(
             "/storage-pools/{pool_id}/hosts/{host_id}",
             axum::routing::delete(storage_pool::handler::detach_host),
+        )
+        .route(
+            "/storage-pools/{pool_id}/import",
+            post(storage_pool::handler::import_to_pool),
         )
 }
 

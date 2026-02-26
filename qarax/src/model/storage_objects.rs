@@ -217,6 +217,19 @@ WHERE id = $1
     Ok(())
 }
 
+pub async fn update_config(
+    pool: &PgPool,
+    object_id: Uuid,
+    config: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE storage_objects SET config = $1 WHERE id = $2")
+        .bind(sqlx::types::Json(config))
+        .bind(object_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Extract the path from a storage object's config JSONB field.
 /// Expected format: {"path": "/var/lib/qarax/images/vmlinux"}
 pub fn get_path_from_config(config: &serde_json::Value) -> Option<String> {

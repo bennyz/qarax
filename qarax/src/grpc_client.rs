@@ -5,7 +5,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, instrument};
 use uuid::Uuid;
 
-use crate::model::network_interfaces::{RateLimiterConfig, TokenBucket, VhostMode};
+use crate::model::network_interfaces::{
+    NetworkInterface, RateLimiterConfig, TokenBucket, VhostMode,
+};
 use crate::model::vms::NewVmNetwork;
 
 // Include the generated proto code
@@ -55,6 +57,40 @@ pub struct CreateVmRequest {
     pub memory_shared: bool,
     /// OverlayBD disk for lazy block-level OCI image boot (mutually exclusive with fs_configs)
     pub overlaybd_disk: Option<OverlaybdDiskSpec>,
+}
+
+/// Convert DB network interfaces to proto NetConfig for the node.
+pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
+    networks
+        .iter()
+        .map(|n| NetConfig {
+            id: n.device_id.clone(),
+            tap: n.tap_name.clone(),
+            ip: n.ip_address.clone(),
+            mask: None,
+            mac: n.mac_address.clone(),
+            host_mac: n.host_mac.clone(),
+            mtu: Some(n.mtu),
+            vhost_user: if n.vhost_user { Some(true) } else { None },
+            vhost_socket: n.vhost_socket.clone(),
+            vhost_mode: n.vhost_mode.as_deref().map(|m| match m {
+                "server" => node::VhostMode::Server as i32,
+                _ => node::VhostMode::Client as i32,
+            }),
+            num_queues: Some(n.num_queues),
+            queue_size: Some(n.queue_size),
+            rate_limiter: None,
+            offload_tso: Some(n.offload_tso),
+            offload_ufo: Some(n.offload_ufo),
+            offload_csum: Some(n.offload_csum),
+            pci_segment: if n.pci_segment != 0 {
+                Some(n.pci_segment)
+            } else {
+                None
+            },
+            iommu: Some(n.iommu),
+        })
+        .collect()
 }
 
 /// Convert API network list to proto NetConfig for the node.

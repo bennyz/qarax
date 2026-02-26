@@ -136,13 +136,9 @@ async def test_vm_full_lifecycle(client):
             vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
             assert vm.status == VmStatus.CREATED
 
-            # 2. Start VM (this boots the real VM with test kernel/initramfs)
+            # 2. Start VM (async — returns 202 with job_id, VM reaches RUNNING in background)
             await call_api(start_vm, client=c, vm_id=vm_id_str)
-            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
-            assert vm.status == VmStatus.RUNNING
-
-            # Give the VM a moment to fully initialize
-            await asyncio.sleep(1)
+            vm = await wait_for_status(c, vm_id_str, VmStatus.RUNNING)
 
             # 3. Pause VM
             await call_api(pause_vm, client=c, vm_id=vm_id_str)
@@ -249,12 +245,9 @@ async def test_vm_start_stop_cycle(client):
         try:
             # Start/stop cycle
             for i in range(2):
-                # Start
+                # Start (async — polls until RUNNING)
                 await call_api(start_vm, client=c, vm_id=vm_id_str)
-                vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
-                assert vm.status == VmStatus.RUNNING, (
-                    f"Cycle {i}: Expected RUNNING after start"
-                )
+                vm = await wait_for_status(c, vm_id_str, VmStatus.RUNNING)
 
                 # Small delay
                 await asyncio.sleep(0.5)

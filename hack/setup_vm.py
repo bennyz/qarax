@@ -74,9 +74,52 @@ def ensure_host(base_url: str, name: str, address: str, port: int) -> str:
         else:
             resp.raise_for_status()
 
-    api("POST", f"/hosts/{host_id}/init", base_url)
-    log("Host initialized and set to up")
-    return host_id
+    # Init the host (gRPC probe + set to UP). Retry a few times since
+    # qarax-node may still be finishing startup even after the health check passes.
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        resp = api("POST", f"/hosts/{host_id}/init", base_url)
+        if resp.status_code == 200:
+            log("Host initialized and set to UP")
+            return host_id
+        log(f"Host init attempt {attempt}/{max_retries} failed: {resp.status_code} {resp.text.strip()}")
+        if attempt < max_retries:
+            time.sleep(3)
+
+    log("ERROR: Could not initialize host after retries — qarax-node may be unreachable")
+    sys.exit(1)
+
+
+def ensure_overlaybd_pool(base_url: str, name: str, registry_url: str) -> str:
+    """Get or create an overlaybd storage pool, return pool_id."""
+    resp = api("GET", "/storage-pools", base_url)
+    resp.raise_for_status()
+    pool = find_by_name(resp.json(), name)
+
+    if pool:
+        log(f"Using existing overlaybd pool: {pool['id']}")
+        return pool["id"]
+
+    resp = api(
+        "POST",
+        "/storage-pools",
+        base_url,
+        json={
+            "name": name,
+            "pool_type": "overlay_bd",
+            "config": {"url": registry_url},
+        },
+    )
+    resp.raise_for_status()
+    pool_id = resp.text.strip().strip('"')
+    log(f"OverlayBD storage pool created: {pool_id}")
+
+    # The server attaches UP hosts to new pools asynchronously in the background.
+    # Wait for the attachment to complete (needed for import operations).
+    log("Waiting for host attachment to storage pool...")
+    time.sleep(5)
+
+    return pool_id
 
 
 def ensure_pool(base_url: str, name: str, host_id: str, path: str) -> str:
@@ -245,8 +288,25 @@ def create_and_start_vm(
     log(f"VM created: {vm_id}")
 
     resp = api("POST", f"/vms/{vm_id}/start", base_url)
-    if resp.status_code == 200:
-        log("VM started successfully")
+    if resp.status_code == 202:
+        job_id = resp.json().get("job_id")
+        log(f"VM start accepted, job: {job_id}")
+        # Poll job until completion
+        if job_id:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                jr = api("GET", f"/jobs/{job_id}", base_url)
+                jr.raise_for_status()
+                job = jr.json()
+                if job["status"] == "completed":
+                    log("VM started successfully")
+                    break
+                elif job["status"] == "failed":
+                    log(f"VM start job failed: {job.get('error', 'unknown')}")
+                    break
+                time.sleep(2)
+            else:
+                log("VM start job timed out")
     else:
         log(f"Failed to start VM: {resp.status_code} {resp.text}")
 
@@ -260,14 +320,38 @@ def main() -> None:
     parser.add_argument("--host-address", default="qarax-node")
     parser.add_argument("--host-port", type=int, default=50051)
     parser.add_argument("--pool-path", default="/var/lib/qarax/images")
+    parser.add_argument("--overlaybd-registry-url", default="http://registry:5000")
     parser.add_argument("--kernel-path", required=True)
     parser.add_argument("--initramfs-path", default="")
     parser.add_argument("--cmdline", default="console=ttyS0")
+    parser.add_argument(
+        "--skip-vm",
+        action="store_true",
+        help="Only set up host and storage pools; skip local pool, transfers, boot source, and VM",
+    )
+    parser.add_argument(
+        "--skip-host",
+        action="store_true",
+        help="Skip host registration and init (host already managed externally, e.g. libvirt VM)",
+    )
     args = parser.parse_args()
 
     base = args.api_url
 
-    host_id = ensure_host(base, args.host_name, args.host_address, args.host_port)
+    host_id = None
+    if not args.skip_host:
+        host_id = ensure_host(base, args.host_name, args.host_address, args.host_port)
+        print(f"HOST_ID={host_id}")
+
+    overlaybd_pool_id = ensure_overlaybd_pool(base, "overlaybd-pool", args.overlaybd_registry_url)
+    print(f"OVERLAYBD_POOL_ID={overlaybd_pool_id}")
+
+    if args.skip_vm:
+        return
+
+    if not host_id:
+        log("ERROR: --skip-host requires --skip-vm (host_id needed for pool/VM creation)")
+        sys.exit(1)
 
     pool_id = ensure_pool(base, "local-pool", host_id, args.pool_path)
 
@@ -306,7 +390,6 @@ def main() -> None:
         networks=[{"id": "net0", "mac": "52:54:00:12:34:56"}],
     )
 
-    print(f"HOST_ID={host_id}")
     print(f"POOL_ID={pool_id}")
     print(f"KERNEL_ID={kernel_id}")
     if initramfs_id:

@@ -1,0 +1,8 @@
+# Compose overlay for VM mode: removes the qarax-node container service.
+# Used by run-local.sh --vm so that qarax-node runs in a libvirt VM instead.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.vm-mode.yml up -d ...
+services:
+  qarax:
+    depends_on:
+      postgres:
+        condition: service_healthy

@@ -4,6 +4,11 @@
 FROM fedora:41
 
 ARG CLOUD_HYPERVISOR_VERSION=v50.0
+ARG OVERLAYBD_VERSION=1.0.16
+ARG OVERLAYBD_RPM_SUFFIX=20250818.4601fb2
+ARG OVERLAYBD_RPM_DIST=azurelinux.3.0
+ARG ACI_VERSION=1.4.1
+ARG ACI_RPM_SUFFIX=20260114025326.c6ba42c
 
 # Install dependencies including kernel for vmlinux extraction
 RUN dnf install -y \
@@ -19,6 +24,7 @@ RUN dnf install -y \
     gzip \
     busybox \
     virtiofsd \
+    e2fsprogs \
     && dnf clean all \
     && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
 
@@ -28,6 +34,24 @@ RUN curl -fsSL \
     -o /usr/local/bin/cloud-hypervisor && \
     chmod +x /usr/local/bin/cloud-hypervisor && \
     cloud-hypervisor --version
+
+# Install overlaybd-tcmu (provides the TCMU block-device backend for OverlayBD images).
+# The el8 RPM is used because it matches the overlaybd build environment; files are
+# extracted manually to avoid running RPM scriptlets in the container.
+RUN curl -fsSL \
+    "https://github.com/containerd/overlaybd/releases/download/v${OVERLAYBD_VERSION}/overlaybd-${OVERLAYBD_VERSION}-${OVERLAYBD_RPM_SUFFIX}.${OVERLAYBD_RPM_DIST}.x86_64.rpm" \
+    -o /tmp/overlaybd.rpm && \
+    cd / && rpm2cpio /tmp/overlaybd.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    mkdir -p /opt/overlaybd/registry_cache /opt/overlaybd/gzip_cache && \
+    rm /tmp/overlaybd.rpm
+
+# Install the overlaybd-snapshotter convertor (statically-linked Go binary).
+# Used to convert OCI images to OverlayBD format.
+RUN curl -fsSL \
+    "https://github.com/containerd/accelerated-container-image/releases/download/v${ACI_VERSION}/overlaybd-snapshotter-${ACI_VERSION}-${ACI_RPM_SUFFIX}.x86_64.rpm" \
+    -o /tmp/aci.rpm && \
+    cd / && rpm2cpio /tmp/aci.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    rm /tmp/aci.rpm
 
 # Copy qarax-node and qarax-init binaries
 COPY target/x86_64-unknown-linux-musl/release/qarax-node /usr/local/bin/qarax-node
@@ -39,8 +63,7 @@ RUN mkdir -p /var/lib/qarax/vms \
     /var/lib/qarax/images \
     /var/lib/qarax/disks \
     /var/lib/qarax/overlaybd \
-    /etc/qarax-node \
-    /etc/overlaybd
+    /etc/qarax-node
 
 # Download Cloud Hypervisor kernel (vmlinux)
 # This kernel has CONFIG_VIRTIO_FS=y (built-in)
@@ -62,8 +85,6 @@ RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
     find . | cpio -o -H newc 2>/dev/null | gzip > /var/lib/qarax/images/test-initramfs.gz && \
     rm -rf /tmp/initramfs /tmp/init-test.sh && \
     ls -la /var/lib/qarax/images/
-
-
 
 COPY e2e/entrypoint-qarax-node.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

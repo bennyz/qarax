@@ -7,28 +7,38 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.vm_start_response import VmStartResponse
+from ...models.attach_disk_request import AttachDiskRequest
+from ...models.vm_overlaybd_disk import VmOverlaybdDisk
 from ...types import Response
 
 
 def _get_kwargs(
     vm_id: UUID,
+    *,
+    body: AttachDiskRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
+
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/vms/{vm_id}/start".format(
+        "url": "/vms/{vm_id}/disks".format(
             vm_id=quote(str(vm_id), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | VmStartResponse | None:
-    if response.status_code == 202:
-        response_202 = VmStartResponse.from_dict(response.json())
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | VmOverlaybdDisk | None:
+    if response.status_code == 201:
+        response_201 = VmOverlaybdDisk.from_dict(response.json())
 
-        return response_202
+        return response_201
 
     if response.status_code == 404:
         response_404 = cast(Any, None)
@@ -50,7 +60,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | VmStartResponse]:
+) -> Response[Any | VmOverlaybdDisk]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,21 +73,25 @@ def sync_detailed(
     vm_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | VmStartResponse]:
-    """
+    body: AttachDiskRequest,
+) -> Response[Any | VmOverlaybdDisk]:
+    """Attach an OverlayBD storage object to a VM as a bootable disk.
+
     Args:
         vm_id (UUID):
+        body (AttachDiskRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | VmStartResponse]
+        Response[Any | VmOverlaybdDisk]
     """
 
     kwargs = _get_kwargs(
         vm_id=vm_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -91,22 +105,26 @@ def sync(
     vm_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | VmStartResponse | None:
-    """
+    body: AttachDiskRequest,
+) -> Any | VmOverlaybdDisk | None:
+    """Attach an OverlayBD storage object to a VM as a bootable disk.
+
     Args:
         vm_id (UUID):
+        body (AttachDiskRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | VmStartResponse
+        Any | VmOverlaybdDisk
     """
 
     return sync_detailed(
         vm_id=vm_id,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -114,21 +132,25 @@ async def asyncio_detailed(
     vm_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | VmStartResponse]:
-    """
+    body: AttachDiskRequest,
+) -> Response[Any | VmOverlaybdDisk]:
+    """Attach an OverlayBD storage object to a VM as a bootable disk.
+
     Args:
         vm_id (UUID):
+        body (AttachDiskRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | VmStartResponse]
+        Response[Any | VmOverlaybdDisk]
     """
 
     kwargs = _get_kwargs(
         vm_id=vm_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -140,22 +162,26 @@ async def asyncio(
     vm_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | VmStartResponse | None:
-    """
+    body: AttachDiskRequest,
+) -> Any | VmOverlaybdDisk | None:
+    """Attach an OverlayBD storage object to a VM as a bootable disk.
+
     Args:
         vm_id (UUID):
+        body (AttachDiskRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | VmStartResponse
+        Any | VmOverlaybdDisk
     """
 
     return (
         await asyncio_detailed(
             vm_id=vm_id,
             client=client,
+            body=body,
         )
     ).parsed

@@ -31,6 +31,7 @@ pub struct Job {
 #[strum(serialize_all = "snake_case")]
 pub enum JobType {
     ImagePull,
+    VmStart,
 }
 
 #[derive(

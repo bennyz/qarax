@@ -1,8 +1,9 @@
 [Unit]
 Description=Qarax Node - Virtual Machine Manager
 Documentation=https://github.com/qarax/qarax
-After=network-online.target
+After=network-online.target overlaybd-tcmu.service
 Wants=network-online.target
+Requires=overlaybd-tcmu.service
 
 [Service]
 Type=simple
@@ -22,9 +23,8 @@ Environment="RUST_BACKTRACE=1"
 # Security hardening
 NoNewPrivileges=false
 PrivateTmp=true
-ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/qarax
+ReadWritePaths=/var/lib/qarax /var/lib/qarax/overlaybd
 
 # Resource limits
 LimitNOFILE=65536

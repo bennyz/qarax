@@ -134,7 +134,7 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
             if json {
                 print_json(&serde_json::json!({ "host_id": id }))?;
             } else {
-                println!("Added host: {id}");
+                println!("Added host: {}", new_host.name);
             }
         }
 
@@ -159,7 +159,7 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
                 reboot,
             };
             api::hosts::deploy(client, id, &req).await?;
-            println!("Host deployment started: {id}");
+            println!("Host deployment started: {host}");
         }
 
         HostCommand::Init { host } => {

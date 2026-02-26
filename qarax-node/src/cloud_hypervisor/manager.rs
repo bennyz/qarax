@@ -108,6 +108,8 @@ pub struct VmManager {
     image_store_manager: Option<Arc<ImageStoreManager>>,
     /// Optional OverlayBD manager for lazy block-level OCI image boot
     overlaybd_manager: Option<Arc<OverlayBdManager>>,
+    /// Path to the qarax-init binary (injected into OverlayBD-backed VMs)
+    qarax_init_binary: Option<PathBuf>,
 }
 
 impl VmManager {
@@ -117,7 +119,7 @@ impl VmManager {
         ch_binary: impl Into<PathBuf>,
         image_store_manager: Option<Arc<ImageStoreManager>>,
     ) -> Self {
-        Self::with_overlaybd(runtime_dir, ch_binary, image_store_manager, None)
+        Self::with_overlaybd(runtime_dir, ch_binary, image_store_manager, None, None)
     }
 
     /// Create a new VM manager with optional OverlayBD support
@@ -126,6 +128,7 @@ impl VmManager {
         ch_binary: impl Into<PathBuf>,
         image_store_manager: Option<Arc<ImageStoreManager>>,
         overlaybd_manager: Option<Arc<OverlayBdManager>>,
+        qarax_init_binary: Option<PathBuf>,
     ) -> Self {
         let runtime_dir = runtime_dir.into();
         let ch_binary = ch_binary.into();
@@ -142,6 +145,7 @@ impl VmManager {
             vms: Arc::new(Mutex::new(HashMap::new())),
             image_store_manager,
             overlaybd_manager,
+            qarax_init_binary,
         }
     }
 
@@ -392,10 +396,25 @@ impl VmManager {
                     (disk.oci_image_ref.clone(), disk.registry_url.clone())
                 {
                     let mounted = obd_manager.mount(&vm_id, &image_ref, &registry_url).await?;
+                    let device_path = mounted.device_path.clone();
                     disk.path = Some(mounted.device_path);
                     disk.oci_image_ref = None;
                     disk.registry_url = None;
                     has_overlaybd = true;
+
+                    // Inject qarax-init into the mounted block device so the VM
+                    // boots with our init binary as PID 1.
+                    if let Some(init_binary) = &self.qarax_init_binary {
+                        obd_manager
+                            .inject_init(
+                                &vm_id,
+                                &device_path,
+                                &image_ref,
+                                &registry_url,
+                                init_binary,
+                            )
+                            .await?;
+                    }
                 }
             }
         } else {
@@ -491,12 +510,34 @@ impl VmManager {
             }
         }
 
+        // Validate kernel path before sending to CH
+        if let Some(payload) = &config.payload {
+            if let Some(kernel) = &payload.kernel {
+                let kernel_path = std::path::Path::new(kernel);
+                if kernel_path.exists() {
+                    info!("Kernel path validated: {} (exists)", kernel);
+                } else {
+                    warn!("Kernel path does NOT exist: {}", kernel);
+                }
+            } else {
+                warn!("No kernel path in payload config");
+            }
+            if let Some(initramfs) = &payload.initramfs {
+                let initramfs_path = std::path::Path::new(initramfs);
+                if initramfs_path.exists() {
+                    info!("Initramfs path validated: {} (exists)", initramfs);
+                } else {
+                    warn!("Initramfs path does NOT exist: {}", initramfs);
+                }
+            }
+        }
+
         // Convert proto config to SDK config
         let sdk_config = self.proto_to_sdk_config(&config)?;
         let json_config = serde_json::to_string(&sdk_config)
             .map_err(|e| VmManagerError::InvalidConfig(e.to_string()))?;
 
-        debug!("Creating VM with config: {}", json_config);
+        info!("Creating VM with CH config: {}", json_config);
 
         // Send create request via raw API
         self.send_api_request(&socket_path, "PUT", "/api/v1/vm.create", Some(&json_config))
@@ -565,10 +606,19 @@ impl VmManager {
                 .get_mut(vm_id)
                 .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
 
-            instance.vm.boot().await?;
-            instance.status = VmStatus::Running;
             (instance.socket_path.clone(), instance.proto_config.clone())
         };
+
+        // Use raw API for boot so we get the full error response body
+        self.send_api_request(&socket_path, "PUT", "/api/v1/vm.boot", None)
+            .await?;
+
+        {
+            let mut vms = self.vms.lock().await;
+            if let Some(instance) = vms.get_mut(vm_id) {
+                instance.status = VmStatus::Running;
+            }
+        }
 
         // Re-query PTY paths after boot in case they weren't available at create time.
         let (serial_pty, console_pty) = self.query_pty_paths(&socket_path, &proto_config).await;
@@ -908,12 +958,7 @@ impl VmManager {
             .await
             .map_err(|e| VmManagerError::ProcessError(e.to_string()))?;
 
-        if !response.status().is_success() {
-            return Err(VmManagerError::ProcessError(format!(
-                "API request failed: HTTP {}",
-                response.status()
-            )));
-        }
+        let status = response.status();
 
         // Read response body
         let mut body_bytes = http_body_util::BodyStream::new(response.into_body());
@@ -926,7 +971,16 @@ impl VmManager {
             }
         }
 
-        Ok(String::from_utf8_lossy(&bytes).to_string())
+        let body = String::from_utf8_lossy(&bytes).to_string();
+
+        if !status.is_success() {
+            return Err(VmManagerError::ProcessError(format!(
+                "API request {} {} failed: HTTP {} — {}",
+                method, path, status, body
+            )));
+        }
+
+        Ok(body)
     }
 
     /// Convert proto VmConfig to SDK VmConfig

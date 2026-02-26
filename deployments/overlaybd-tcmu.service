@@ -1,0 +1,19 @@
+[Unit]
+Description=OverlayBD TCMU daemon
+Documentation=https://github.com/containerd/overlaybd
+After=systemd-modules-load.service
+Before=qarax-node.service
+
+[Service]
+Type=simple
+ExecStart=/opt/overlaybd/bin/overlaybd-tcmu
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=overlaybd-tcmu
+
+[Install]
+WantedBy=multi-user.target

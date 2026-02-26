@@ -4,7 +4,10 @@ use uuid::Uuid;
 
 use crate::client::Client;
 
-use super::models::{CreateVmResponse, CreateVmResult, NewVm, Vm};
+use super::models::{
+    AttachDiskRequest, CreateVmResponse, CreateVmResult, NewVm, Vm, VmOverlaybdDisk,
+    VmStartResponse,
+};
 
 pub async fn list(client: &Client) -> anyhow::Result<Vec<Vm>> {
     client.get("/vms").await
@@ -43,8 +46,8 @@ pub async fn delete(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
     client.delete(&format!("/vms/{vm_id}")).await
 }
 
-pub async fn start(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
-    client.post_empty(&format!("/vms/{vm_id}/start")).await
+pub async fn start(client: &Client, vm_id: Uuid) -> anyhow::Result<VmStartResponse> {
+    client.post_empty_json(&format!("/vms/{vm_id}/start")).await
 }
 
 pub async fn stop(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
@@ -61,4 +64,12 @@ pub async fn resume(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
 
 pub async fn console_log(client: &Client, vm_id: Uuid) -> anyhow::Result<String> {
     client.get_text(&format!("/vms/{vm_id}/console")).await
+}
+
+pub async fn attach_disk(
+    client: &Client,
+    vm_id: Uuid,
+    req: &AttachDiskRequest,
+) -> anyhow::Result<VmOverlaybdDisk> {
+    client.post(&format!("/vms/{vm_id}/disks"), req).await
 }

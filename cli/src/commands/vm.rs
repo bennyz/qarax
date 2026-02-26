@@ -6,13 +6,13 @@ use uuid::Uuid;
 use crate::{
     api::{
         self,
-        models::{CreateVmResult, NewVm},
+        models::{AttachDiskRequest, CreateVmResult, NewVm},
     },
     client::Client,
     console,
 };
 
-use super::{format_bytes, print_json, resolve_boot_source_id, resolve_vm_id};
+use super::{format_bytes, print_json, resolve_boot_source_id, resolve_object_id, resolve_vm_id};
 
 #[derive(Args)]
 pub struct VmArgs {
@@ -87,6 +87,20 @@ enum VmCommand {
     Attach {
         /// VM name or ID
         vm: String,
+    },
+    /// Attach an OverlayBD storage object as a disk on a VM
+    AttachDisk {
+        /// VM name or ID
+        vm: String,
+        /// Storage object name or ID to attach as a disk
+        #[arg(long)]
+        object: String,
+        /// Disk device ID inside the VM (default: vda)
+        #[arg(long)]
+        disk_id: Option<String>,
+        /// Boot order priority (lower = higher priority; default: 0)
+        #[arg(long)]
+        boot_order: Option<i32>,
     },
 }
 
@@ -195,14 +209,14 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                     if json {
                         print_json(&serde_json::json!({ "vm_id": vm_id }))?;
                     } else {
-                        println!("Created VM: {vm_id}");
+                        println!("Created VM: {}", new_vm.name);
                     }
                 }
                 CreateVmResult::Accepted { vm_id, job_id } => {
                     if json {
                         print_json(&serde_json::json!({ "vm_id": vm_id, "job_id": job_id }))?;
                     } else {
-                        println!("Creating VM: {vm_id}");
+                        println!("Creating VM: {}", new_vm.name);
                         println!("Job:         {job_id}");
                         poll_job(client, job_id).await?;
                     }
@@ -213,31 +227,37 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
         VmCommand::Delete { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             api::vms::delete(client, id).await?;
-            println!("Deleted VM: {id}");
+            println!("Deleted VM: {vm}");
         }
 
         VmCommand::Start { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
-            api::vms::start(client, id).await?;
-            println!("Starting VM: {id}");
+            let resp = api::vms::start(client, id).await?;
+            if json {
+                print_json(&resp)?;
+            } else {
+                println!("Starting VM: {vm}");
+                println!("Job:         {}", resp.job_id);
+                poll_job(client, resp.job_id).await?;
+            }
         }
 
         VmCommand::Stop { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             api::vms::stop(client, id).await?;
-            println!("Stopped VM: {id}");
+            println!("Stopped VM: {vm}");
         }
 
         VmCommand::Pause { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             api::vms::pause(client, id).await?;
-            println!("Paused VM: {id}");
+            println!("Paused VM: {vm}");
         }
 
         VmCommand::Resume { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             api::vms::resume(client, id).await?;
-            println!("Resumed VM: {id}");
+            println!("Resumed VM: {vm}");
         }
 
         VmCommand::Console { vm } => {
@@ -249,6 +269,30 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
         VmCommand::Attach { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             console::attach(client.base_url(), id).await?;
+        }
+
+        VmCommand::AttachDisk {
+            vm,
+            object,
+            disk_id,
+            boot_order,
+        } => {
+            let vm_id = resolve_vm_id(client, &vm).await?;
+            let object_id = resolve_object_id(client, &object).await?;
+            let req = AttachDiskRequest {
+                storage_object_id: object_id,
+                disk_id,
+                boot_order,
+            };
+            let disk = api::vms::attach_disk(client, vm_id, &req).await?;
+            if json {
+                print_json(&disk)?;
+            } else {
+                println!(
+                    "Attached disk {} (object={}, disk_id={}) to VM {}",
+                    disk.id, object_id, disk.disk_id, vm_id
+                );
+            }
         }
     }
 
