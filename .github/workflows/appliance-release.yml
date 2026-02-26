@@ -86,8 +86,8 @@ jobs:
           echo "push_latest=${push_latest}" >> "${GITHUB_OUTPUT}"
           echo "cloud_hv=${cloud_hv}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build qarax-node release binary
-        run: cargo build --release -p qarax-node --target "${TARGET_TRIPLE}"
+      - name: Build release binaries
+        run: cargo build --release -p qarax-node -p qarax-init --target "${TARGET_TRIPLE}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -126,6 +126,14 @@ jobs:
         run: |
           image_ref="${REGISTRY}/${IMAGE_NAME}@${{ steps.image.outputs.digest }}"
           cosign sign "${image_ref}"
+
+      - name: Clean up old image versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: qarax-vmm-host
+          package-type: container
+          min-versions-to-keep: 3
+          delete-only-untagged-versions: true
 
       - name: Publish summary
         run: |
