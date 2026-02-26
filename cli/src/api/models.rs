@@ -45,6 +45,11 @@ pub enum CreateVmResult {
     Accepted { vm_id: Uuid, job_id: Uuid },
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VmStartResponse {
+    pub job_id: Uuid,
+}
+
 // ─── Hosts ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -195,4 +200,39 @@ pub struct Job {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+// ─── VM disks ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttachDiskRequest {
+    pub storage_object_id: Uuid,
+    pub disk_id: Option<String>,
+    pub boot_order: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VmOverlaybdDisk {
+    pub id: Uuid,
+    pub vm_id: Uuid,
+    pub disk_id: String,
+    pub image_ref: String,
+    pub image_digest: Option<String>,
+    pub registry_url: String,
+    pub storage_pool_id: Option<Uuid>,
+    pub boot_order: i32,
+}
+
+// ─── Storage pool import ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportToPoolRequest {
+    pub name: String,
+    pub image_ref: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportToPoolResponse {
+    pub job_id: Uuid,
+    pub storage_object_id: Uuid,
 }

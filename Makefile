@@ -12,7 +12,7 @@ CONTAINER_ENGINE ?= docker
 APPLIANCE_IMAGE ?= ghcr.io/yourorg/qarax-vmm-host
 APPLIANCE_TAG ?= dev
 APPLIANCE_TARGET ?= x86_64-unknown-linux-musl
-CLOUD_HYPERVISOR_VERSION ?= v38.0
+CLOUD_HYPERVISOR_VERSION ?= v50.0
 
 help:
 	@echo "Available targets:"
@@ -29,6 +29,7 @@ help:
 	@echo "  make appliance-build - Build bootc appliance image locally"
 	@echo "  make appliance-push  - Push appliance image to registry"
 	@echo "  make run-local       - Run full stack locally (qarax + qarax-node + Postgres) via Docker"
+	@echo "  make run-local VM=1  - Same, but run qarax-node in a libvirt VM instead of a container"
 	@echo "  make stop-local      - Stop and remove the local Docker stack and volumes"
 
 build:
@@ -96,7 +97,7 @@ appliance-push:
 	$(CONTAINER_ENGINE) push $(APPLIANCE_IMAGE):$(APPLIANCE_TAG)
 
 run-local:
-	./hack/run-local.sh
+	./hack/run-local.sh $(if $(filter 1,$(VM)),--vm)
 
 stop-local:
 	./hack/run-local.sh --cleanup

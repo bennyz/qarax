@@ -444,6 +444,39 @@ paths:
           description: Host not found
         '500':
           description: Internal server error
+  /storage-pools/{pool_id}/import:
+    post:
+      tags:
+      - storage-pools
+      summary: Import an OCI image into the pool, converting it to OverlayBD format.
+      operationId: import_to_pool
+      parameters:
+      - name: pool_id
+        in: path
+        description: Storage pool ID
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportToPoolRequest'
+        required: true
+      responses:
+        '202':
+          description: Import job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportToPoolResponse'
+        '404':
+          description: Pool not found
+        '422':
+          description: No UP host attached to pool
+        '500':
+          description: Internal server error
   /storage-pools/{pool_id}/transfers:
     get:
       tags:
@@ -663,6 +696,39 @@ paths:
           description: VM console not available or not in PTY mode
         '500':
           description: Internal server error
+  /vms/{vm_id}/disks:
+    post:
+      tags:
+      - vms
+      summary: Attach an OverlayBD storage object to a VM as a bootable disk.
+      operationId: attach_disk
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachDiskRequest'
+        required: true
+      responses:
+        '201':
+          description: Disk attached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VmOverlaybdDisk'
+        '404':
+          description: VM or storage object not found
+        '422':
+          description: VM not in Created state
+        '500':
+          description: Internal server error
   /vms/{vm_id}/metrics:
     get:
       tags:
@@ -743,8 +809,14 @@ paths:
       responses:
         '202':
           description: VM start accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VmStartResponse'
         '404':
           description: VM not found
+        '422':
+          description: VM not in a startable state
         '500':
           description: Internal server error
   /vms/{vm_id}/stop:
@@ -769,6 +841,26 @@ paths:
           description: Internal server error
 components:
   schemas:
+    AttachDiskRequest:
+      type: object
+      required:
+      - storage_object_id
+      properties:
+        boot_order:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: 'Boot priority — lower is higher priority (default: `0`).'
+        disk_id:
+          type:
+          - string
+          - 'null'
+          description: 'Disk identifier inside the VM (default: `"vda"`).'
+        storage_object_id:
+          type: string
+          format: uuid
+          description: Storage object ID (must be `oci_image` type).
     AttachHostRequest:
       type: object
       required:
@@ -902,6 +994,30 @@ components:
       type: string
       enum:
       - cloud_hv
+    ImportToPoolRequest:
+      type: object
+      required:
+      - name
+      - image_ref
+      properties:
+        image_ref:
+          type: string
+          description: OCI image reference (e.g. `public.ecr.aws/docker/library/alpine:latest`).
+        name:
+          type: string
+          description: Human-readable name for the resulting storage object.
+    ImportToPoolResponse:
+      type: object
+      required:
+      - job_id
+      - storage_object_id
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        storage_object_id:
+          type: string
+          format: uuid
     InterfaceType:
       type: string
       enum:
@@ -974,6 +1090,7 @@ components:
       type: string
       enum:
       - image_pull
+      - vm_start
     NetworkInterface:
       type: object
       required:
@@ -1771,6 +1888,14 @@ components:
           - 'null'
           format: uuid
         vm_id:
+          type: string
+          format: uuid
+    VmStartResponse:
+      type: object
+      required:
+      - job_id
+      properties:
+        job_id:
           type: string
           format: uuid
     VmStatus:

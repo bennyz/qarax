@@ -4,7 +4,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::{Extension, Json, extract::Path, response::IntoResponse};
 use futures::{SinkExt, StreamExt};
 use http::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{error, info, instrument, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -12,13 +12,13 @@ use uuid::Uuid;
 use crate::{
     App,
     grpc_client::{
-        CreateVmRequest, NodeClient, OverlaybdDiskSpec, net_configs_from_api, node::FsConfig,
+        CreateVmRequest, NodeClient, OverlaybdDiskSpec, net_configs_from_db, node::FsConfig,
     },
     model::{
         boot_sources, hosts,
         hosts::Host,
         jobs::{self, JobType, NewJob},
-        network_interfaces,
+        network_interfaces, storage_objects,
         storage_pools::{self, OverlayBdPoolConfig},
         vm_filesystems::{self, NewVmFilesystem},
         vm_overlaybd_disks::{self, NewVmOverlaybdDisk},
@@ -31,6 +31,11 @@ use super::{ApiResponse, Result};
 #[derive(Serialize, ToSchema)]
 pub struct CreateVmResponse {
     pub vm_id: Uuid,
+    pub job_id: Uuid,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct VmStartResponse {
     pub job_id: Uuid,
 }
 
@@ -127,64 +132,10 @@ pub async fn create(
         return create_with_image(env, vm).await;
     }
 
-    // Synchronous path (no image_ref)
+    // Synchronous path (no image_ref): only write to DB, pick host, store networks.
+    // The node is NOT contacted here. create_vm will be called lazily at vm start.
     let mut tx = env.pool().begin().await?;
     let id = vms::create_tx(&mut tx, &vm).await?;
-
-    // Resolve boot source or use defaults
-    let (kernel, initramfs, cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
-        let resolved = boot_sources::resolve(env.pool(), boot_source_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to resolve boot_source_id {}: {}", boot_source_id, e);
-                crate::errors::Error::UnprocessableEntity(format!(
-                    "Invalid boot_source_id: {}",
-                    boot_source_id
-                ))
-            })?;
-
-        (
-            resolved.kernel_path,
-            resolved.initramfs_path,
-            resolved.kernel_params,
-        )
-    } else {
-        let vm_defaults = env.vm_defaults();
-        (
-            vm_defaults.kernel.clone(),
-            vm_defaults.initramfs.clone(),
-            vm_defaults.cmdline.clone(),
-        )
-    };
-
-    // Pick a host before touching the node, so we fail fast with a clear error
-    let host = pick_host(&env).await?;
-    let node_client = NodeClient::new(&host.address, host.port as u16);
-
-    let memory_shared = vm.memory_shared.unwrap_or(false);
-    let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
-    if let Err(e) = node_client
-        .create_vm(CreateVmRequest {
-            vm_id: id,
-            boot_vcpus: vm.boot_vcpus,
-            max_vcpus: vm.max_vcpus,
-            memory_size: vm.memory_size,
-            networks,
-            kernel,
-            initramfs,
-            cmdline,
-            fs_configs: vec![],
-            memory_shared,
-            overlaybd_disk: None,
-        })
-        .await
-    {
-        tracing::error!("Failed to create VM on qarax-node: {}", e);
-        return Err(crate::errors::Error::UnprocessableEntity(format!(
-            "qarax-node: {}",
-            e
-        )));
-    }
 
     // Store network interfaces in DB (inside tx, so rolls back if any insert fails)
     for net in vm.networks.as_deref().unwrap_or(&[]) {
@@ -195,7 +146,8 @@ pub async fn create(
 
     tx.commit().await?;
 
-    // Record which host this VM was scheduled onto
+    // Pick a host and record it
+    let host = pick_host(&env).await?;
     let _ = vms::update_host_id(env.pool(), id, host.id).await;
 
     Ok(ApiResponse {
@@ -223,8 +175,8 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
             crate::errors::Error::InternalServerError
         })?;
 
-    // Resolve boot source or use defaults (needed by background task)
-    let (kernel, initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
+    // Resolve boot source or use defaults (stored for use at start time)
+    let (_kernel, _initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
         let resolved = boot_sources::resolve(env.pool(), boot_source_id)
             .await
             .map_err(|e| {
@@ -279,7 +231,6 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
 
     // Spawn background task
     let db_pool = env.pool_arc();
-    let networks = net_configs_from_api(vm.networks.as_deref().unwrap_or(&[]));
 
     tokio::spawn(async move {
         tracing::info!(vm_id = %vm_id, job_id = %job_id, image_ref = %image_ref, "Starting async OCI image pull");
@@ -300,31 +251,12 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
                 job_id,
                 &image_ref,
                 &pool.config,
-                vm.boot_vcpus,
-                vm.max_vcpus,
-                vm.memory_size,
-                networks,
-                kernel,
-                initramfs,
                 pool.id,
             )
             .await;
         } else {
             // Virtiofs path: pull image via Nydus, serve rootfs via virtiofs
-            run_virtiofs_create(
-                &node_client,
-                &db_pool,
-                vm_id,
-                job_id,
-                &image_ref,
-                vm.boot_vcpus,
-                vm.max_vcpus,
-                vm.memory_size,
-                networks,
-                kernel,
-                initramfs,
-            )
-            .await;
+            run_virtiofs_create(&node_client, &db_pool, vm_id, job_id, &image_ref).await;
         }
     });
 
@@ -344,12 +276,6 @@ async fn run_virtiofs_create(
     vm_id: uuid::Uuid,
     job_id: uuid::Uuid,
     image_ref: &str,
-    boot_vcpus: i32,
-    max_vcpus: i32,
-    memory_size: i64,
-    networks: Vec<crate::grpc_client::node::NetConfig>,
-    kernel: String,
-    initramfs: Option<String>,
 ) {
     // Step 1: Pull image
     let image_info = match node_client.pull_image(image_ref).await {
@@ -365,44 +291,7 @@ async fn run_virtiofs_create(
 
     let _ = jobs::update_progress(db_pool, job_id, 50).await;
 
-    // Step 2: Create VM on node with virtiofs config
-    let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
-    let fs_config = FsConfig {
-        tag: "rootfs".to_string(),
-        socket: socket_path,
-        num_queues: 1,
-        queue_size: 1024,
-        pci_segment: None,
-        id: Some("fs0".to_string()),
-        bootstrap_path: Some(image_info.bootstrap_path.clone()),
-    };
-    let oci_cmdline =
-        "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string();
-
-    if let Err(e) = node_client
-        .create_vm(CreateVmRequest {
-            vm_id,
-            boot_vcpus,
-            max_vcpus,
-            memory_size,
-            networks,
-            kernel,
-            initramfs,
-            cmdline: oci_cmdline,
-            fs_configs: vec![fs_config],
-            memory_shared: true,
-            overlaybd_disk: None,
-        })
-        .await
-    {
-        let msg = format!("Failed to create VM on qarax-node: {}", e);
-        tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
-        let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
-        let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
-        return;
-    }
-
-    // Step 3: Persist virtiofs filesystem record
+    // Step 2: Persist virtiofs filesystem record
     let fs_record = NewVmFilesystem {
         vm_id,
         tag: "rootfs".to_string(),
@@ -416,7 +305,7 @@ async fn run_virtiofs_create(
         tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist filesystem record");
     }
 
-    // Mark VM as created and job as completed
+    // Mark VM as created (on node provisioning is deferred to vm start)
     let _ = vms::update_status(db_pool, vm_id, VmStatus::Created).await;
     let result = serde_json::json!({ "digest": image_info.digest });
     let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
@@ -433,12 +322,6 @@ async fn run_overlaybd_create(
     job_id: uuid::Uuid,
     image_ref: &str,
     pool_config: &serde_json::Value,
-    boot_vcpus: i32,
-    max_vcpus: i32,
-    memory_size: i64,
-    networks: Vec<crate::grpc_client::node::NetConfig>,
-    kernel: String,
-    initramfs: Option<String>,
     storage_pool_id: uuid::Uuid,
 ) {
     // Extract registry URL from pool config
@@ -470,38 +353,8 @@ async fn run_overlaybd_create(
 
     let _ = jobs::update_progress(db_pool, job_id, 50).await;
 
-    // Step 2: Create VM on node with OverlayBD disk (path resolved by node)
-    let obd_cmdline = "console=ttyS0 root=/dev/vda rw".to_string();
+    // Step 2: Persist OverlayBD disk record (boot_order = 0 marks it as the boot disk)
     let disk_id = "vda".to_string();
-
-    if let Err(e) = node_client
-        .create_vm(CreateVmRequest {
-            vm_id,
-            boot_vcpus,
-            max_vcpus,
-            memory_size,
-            networks,
-            kernel,
-            initramfs,
-            cmdline: obd_cmdline,
-            fs_configs: vec![],
-            memory_shared: false,
-            overlaybd_disk: Some(OverlaybdDiskSpec {
-                disk_id: disk_id.clone(),
-                oci_image_ref: import_result.image_ref.clone(),
-                registry_url: registry_url.clone(),
-            }),
-        })
-        .await
-    {
-        let msg = format!("Failed to create OverlayBD VM on qarax-node: {}", e);
-        tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
-        let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
-        let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
-        return;
-    }
-
-    // Step 3: Persist OverlayBD disk record (boot_order = 0 marks it as the boot disk)
     let disk_record = NewVmOverlaybdDisk {
         vm_id,
         disk_id,
@@ -519,7 +372,7 @@ async fn run_overlaybd_create(
         tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist OverlayBD disk record");
     }
 
-    // Mark VM as created and job as completed
+    // Mark VM as created (node provisioning is deferred to vm start)
     let _ = vms::update_status(db_pool, vm_id, VmStatus::Created).await;
     let result = serde_json::json!({ "digest": import_result.digest });
     let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
@@ -534,8 +387,9 @@ async fn run_overlaybd_create(
         ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
     ),
     responses(
-        (status = 202, description = "VM start accepted"),
+        (status = 202, description = "VM start accepted", body = VmStartResponse),
         (status = 404, description = "VM not found"),
+        (status = 422, description = "VM not in a startable state"),
         (status = 500, description = "Internal server error")
     ),
     tag = "vms"
@@ -544,15 +398,15 @@ async fn run_overlaybd_create(
 pub async fn start(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
-) -> Result<ApiResponse<()>> {
+) -> Result<axum::response::Response> {
     let vm = vms::get(env.pool(), vm_id).await?;
+    let original_status = vm.status.clone();
 
     match vm.status {
         VmStatus::Running => {
-            return Ok(ApiResponse {
-                data: (),
-                code: StatusCode::ACCEPTED,
-            });
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "VM is already running".into(),
+            ));
         }
         VmStatus::Paused => {
             return Err(crate::errors::Error::UnprocessableEntity(
@@ -570,18 +424,77 @@ pub async fn start(
     }
 
     let host = host_for_vm(&env, vm_id).await?;
-    let node_client = NodeClient::new(&host.address, host.port as u16);
-    node_client.start_vm(vm_id).await.map_err(|e| {
-        tracing::error!("Failed to start VM on qarax-node: {}", e);
-        crate::errors::Error::InternalServerError
-    })?;
 
-    vms::update_status(env.pool(), vm_id, VmStatus::Running).await?;
+    // Set VM status to Pending to prevent double-start
+    vms::update_status(env.pool(), vm_id, VmStatus::Pending).await?;
 
+    // Build create request eagerly (before spawning) so we can return errors synchronously
+    let create_req = if original_status == VmStatus::Created {
+        Some(build_create_vm_request(&env, &vm).await.map_err(|e| {
+            tracing::error!("Failed to build CreateVmRequest for {}: {}", vm_id, e);
+            e
+        })?)
+    } else {
+        None
+    };
+
+    // Create job record
+    let job = jobs::create(
+        env.pool(),
+        NewJob {
+            job_type: JobType::VmStart,
+            description: Some(format!("Starting VM {}", vm.name)),
+            resource_id: Some(vm_id),
+            resource_type: Some("vm".to_string()),
+        },
+    )
+    .await?;
+    let job_id = job.id;
+
+    let db_pool = env.pool_arc();
+
+    tokio::spawn(async move {
+        tracing::info!(vm_id = %vm_id, job_id = %job_id, "Starting async VM start");
+
+        if let Err(e) = jobs::mark_running(&db_pool, job_id).await {
+            tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as running");
+            return;
+        }
+
+        let node_client = NodeClient::new(&host.address, host.port as u16);
+
+        // For a VM in Created state, call create_vm first
+        if let Some(req) = create_req {
+            if let Err(e) = node_client.create_vm(req).await {
+                let msg = format!("create_vm failed: {:#}", e);
+                tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+                let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+                let _ = vms::update_status(&db_pool, vm_id, original_status).await;
+                return;
+            }
+            let _ = jobs::update_progress(&db_pool, job_id, 50).await;
+        }
+
+        if let Err(e) = node_client.start_vm(vm_id).await {
+            let msg = format!("start_vm failed: {:#}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+            let _ = vms::update_status(&db_pool, vm_id, original_status).await;
+            return;
+        }
+
+        let _ = vms::update_status(&db_pool, vm_id, VmStatus::Running).await;
+        let _ = jobs::mark_completed(&db_pool, job_id, None).await;
+
+        tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM start job completed");
+    });
+
+    use axum::response::IntoResponse as _;
     Ok(ApiResponse {
-        data: (),
+        data: VmStartResponse { job_id },
         code: StatusCode::ACCEPTED,
-    })
+    }
+    .into_response())
 }
 
 #[utoipa::path(
@@ -764,12 +677,19 @@ pub async fn delete(
     Extension(env): Extension<App>,
     Path(vm_id): Path<Uuid>,
 ) -> Result<ApiResponse<()>> {
-    let host = host_for_vm(&env, vm_id).await?;
-    let node_client = NodeClient::new(&host.address, host.port as u16);
-    node_client.delete_vm(vm_id).await.map_err(|e| {
-        tracing::error!("Failed to delete VM on qarax-node: {}", e);
-        crate::errors::Error::InternalServerError
-    })?;
+    let vm = vms::get(env.pool(), vm_id).await?;
+
+    // Only call delete_vm on the node if the VM was ever provisioned there
+    if vm.status != VmStatus::Created
+        && vm.status != VmStatus::Pending
+        && let Ok(host) = host_for_vm(&env, vm_id).await
+    {
+        let node_client = NodeClient::new(&host.address, host.port as u16);
+        // Tolerate node errors on delete (VM may already be gone)
+        if let Err(e) = node_client.delete_vm(vm_id).await {
+            tracing::warn!("delete_vm on node failed (ignoring): {}", e);
+        }
+    }
 
     vms::delete(env.pool(), vm_id).await?;
 
@@ -923,4 +843,176 @@ async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model
     }
 
     info!("WebSocket console session ended for VM: {}", vm_id);
+}
+
+/// Build a `CreateVmRequest` from DB state — called at `vm start` for lazily-provisioned VMs.
+async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> {
+    let vm_id = vm.id;
+
+    // Resolve boot source or fall back to defaults
+    let (kernel, initramfs, default_cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
+        let resolved = boot_sources::resolve(env.pool(), boot_source_id)
+            .await
+            .map_err(|e| {
+                crate::errors::Error::UnprocessableEntity(format!("Invalid boot_source_id: {}", e))
+            })?;
+        (
+            resolved.kernel_path,
+            resolved.initramfs_path,
+            resolved.kernel_params,
+        )
+    } else {
+        let d = env.vm_defaults();
+        (d.kernel.clone(), d.initramfs.clone(), d.cmdline.clone())
+    };
+
+    // Load disks and filesystems
+    let overlaybd_disks = vm_overlaybd_disks::list_by_vm(env.pool(), vm_id).await?;
+    let filesystems = vm_filesystems::list_by_vm(env.pool(), vm_id).await?;
+    let db_networks = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
+
+    let networks = net_configs_from_db(&db_networks);
+
+    // Choose boot disk / cmdline based on what's attached
+    let (overlaybd_disk, fs_configs, cmdline, memory_shared) =
+        if let Some(disk) = overlaybd_disks.iter().min_by_key(|d| d.boot_order) {
+            let obd = OverlaybdDiskSpec {
+                disk_id: disk.disk_id.clone(),
+                oci_image_ref: disk.image_ref.clone(),
+                registry_url: disk.registry_url.clone(),
+            };
+            (
+                Some(obd),
+                vec![],
+                "console=ttyS0 root=/dev/vda rw init=/.qarax-init".to_string(),
+                false,
+            )
+        } else if !filesystems.is_empty() {
+            let fs = &filesystems[0];
+            let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
+            let fs_config = FsConfig {
+                tag: fs.tag.clone(),
+                socket: socket_path,
+                num_queues: fs.num_queues,
+                queue_size: fs.queue_size,
+                pci_segment: fs.pci_segment,
+                id: Some("fs0".to_string()),
+                bootstrap_path: None,
+            };
+            (
+                None,
+                vec![fs_config],
+                "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string(),
+                true,
+            )
+        } else {
+            // Plain boot with kernel/initramfs only
+            (None, vec![], default_cmdline, vm.memory_shared)
+        };
+
+    Ok(CreateVmRequest {
+        vm_id,
+        boot_vcpus: vm.boot_vcpus,
+        max_vcpus: vm.max_vcpus,
+        memory_size: vm.memory_size,
+        networks,
+        kernel,
+        initramfs,
+        cmdline,
+        fs_configs,
+        memory_shared,
+        overlaybd_disk,
+    })
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AttachDiskRequest {
+    /// Storage object ID (must be `oci_image` type).
+    pub storage_object_id: Uuid,
+    /// Disk identifier inside the VM (default: `"vda"`).
+    pub disk_id: Option<String>,
+    /// Boot priority — lower is higher priority (default: `0`).
+    pub boot_order: Option<i32>,
+}
+
+/// Attach an OverlayBD storage object to a VM as a bootable disk.
+#[utoipa::path(
+    post,
+    path = "/vms/{vm_id}/disks",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    request_body = AttachDiskRequest,
+    responses(
+        (status = 201, description = "Disk attached", body = crate::model::vm_overlaybd_disks::VmOverlaybdDisk),
+        (status = 404, description = "VM or storage object not found"),
+        (status = 422, description = "VM not in Created state"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn attach_disk(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+    Json(req): Json<AttachDiskRequest>,
+) -> Result<axum::response::Response> {
+    use crate::model::vm_overlaybd_disks::VmOverlaybdDisk;
+    use axum::response::IntoResponse as _;
+
+    let vm = vms::get(env.pool(), vm_id).await?;
+    if vm.status != VmStatus::Created {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "Disks can only be linked while the VM is in Created state".into(),
+        ));
+    }
+
+    let obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
+
+    // Resolve registry URL from the object config or from the pool
+    let registry_url = obj
+        .config
+        .get("registry_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+
+    let image_ref = obj
+        .config
+        .get("image_ref")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+
+    let disk_record = NewVmOverlaybdDisk {
+        vm_id,
+        disk_id: req.disk_id.clone().unwrap_or_else(|| "vda".to_string()),
+        image_ref,
+        image_digest: obj
+            .config
+            .get("digest")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        registry_url,
+        storage_pool_id: Some(obj.storage_pool_id),
+        boot_order: req.boot_order.unwrap_or(0),
+    };
+
+    let disk_id = vm_overlaybd_disks::create(env.pool(), &disk_record).await?;
+    let disk = VmOverlaybdDisk {
+        id: disk_id,
+        vm_id: disk_record.vm_id,
+        disk_id: disk_record.disk_id,
+        image_ref: disk_record.image_ref,
+        image_digest: disk_record.image_digest,
+        registry_url: disk_record.registry_url,
+        storage_pool_id: disk_record.storage_pool_id,
+        boot_order: disk_record.boot_order,
+    };
+
+    Ok(ApiResponse {
+        data: disk,
+        code: StatusCode::CREATED,
+    }
+    .into_response())
 }

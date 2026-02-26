@@ -4,12 +4,14 @@ use crate::{
     grpc_client::NodeClient,
     model::{
         hosts,
+        jobs::{self, JobType, NewJob},
+        storage_objects::{self, NewStorageObject, StorageObjectType},
         storage_pools::{self, NewStoragePool, StoragePool},
     },
 };
 use axum::{Extension, Json, extract::Path};
 use http::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{instrument, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -220,4 +222,150 @@ pub async fn detach_host(
     // Remove the DB record.
     storage_pools::detach_host(env.pool(), pool_id, host_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ImportToPoolRequest {
+    /// Human-readable name for the resulting storage object.
+    pub name: String,
+    /// OCI image reference (e.g. `public.ecr.aws/docker/library/alpine:latest`).
+    pub image_ref: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ImportToPoolResponse {
+    pub job_id: Uuid,
+    pub storage_object_id: Uuid,
+}
+
+/// Import an OCI image into the pool, converting it to OverlayBD format.
+#[utoipa::path(
+    post,
+    path = "/storage-pools/{pool_id}/import",
+    params(
+        ("pool_id" = Uuid, Path, description = "Storage pool ID")
+    ),
+    request_body = ImportToPoolRequest,
+    responses(
+        (status = 202, description = "Import job accepted", body = ImportToPoolResponse),
+        (status = 404, description = "Pool not found"),
+        (status = 422, description = "No UP host attached to pool"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "storage-pools"
+)]
+#[instrument(skip(env))]
+pub async fn import_to_pool(
+    Extension(env): Extension<App>,
+    Path(pool_id): Path<Uuid>,
+    Json(req): Json<ImportToPoolRequest>,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse as _;
+
+    let pool = storage_pools::get(env.pool(), pool_id).await?;
+
+    // Find a host attached to this pool
+    let host_id = storage_pools::find_host_for_pool(env.pool(), pool_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to find host for pool {}: {}", pool_id, e);
+            crate::errors::Error::InternalServerError
+        })?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "No host attached to this storage pool".into(),
+            )
+        })?;
+    let host = hosts::get_by_id(env.pool(), host_id)
+        .await?
+        .ok_or(crate::errors::Error::NotFound)?;
+
+    // Create storage object record
+    let storage_object_id = storage_objects::create(
+        env.pool(),
+        NewStorageObject {
+            name: req.name.clone(),
+            storage_pool_id: Some(pool_id),
+            object_type: StorageObjectType::OciImage,
+            size_bytes: 0,
+            config: serde_json::json!({ "image_ref": req.image_ref }),
+            parent_id: None,
+        },
+    )
+    .await?;
+
+    // Create job record
+    let job = jobs::create(
+        env.pool(),
+        NewJob {
+            job_type: JobType::ImagePull,
+            description: Some(format!("Importing {} into pool {}", req.image_ref, pool_id)),
+            resource_id: Some(storage_object_id),
+            resource_type: Some("storage_object".to_string()),
+        },
+    )
+    .await?;
+    let job_id = job.id;
+
+    // Spawn background task
+    let db_pool = env.pool_arc();
+    let image_ref = req.image_ref.clone();
+    let pool_config = pool.config.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = jobs::mark_running(&db_pool, job_id).await {
+            tracing::error!(job_id = %job_id, error = %e, "Failed to mark import job running");
+            return;
+        }
+
+        let node_client = NodeClient::new(&host.address, host.port as u16);
+        let registry_url =
+            match crate::model::storage_pools::OverlayBdPoolConfig::from_value(&pool_config) {
+                Some(cfg) => cfg.url,
+                None => {
+                    let msg = "OverlayBD pool config missing 'url' field".to_string();
+                    tracing::error!(pool_id = %pool_id, error = %msg);
+                    let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+                    return;
+                }
+            };
+
+        match node_client
+            .import_overlaybd_image(&image_ref, &registry_url)
+            .await
+        {
+            Ok(result) => {
+                // Update config with the resolved image_ref from the import
+                let config = serde_json::json!({
+                    "image_ref": result.image_ref,
+                    "digest": result.digest,
+                    "registry_url": registry_url,
+                });
+                let _ = storage_objects::update_config(&db_pool, storage_object_id, &config).await;
+                let job_result = serde_json::json!({
+                    "image_ref": result.image_ref,
+                    "digest": result.digest,
+                    "storage_object_id": storage_object_id,
+                });
+                let _ = jobs::mark_completed(&db_pool, job_id, Some(job_result)).await;
+                tracing::info!(pool_id = %pool_id, storage_object_id = %storage_object_id, "Import job completed");
+            }
+            Err(e) => {
+                let msg = format!("Failed to import OverlayBD image: {}", e);
+                tracing::error!(pool_id = %pool_id, error = %msg);
+                let _ = jobs::mark_failed(&db_pool, job_id, &msg).await;
+                // Clean up the storage object on failure
+                let _ = storage_objects::delete(&db_pool, storage_object_id).await;
+            }
+        }
+    });
+
+    Ok(ApiResponse {
+        data: ImportToPoolResponse {
+            job_id,
+            storage_object_id,
+        },
+        code: StatusCode::ACCEPTED,
+    }
+    .into_response())
 }

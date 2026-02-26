@@ -7,26 +7,38 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.vm_start_response import VmStartResponse
+from ...models.import_to_pool_request import ImportToPoolRequest
+from ...models.import_to_pool_response import ImportToPoolResponse
 from ...types import Response
 
 
 def _get_kwargs(
-    vm_id: UUID,
+    pool_id: UUID,
+    *,
+    body: ImportToPoolRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
+
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/vms/{vm_id}/start".format(
-            vm_id=quote(str(vm_id), safe=""),
+        "url": "/storage-pools/{pool_id}/import".format(
+            pool_id=quote(str(pool_id), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | VmStartResponse | None:
+def _parse_response(
+    *, client: AuthenticatedClient | Client, response: httpx.Response
+) -> Any | ImportToPoolResponse | None:
     if response.status_code == 202:
-        response_202 = VmStartResponse.from_dict(response.json())
+        response_202 = ImportToPoolResponse.from_dict(response.json())
 
         return response_202
 
@@ -50,7 +62,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | VmStartResponse]:
+) -> Response[Any | ImportToPoolResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,24 +72,28 @@ def _build_response(
 
 
 def sync_detailed(
-    vm_id: UUID,
+    pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | VmStartResponse]:
-    """
+    body: ImportToPoolRequest,
+) -> Response[Any | ImportToPoolResponse]:
+    """Import an OCI image into the pool, converting it to OverlayBD format.
+
     Args:
-        vm_id (UUID):
+        pool_id (UUID):
+        body (ImportToPoolRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | VmStartResponse]
+        Response[Any | ImportToPoolResponse]
     """
 
     kwargs = _get_kwargs(
-        vm_id=vm_id,
+        pool_id=pool_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -88,47 +104,55 @@ def sync_detailed(
 
 
 def sync(
-    vm_id: UUID,
+    pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | VmStartResponse | None:
-    """
+    body: ImportToPoolRequest,
+) -> Any | ImportToPoolResponse | None:
+    """Import an OCI image into the pool, converting it to OverlayBD format.
+
     Args:
-        vm_id (UUID):
+        pool_id (UUID):
+        body (ImportToPoolRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | VmStartResponse
+        Any | ImportToPoolResponse
     """
 
     return sync_detailed(
-        vm_id=vm_id,
+        pool_id=pool_id,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
-    vm_id: UUID,
+    pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | VmStartResponse]:
-    """
+    body: ImportToPoolRequest,
+) -> Response[Any | ImportToPoolResponse]:
+    """Import an OCI image into the pool, converting it to OverlayBD format.
+
     Args:
-        vm_id (UUID):
+        pool_id (UUID):
+        body (ImportToPoolRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | VmStartResponse]
+        Response[Any | ImportToPoolResponse]
     """
 
     kwargs = _get_kwargs(
-        vm_id=vm_id,
+        pool_id=pool_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -137,25 +161,29 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    vm_id: UUID,
+    pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | VmStartResponse | None:
-    """
+    body: ImportToPoolRequest,
+) -> Any | ImportToPoolResponse | None:
+    """Import an OCI image into the pool, converting it to OverlayBD format.
+
     Args:
-        vm_id (UUID):
+        pool_id (UUID):
+        body (ImportToPoolRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | VmStartResponse
+        Any | ImportToPoolResponse
     """
 
     return (
         await asyncio_detailed(
-            vm_id=vm_id,
+            pool_id=pool_id,
             client=client,
+            body=body,
         )
     ).parsed

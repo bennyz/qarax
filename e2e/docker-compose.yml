@@ -69,6 +69,10 @@ services:
       - ${PRODUCTION_IMAGES_DIR:-/tmp/qarax-no-production-images}:/var/lib/qarax/production-images:rw
       - qarax_vms:/var/lib/qarax/vms
       - qarax_overlaybd:/var/lib/qarax/overlaybd
+      # Required for modprobe to load host kernel modules (e.g. target_core_user for overlaybd-tcmu)
+      - /lib/modules:/lib/modules:ro
+      # Share host configfs so overlaybd-tcmu can see the target subsystem after modprobe
+      - /sys/kernel/config:/sys/kernel/config
     environment:
       # Registry URL for OverlayBD image imports
       OVERLAYBD_REGISTRY_URL: http://registry:5000

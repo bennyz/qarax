@@ -32,7 +32,15 @@ SSH_PASSWORD="${SSH_PASSWORD:-qarax}"
 SSH_PORT="${SSH_PORT:-22}"
 NODE_PORT="${NODE_PORT:-50051}"
 
-DEPLOY_IMAGE="${DEPLOY_IMAGE:-ghcr.io/qarax/qarax-vmm-host:latest}"
+# Bridge IP of the libvirt default network — reachable from the VM
+LIBVIRT_BRIDGE_IP="${LIBVIRT_BRIDGE_IP:-192.168.122.1}"
+# Local registry port (matches the e2e compose stack)
+LOCAL_REGISTRY_PORT="${LOCAL_REGISTRY_PORT:-5000}"
+LOCAL_REGISTRY="${LIBVIRT_BRIDGE_IP}:${LOCAL_REGISTRY_PORT}"
+
+# Default deploy image: push the locally-built test image to the local registry
+# so the VM can pull it without hitting public registries (avoids rate limits).
+DEPLOY_IMAGE="${DEPLOY_IMAGE:-${LOCAL_REGISTRY}/qarax-test-host:latest}"
 VM_BOOTC_IMAGE="${VM_BOOTC_IMAGE:-quay.io/centos-bootc/centos-bootc:stream10}"
 TEST_HOST_TAG="${TEST_HOST_TAG:-localhost/qarax-test-host}"
 
@@ -135,10 +143,49 @@ build_test_host_image() {
 	local build_dir="${STATE_DIR}/build"
 	mkdir -p "${build_dir}"
 
+	# Copy real binaries into the build context
+	local node_bin="${REPO_ROOT}/target/x86_64-unknown-linux-musl/release/qarax-node"
+	local init_bin="${REPO_ROOT}/target/x86_64-unknown-linux-musl/release/qarax-init"
+	if [[ ! -f "${node_bin}" ]]; then
+		echo "qarax-node binary not found at ${node_bin}." >&2
+		echo "Build it first: cargo build --release -p qarax-node" >&2
+		exit 1
+	fi
+	if [[ ! -f "${init_bin}" ]]; then
+		echo "qarax-init binary not found at ${init_bin}." >&2
+		echo "Build it first: cargo build --release -p qarax-init" >&2
+		exit 1
+	fi
+	cp "${node_bin}" "${build_dir}/qarax-node"
+	cp "${init_bin}" "${build_dir}/qarax-init"
+
+	# Copy systemd service files
+	cp "${REPO_ROOT}/deployments/qarax-node.service" "${build_dir}/qarax-node.service"
+	cp "${REPO_ROOT}/deployments/overlaybd-tcmu.service" "${build_dir}/overlaybd-tcmu.service"
+
+	local overlaybd_ver="${OVERLAYBD_VERSION:-1.0.16}"
+	local overlaybd_rpm_suffix="${OVERLAYBD_RPM_SUFFIX:-20250818.4601fb2}"
+	local overlaybd_rpm_dist="${OVERLAYBD_RPM_DIST:-azurelinux.3.0}"
+	local aci_ver="${ACI_VERSION:-1.4.1}"
+	local aci_rpm_suffix="${ACI_RPM_SUFFIX:-20260114025326.c6ba42c}"
+
 	cat >"${build_dir}/Containerfile" <<DOCKERFILE
 FROM ${VM_BOOTC_IMAGE}
 
-RUN dnf install -y socat qemu-guest-agent && dnf clean all
+ARG OVERLAYBD_VERSION=${overlaybd_ver}
+ARG OVERLAYBD_RPM_SUFFIX=${overlaybd_rpm_suffix}
+ARG OVERLAYBD_RPM_DIST=${overlaybd_rpm_dist}
+ARG ACI_VERSION=${aci_ver}
+ARG ACI_RPM_SUFFIX=${aci_rpm_suffix}
+
+RUN dnf install -y \
+    qemu-guest-agent \
+    e2fsprogs \
+    cpio \
+    virtiofsd \
+    curl \
+    && dnf clean all \
+    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
 
 RUN useradd -m -G wheel -s /bin/bash ${SSH_USER} && \
     echo '${SSH_USER}:${SSH_PASSWORD}' | chpasswd && \
@@ -155,32 +202,92 @@ RUN mkdir -p /etc/containers/registries.conf.d && \
       'insecure = true' \
       > /etc/containers/registries.conf.d/01-local-test.conf
 
-COPY qarax-node-stub.service /etc/systemd/system/
-RUN systemctl enable qarax-node-stub.service sshd.service qemu-guest-agent.service
+# Install overlaybd-tcmu
+RUN curl -fsSL \
+    "https://github.com/containerd/overlaybd/releases/download/v\${OVERLAYBD_VERSION}/overlaybd-\${OVERLAYBD_VERSION}-\${OVERLAYBD_RPM_SUFFIX}.\${OVERLAYBD_RPM_DIST}.x86_64.rpm" \
+    -o /tmp/overlaybd.rpm && \
+    cd / && rpm2cpio /tmp/overlaybd.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    rm /tmp/overlaybd.rpm
+
+# Patch overlaybd config to use writable paths under /var (bootc makes /opt read-only).
+RUN sed -i \
+    -e 's|/opt/overlaybd/registry_cache|/var/lib/overlaybd/registry_cache|g' \
+    -e 's|/opt/overlaybd/gzip_cache|/var/lib/overlaybd/gzip_cache|g' \
+    -e 's|/opt/overlaybd/cred.json|/etc/overlaybd/cred.json|g' \
+    /etc/overlaybd/overlaybd.json && \
+    cp /opt/overlaybd/cred.json /etc/overlaybd/cred.json 2>/dev/null || \
+    echo '{"auths":{}}' > /etc/overlaybd/cred.json
+
+# Install the overlaybd-snapshotter convertor
+RUN curl -fsSL \
+    "https://github.com/containerd/accelerated-container-image/releases/download/v\${ACI_VERSION}/overlaybd-snapshotter-\${ACI_VERSION}-\${ACI_RPM_SUFFIX}.x86_64.rpm" \
+    -o /tmp/aci.rpm && \
+    cd / && rpm2cpio /tmp/aci.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    rm /tmp/aci.rpm
+
+# Install Cloud Hypervisor (static binary)
+RUN curl -fsSL \
+    "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/cloud-hypervisor-static" \
+    -o /usr/local/bin/cloud-hypervisor && \
+    chmod +x /usr/local/bin/cloud-hypervisor && \
+    cloud-hypervisor --version
+
+# Download Cloud Hypervisor guest kernel (used by qarax-node to boot VMs)
+RUN mkdir -p /var/lib/qarax/images && \
+    curl -fsSL \
+    "https://github.com/cloud-hypervisor/linux/releases/download/ch-release-v6.16.9-20251112/vmlinux-x86_64" \
+    -o /var/lib/qarax/images/vmlinux && \
+    chmod 644 /var/lib/qarax/images/vmlinux
+
+# Load TCMU kernel modules at boot
+RUN printf '%s\n' target_core_user tcm_loop uio \
+    >> /etc/modules-load.d/overlaybd.conf
+
+# Cache-buster: changes when qarax-node binary changes
+ARG CACHE_BUST=none
+
+# Copy qarax binaries
+COPY qarax-node /usr/local/bin/qarax-node
+COPY qarax-init /usr/local/bin/qarax-init
+RUN chmod +x /usr/local/bin/qarax-node /usr/local/bin/qarax-init
+
+# Create runtime directories via tmpfiles.d (bootc preserves /var across
+# image switches, so RUN mkdir only works on first boot — tmpfiles.d
+# ensures directories exist on every boot).
+RUN printf '%s\n' \
+    'd /var/lib/qarax      0755 root root -' \
+    'd /var/lib/qarax/vms  0755 root root -' \
+    'd /var/lib/qarax/images 0755 root root -' \
+    'd /var/lib/qarax/disks 0755 root root -' \
+    'd /var/lib/qarax/overlaybd 0755 root root -' \
+    'd /var/lib/overlaybd 0755 root root -' \
+    'd /var/lib/overlaybd/registry_cache 0755 root root -' \
+    'd /var/lib/overlaybd/gzip_cache 0755 root root -' \
+    > /etc/tmpfiles.d/qarax.conf && \
+    mkdir -p /etc/qarax-node
+
+COPY overlaybd-tcmu.service /etc/systemd/system/
+COPY qarax-node.service /etc/systemd/system/
+RUN systemctl enable overlaybd-tcmu.service qarax-node.service sshd.service qemu-guest-agent.service
 DOCKERFILE
 
-	cat >"${build_dir}/qarax-node-stub.service" <<EOF
-[Unit]
-Description=qarax-node stub listener for deploy tests
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/bin/socat TCP-LISTEN:${NODE_PORT},reuseaddr,fork EXEC:/bin/cat
-Restart=always
-RestartSec=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 	echo "Building test host container image..."
-	sudo podman build -t "${TEST_HOST_TAG}" -f "${build_dir}/Containerfile" "${build_dir}"
+	# Use binary checksum as a cache-buster so COPY layers are invalidated when
+	# the qarax-node binary changes (podman's layer cache may not detect it).
+	local node_hash
+	node_hash="$(sha256sum "${build_dir}/qarax-node" | cut -d' ' -f1)"
+	sudo podman build \
+		--build-arg "CACHE_BUST=${node_hash}" \
+		-t "${TEST_HOST_TAG}" -f "${build_dir}/Containerfile" "${build_dir}"
+	echo "Pushing test host image to local registry ${LOCAL_REGISTRY}..."
+	sudo podman push "${TEST_HOST_TAG}" "${DEPLOY_IMAGE}" --tls-verify=false
 }
 
 build_disk_image() {
 	if [[ -f "${BASE_IMAGE}" ]]; then
 		echo "Using cached disk image: ${BASE_IMAGE}"
+		# Still need to ensure the test image is in the local registry for bootc switch
+		ensure_test_image_in_local_registry
 		return 0
 	fi
 
@@ -203,6 +310,12 @@ build_disk_image() {
 	sudo chown "$(id -u):$(id -g)" "${BASE_IMAGE}"
 	sudo rm -rf "${bib_output}"
 	echo "Disk image ready: ${BASE_IMAGE}"
+}
+
+ensure_test_image_in_local_registry() {
+	# Always rebuild to pick up binary changes (podman layer cache handles
+	# the COPY layer efficiently — only re-layers when the file content differs).
+	build_test_host_image
 }
 
 create_vm() {

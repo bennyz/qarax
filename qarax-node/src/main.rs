@@ -44,9 +44,9 @@ pub struct Args {
     #[clap(long, default_value = "/var/lib/qarax/images")]
     image_cache_dir: PathBuf,
 
-    /// Path to obdconv binary (OverlayBD image converter)
-    #[clap(long, default_value = "/usr/local/bin/obdconv")]
-    overlaybd_binary: PathBuf,
+    /// Path to convertor binary (OverlayBD image converter from accelerated-container-image)
+    #[clap(long, default_value = "/opt/overlaybd/snapshotter/convertor")]
+    convertor_binary: PathBuf,
 
     /// Directory for OverlayBD cache and per-VM config files
     #[clap(long, default_value = "/var/lib/qarax/overlaybd")]
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("virtiofsd binary: {}", args.virtiofsd_binary.display());
     info!("qarax-init binary: {}", args.qarax_init_binary.display());
     info!("Image cache dir: {}", args.image_cache_dir.display());
-    info!("OverlayBD binary: {}", args.overlaybd_binary.display());
+    info!("convertor binary: {}", args.convertor_binary.display());
     info!(
         "OverlayBD cache dir: {}",
         args.overlaybd_cache_dir.display()
@@ -98,29 +98,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Build OverlayBdManager if obdconv binary is present
-    let overlaybd_manager = if args.overlaybd_binary.exists() {
-        info!("obdconv found — OverlayBD lazy image boot enabled");
+    // Build OverlayBdManager if convertor binary is present
+    let overlaybd_manager = if args.convertor_binary.exists() {
+        info!("convertor found — OverlayBD lazy image boot enabled");
         let mgr = Arc::new(OverlayBdManager::new(
-            &args.overlaybd_binary,
+            &args.convertor_binary,
             &args.overlaybd_cache_dir,
         ));
         mgr.recover().await;
         Some(mgr)
     } else {
         info!(
-            "obdconv not found at {} — OverlayBD disabled",
-            args.overlaybd_binary.display()
+            "convertor not found at {} — OverlayBD disabled",
+            args.convertor_binary.display()
         );
         None
     };
 
     // Build VmManager with optional ImageStoreManager and OverlayBdManager
+    let qarax_init_binary = if args.qarax_init_binary.exists() {
+        Some(args.qarax_init_binary.clone())
+    } else {
+        info!(
+            "qarax-init not found at {} — init injection disabled",
+            args.qarax_init_binary.display()
+        );
+        None
+    };
+
     let vm_manager = Arc::new(VmManager::with_overlaybd(
         &args.runtime_dir,
         &args.cloud_hypervisor_binary,
         image_store_manager,
         overlaybd_manager,
+        qarax_init_binary,
     ));
     vm_manager.recover_vms().await;
 

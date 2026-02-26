@@ -1,5 +1,6 @@
 """Contains all the data models used in inputs/outputs"""
 
+from .attach_disk_request import AttachDiskRequest
 from .attach_host_request import AttachHostRequest
 from .boot_source import BootSource
 from .create_vm_response import CreateVmResponse
@@ -7,6 +8,8 @@ from .deploy_host_request import DeployHostRequest
 from .host import Host
 from .host_status import HostStatus
 from .hypervisor import Hypervisor
+from .import_to_pool_request import ImportToPoolRequest
+from .import_to_pool_response import ImportToPoolResponse
 from .interface_type import InterfaceType
 from .job import Job
 from .job_status import JobStatus
@@ -39,9 +42,11 @@ from .vm_metrics import VmMetrics
 from .vm_metrics_counters import VmMetricsCounters
 from .vm_metrics_counters_additional_property import VmMetricsCountersAdditionalProperty
 from .vm_overlaybd_disk import VmOverlaybdDisk
+from .vm_start_response import VmStartResponse
 from .vm_status import VmStatus
 
 __all__ = (
+    "AttachDiskRequest",
     "AttachHostRequest",
     "BootSource",
     "CreateVmResponse",
@@ -49,6 +54,8 @@ __all__ = (
     "Host",
     "HostStatus",
     "Hypervisor",
+    "ImportToPoolRequest",
+    "ImportToPoolResponse",
     "InterfaceType",
     "Job",
     "JobStatus",
@@ -81,5 +88,6 @@ __all__ = (
     "VmMetricsCounters",
     "VmMetricsCountersAdditionalProperty",
     "VmOverlaybdDisk",
+    "VmStartResponse",
     "VmStatus",
 )

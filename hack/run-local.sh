@@ -10,7 +10,7 @@
 #
 # Usage:
 #   ./hack/run-local.sh            # Build and start the stack
-#   ./hack/run-local.sh --with-vm  # Create and start a VM with SSH access
+#   ./hack/run-local.sh --vm         # Run qarax-node in a libvirt VM instead of a container (alias: --with-vm)
 #   ./hack/run-local.sh --cleanup  # Stop and remove stack + volumes
 #   REBUILD=1 ./hack/run-local.sh  # Rebuild Docker images from scratch
 #   SKIP_BUILD=1 ./hack/run-local.sh # Use existing qarax-node binary
@@ -18,6 +18,16 @@
 # After start:
 #   API:        http://localhost:8000
 #   Swagger UI: http://localhost:8000/swagger-ui
+#
+# Typical workflow (OverlayBD disk-first):
+#   1. Import OCI image into pool:
+#      qarax storage-pool import --pool <pool> --image-ref <ref> --name <name>
+#   2. Create VM:
+#      qarax vm create --name my-vm --vcpus 1 --memory 268435456
+#   3. Attach disk to VM:
+#      qarax vm attach-disk my-vm --object <name>
+#   4. Start VM:
+#      qarax vm start <VM_ID>
 #
 
 set -e
@@ -31,8 +41,13 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 WITH_VM=0
+VM_MODE=0
 for arg in "$@"; do
 	case $arg in
+	--vm)
+		VM_MODE=1
+		shift
+		;;
 	--with-vm)
 		WITH_VM=1
 		shift
@@ -124,6 +139,13 @@ if [[ $WITH_VM -eq 1 ]]; then
 #!/bin/sh
 set -e
 apk add --no-cache e2fsprogs wget util-linux >/dev/null 2>&1
+# Ensure loop devices exist (may be absent inside Docker even with --privileged)
+if [ ! -e /dev/loop-control ]; then
+    mknod /dev/loop-control c 10 237
+fi
+for i in $(seq 0 7); do
+    [ ! -e "/dev/loop$i" ] && mknod "/dev/loop$i" b 7 "$i"
+done
 echo "Creating 1GB rootfs image..."
 dd if=/dev/zero of=/output/rootfs.img bs=1M count=1024
 echo "Formatting with ext4..."
@@ -194,24 +216,40 @@ ROOTFS_SCRIPT
 	export PRODUCTION_ROOTFS="/var/lib/qarax/production-images/rootfs.img"
 fi
 
-# Start stack (postgres + qarax + qarax-node)
+# Start stack (postgres + qarax [+ qarax-node unless --vm])
 echo -e "${YELLOW}Starting Docker stack...${NC}"
 cd "${REPO_ROOT}/e2e"
 
-if [[ -n "${REBUILD}" ]]; then
-	docker compose build --no-cache
+VM_MODE_OVERLAY=""
+if [[ $VM_MODE -eq 1 ]]; then
+	VM_MODE_OVERLAY="-f docker-compose.yml -f docker-compose.vm-mode.yml"
 fi
-docker compose up -d --build
-# Recreate to pick up any environment variable changes
-docker compose up -d --force-recreate qarax qarax-node
+
+if [[ -n "${REBUILD}" ]]; then
+	# shellcheck disable=SC2086
+	docker compose $VM_MODE_OVERLAY build --no-cache
+fi
+# shellcheck disable=SC2086
+docker compose $VM_MODE_OVERLAY up -d --build
+if [[ $VM_MODE -eq 1 ]]; then
+	# shellcheck disable=SC2086
+	docker compose $VM_MODE_OVERLAY up -d --force-recreate qarax
+else
+	# shellcheck disable=SC2086
+	docker compose $VM_MODE_OVERLAY up -d --force-recreate qarax qarax-node
+fi
 
 # Wait for services to be healthy
 echo -e "${YELLOW}Waiting for services to be healthy...${NC}"
 timeout=90
 elapsed=0
 while [[ $elapsed -lt $timeout ]]; do
-	healthy_count=$(docker compose ps 2>/dev/null | grep -c '(healthy)' || echo "0")
-	total_services=4 # registry, postgres, qarax, qarax-node
+	# shellcheck disable=SC2086
+	healthy_count=$(docker compose $VM_MODE_OVERLAY ps 2>/dev/null | grep -c '(healthy)' || echo "0")
+	total_services=3 # registry, postgres, qarax (no qarax-node in VM mode)
+	if [[ $VM_MODE -eq 0 ]]; then
+		total_services=4 # also qarax-node
+	fi
 
 	if [[ "$healthy_count" -ge "$total_services" ]]; then
 		echo ""
@@ -219,11 +257,12 @@ while [[ $elapsed -lt $timeout ]]; do
 		break
 	fi
 
-	if docker compose ps 2>/dev/null | grep -q "Exit"; then
+	# shellcheck disable=SC2086
+	if docker compose $VM_MODE_OVERLAY ps 2>/dev/null | grep -q "Exit"; then
 		echo ""
 		echo -e "${RED}A service has failed.${NC}"
-		docker compose ps
-		docker compose logs --tail=80
+		docker compose $VM_MODE_OVERLAY ps
+		docker compose $VM_MODE_OVERLAY logs --tail=80
 		exit 1
 	fi
 
@@ -235,9 +274,71 @@ done
 if [[ $elapsed -ge $timeout ]]; then
 	echo ""
 	echo -e "${RED}Timeout waiting for services.${NC}"
-	docker compose ps
-	docker compose logs --tail=80
+	# shellcheck disable=SC2086
+	docker compose $VM_MODE_OVERLAY ps
+	# shellcheck disable=SC2086
+	docker compose $VM_MODE_OVERLAY logs --tail=80
 	exit 1
+fi
+
+# --vm mode: launch a libvirt VM as the qarax-node host
+if [[ $VM_MODE -eq 1 ]]; then
+	echo ""
+	echo -e "${YELLOW}Launching libvirt VM as qarax-node host...${NC}"
+	API_URL="${API_URL:-http://localhost:8000}" \
+		bash "${REPO_ROOT}/hack/test-host-deploy-libvirt.sh" --keep-vm
+
+	echo ""
+	echo -e "${YELLOW}Creating overlaybd storage pool...${NC}"
+	# The VM reaches the Docker-hosted registry via the libvirt bridge IP, not
+	# the Compose DNS name "registry" which is only resolvable inside Docker.
+	LIBVIRT_BRIDGE_IP="${LIBVIRT_BRIDGE_IP:-192.168.122.1}"
+	setup_output=$(python3 "${REPO_ROOT}/hack/setup_vm.py" \
+		--skip-vm \
+		--skip-host \
+		--kernel-path /dev/null \
+		--overlaybd-registry-url "http://${LIBVIRT_BRIDGE_IP}:5000")
+	eval "$setup_output"
+	echo -e "${GREEN}Storage pool created: ${OVERLAYBD_POOL_ID}${NC}"
+
+	echo ""
+	echo -e "${GREEN}Qarax stack ready (node running in libvirt VM).${NC}"
+	echo ""
+	echo "Endpoints:"
+	echo "  API (root):   http://localhost:8000/"
+	echo "  Swagger UI:   http://localhost:8000/swagger-ui"
+	echo "  OpenAPI JSON: http://localhost:8000/api-docs/openapi.json"
+	echo ""
+	echo "Explicit disk workflow (OverlayBD — recommended):"
+	echo "  # 1. Import an OCI image into the storage pool (async, polls to completion):"
+	echo "  qarax storage-pool import --pool ${OVERLAYBD_POOL_ID} \\"
+	echo '    --image-ref public.ecr.aws/docker/library/alpine:latest \'
+	echo '    --name alpine-obd'
+	echo ""
+	echo "  # 2. Create a VM (no image pull yet — just a DB record):"
+	echo '  qarax vm create --name my-vm --vcpus 1 --memory 268435456'
+	echo ""
+	echo "  # 3. Link the imported storage object as the boot disk:"
+	echo '  qarax vm attach-disk my-vm --object alpine-obd'
+	echo ""
+	echo "  # 4. Start the VM (provisions on node + boots):"
+	echo '  qarax vm start <VM_ID>'
+	echo ""
+	echo "Other useful commands:"
+	echo "  qarax vm list"
+	echo "  qarax vm get <VM_ID>"
+	echo "  qarax vm stop <VM_ID>"
+	echo "  qarax storage-pool list"
+	echo "  qarax job get <JOB_ID>"
+	echo "  qarax --json vm list              # raw JSON output"
+	echo ""
+	echo "Docker stack commands:"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax"
+	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
+	echo ""
+	echo "Cleanup: make stop-local (Docker stack) + virsh destroy ${VM_NAME:-qarax-deploy-test}"
+	echo ""
+	exit 0
 fi
 
 # Create and start a VM if --with-vm flag is set
@@ -384,23 +485,14 @@ INIT
 		echo -e "${RED}VM was not created. Check logs above for errors.${NC}"
 	fi
 else
-	# No --with-vm: just register the host via the Python script (host only, no VM)
-	python3 "${REPO_ROOT}/hack/setup_vm.py" --kernel-path /dev/null 2>&1 | head -0 || true
-	# Simpler: just register host with curl (kept minimal for non-VM case)
+	# No --with-vm: register host, init, and create overlaybd storage pool
 	echo ""
-	echo -e "${YELLOW}Registering host...${NC}"
-	host_resp=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/hosts \
-		-H "Content-Type: application/json" \
-		-d '{"name":"local-node","address":"qarax-node","port":50051,"host_user":"root","password":""}')
-	host_code=$(echo "$host_resp" | tail -n1)
-	if [[ "$host_code" == "201" ]] || [[ "$host_code" == "409" ]]; then
-		echo -e "${GREEN}Host registered.${NC}"
-	fi
-	host_id=$(curl -s http://localhost:8000/hosts | python3 -c "import sys,json; hosts=json.load(sys.stdin); print(next((h['id'] for h in hosts if h['name']=='local-node'),''))" 2>/dev/null)
-	if [[ -n "$host_id" ]]; then
-		curl -s -X POST "http://localhost:8000/hosts/${host_id}/init" >/dev/null
-		echo -e "${GREEN}Host initialized and set to up.${NC}"
-	fi
+	echo -e "${YELLOW}Setting up host and storage pools...${NC}"
+	setup_output=$(python3 "${REPO_ROOT}/hack/setup_vm.py" \
+		--skip-vm \
+		--kernel-path /dev/null)
+	eval "$setup_output"
+	echo -e "${GREEN}Host registered and overlaybd storage pool created.${NC}"
 fi
 
 if [[ $WITH_VM -eq 0 ]]; then
@@ -420,11 +512,22 @@ if [[ $WITH_VM -eq 0 ]]; then
 	echo "  qarax vm list"
 	echo "  qarax host list"
 	echo ""
-	echo "Create and start a VM:"
+	echo "Explicit disk workflow (OverlayBD — recommended):"
+	echo "  # 1. Import an OCI image into the storage pool (async, polls to completion):"
+	echo '  qarax storage-pool import --pool <POOL_NAME_OR_ID> \'
+	echo '    --image-ref public.ecr.aws/docker/library/alpine:latest \'
+	echo '    --name alpine-obd'
+	echo ""
+	echo "  # 2. Create a VM (no image pull yet — just a DB record):"
 	echo '  qarax vm create --name my-vm --vcpus 1 --memory 268435456'
+	echo ""
+	echo "  # 3. Link the imported storage object as the boot disk:"
+	echo '  qarax vm attach-disk my-vm --object alpine-obd'
+	echo ""
+	echo "  # 4. Start the VM (provisions on node + boots):"
 	echo '  qarax vm start <VM_ID>'
 	echo ""
-	echo "Create a VM from an OCI image (async — polls the job automatically):"
+	echo "Legacy: create VM directly from OCI image ref (virtiofs or overlaybd auto-detected):"
 	echo '  qarax vm create --name alpine-vm --vcpus 1 --memory 268435456 \'
 	echo '    --image-ref public.ecr.aws/docker/library/alpine:latest'
 	echo '  qarax vm start <VM_ID>'
@@ -448,18 +551,12 @@ if [[ $WITH_VM -eq 0 ]]; then
 	echo "  make stop-local                                      # Stop and remove stack + volumes"
 	echo ""
 else
-	# With --with-vm, show concise summary
+	# With --with-vm (Alpine guest in container), show concise summary
 	echo ""
 	echo -e "${GREEN}Qarax stack ready.${NC}"
 	echo ""
 	echo "API:        http://localhost:8000/"
 	echo "Swagger UI: http://localhost:8000/swagger-ui"
-	echo ""
-	echo "Useful commands:"
-	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax"
-	echo "  docker compose -f e2e/docker-compose.yml logs -f qarax-node"
-	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node sh"
-	echo "  docker compose -f e2e/docker-compose.yml exec qarax-node ls -la /var/lib/qarax/vms/"
 	echo ""
 	echo "Cleanup: ./hack/run-local.sh --cleanup"
 	echo ""

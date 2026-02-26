@@ -29,14 +29,14 @@ impl Client {
         if resp.status().is_success() {
             return Ok(resp);
         }
-        let status = resp.status();
+        let _status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
             && let Some(msg) = json.get("message").and_then(|v| v.as_str())
         {
-            return Err(anyhow!("HTTP {}: {}", status, msg));
+            return Err(anyhow!("{}", msg));
         }
-        Err(anyhow!("HTTP {}: {}", status, body.trim()))
+        Err(anyhow!("{}", body.trim()))
     }
 
     /// GET request, deserializing the response body as JSON.

@@ -62,6 +62,7 @@ impl From<StoragePoolRow> for StoragePool {
 pub enum StoragePoolType {
     Local,
     Nfs,
+    #[sqlx(rename = "OVERLAYBD")]
     OverlayBd,
 }
 
