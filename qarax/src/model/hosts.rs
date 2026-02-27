@@ -6,6 +6,28 @@ use validator::{Validate, ValidationError, ValidationErrors};
 
 use crate::errors;
 
+/// Build a Host from a sqlx Row containing all host columns.
+fn host_from_row(r: &sqlx::postgres::PgRow) -> Host {
+    Host {
+        id: r.get("id"),
+        name: r.get("name"),
+        address: r.get("address"),
+        port: r.get("port"),
+        host_user: r.get("host_user"),
+        password: r.get("password"),
+        status: r.get("status"),
+        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
+        kernel_version: r.get("kernel_version"),
+        total_cpus: r.get("total_cpus"),
+        total_memory_bytes: r.get("total_memory_bytes"),
+        available_memory_bytes: r.get("available_memory_bytes"),
+        load_average: r.get("load_average"),
+        disk_total_bytes: r.get("disk_total_bytes"),
+        disk_available_bytes: r.get("disk_available_bytes"),
+        resources_updated_at: r.get("resources_updated_at"),
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Host {
     pub id: Uuid,
@@ -20,6 +42,15 @@ pub struct Host {
 
     pub cloud_hypervisor_version: Option<String>,
     pub kernel_version: Option<String>,
+
+    // Resource metrics
+    pub total_cpus: Option<i32>,
+    pub total_memory_bytes: Option<i64>,
+    pub available_memory_bytes: Option<i64>,
+    pub load_average: Option<f64>,
+    pub disk_total_bytes: Option<i64>,
+    pub disk_available_bytes: Option<i64>,
+    pub resources_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(
@@ -139,19 +170,13 @@ impl NewHost {
 }
 
 pub async fn list(pool: &PgPool) -> Result<Vec<Host>, sqlx::Error> {
-    let hosts = sqlx::query_as!(
-        Host,
-        r#"
-        SELECT id, name, address, port, host_user, password,
-               status as "status: _",
-               cloud_hypervisor_version, kernel_version
-        FROM hosts
-        "#,
+    let rows = sqlx::query(
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version, total_cpus, total_memory_bytes, available_memory_bytes, load_average, disk_total_bytes, disk_available_bytes, resources_updated_at FROM hosts",
     )
     .fetch_all(pool)
     .await?;
 
-    Ok(hosts)
+    Ok(rows.iter().map(host_from_row).collect())
 }
 
 // add adds a new host and returns its generated id
@@ -191,103 +216,84 @@ pub async fn update_status(pool: &PgPool, id: Uuid, status: HostStatus) -> Resul
 /// Returns a host by id, if it exists.
 pub async fn get_by_id(pool: &PgPool, host_id: Uuid) -> Result<Option<Host>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE id = $1",
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version, total_cpus, total_memory_bytes, available_memory_bytes, load_average, disk_total_bytes, disk_available_bytes, resources_updated_at FROM hosts WHERE id = $1",
     )
     .bind(host_id)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| Host {
-        id: r.get("id"),
-        name: r.get("name"),
-        address: r.get("address"),
-        port: r.get("port"),
-        host_user: r.get("host_user"),
-        password: r.get("password"),
-        status: r.get("status"),
-        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
-        kernel_version: r.get("kernel_version"),
-    }))
+    Ok(row.map(|r| host_from_row(&r)))
 }
 
-/// Pick a random UP host for VM scheduling.
-pub async fn pick_up_host(pool: &PgPool) -> Result<Option<Host>, sqlx::Error> {
+/// Pick an UP host for VM scheduling with resource-aware placement.
+///
+/// Picks the UP host with the lowest load average that has enough memory.
+/// vCPU oversubscription is allowed — the hypervisor scheduler handles
+/// contention, and load_average-based ordering naturally prefers less busy hosts.
+pub async fn pick_up_host(
+    pool: &PgPool,
+    requested_memory: i64,
+) -> Result<Option<Host>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE status = 'UP' ORDER BY RANDOM() LIMIT 1",
+        r#"
+SELECT id, name, address, port, host_user, password,
+       status, cloud_hypervisor_version, kernel_version,
+       total_cpus, total_memory_bytes, available_memory_bytes,
+       load_average, disk_total_bytes, disk_available_bytes,
+       resources_updated_at
+FROM hosts
+WHERE status = 'UP'
+  AND (available_memory_bytes IS NULL OR available_memory_bytes >= $1)
+ORDER BY load_average ASC NULLS LAST
+LIMIT 1
+        "#,
     )
+    .bind(requested_memory)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| Host {
-        id: r.get("id"),
-        name: r.get("name"),
-        address: r.get("address"),
-        port: r.get("port"),
-        host_user: r.get("host_user"),
-        password: r.get("password"),
-        status: r.get("status"),
-        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
-        kernel_version: r.get("kernel_version"),
-    }))
+    Ok(row.map(|r| host_from_row(&r)))
 }
 
-/// Pick a random UP host that is attached to a specific storage pool.
-/// Used for storage-affinity scheduling when the required pool is known.
+/// Pick an UP host attached to a specific storage pool with resource-aware placement.
 pub async fn pick_up_host_for_pool(
     pool: &PgPool,
     pool_id: Uuid,
+    requested_memory: i64,
 ) -> Result<Option<Host>, sqlx::Error> {
     let row = sqlx::query(
         r#"
 SELECT h.id, h.name, h.address, h.port, h.host_user, h.password,
-       h.status, h.cloud_hypervisor_version, h.kernel_version
+       h.status, h.cloud_hypervisor_version, h.kernel_version,
+       h.total_cpus, h.total_memory_bytes, h.available_memory_bytes,
+       h.load_average, h.disk_total_bytes, h.disk_available_bytes,
+       h.resources_updated_at
 FROM hosts h
 JOIN host_storage_pools hsp ON hsp.host_id = h.id
 WHERE h.status = 'UP'
   AND hsp.storage_pool_id = $1
-ORDER BY RANDOM()
+  AND (h.available_memory_bytes IS NULL OR h.available_memory_bytes >= $2)
+ORDER BY h.load_average ASC NULLS LAST
 LIMIT 1
         "#,
     )
     .bind(pool_id)
+    .bind(requested_memory)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| Host {
-        id: r.get("id"),
-        name: r.get("name"),
-        address: r.get("address"),
-        port: r.get("port"),
-        host_user: r.get("host_user"),
-        password: r.get("password"),
-        status: r.get("status"),
-        cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
-        kernel_version: r.get("kernel_version"),
-    }))
+    Ok(row.map(|r| host_from_row(&r)))
 }
 
 /// Return all UP hosts.
 pub async fn list_up(pool: &PgPool) -> Result<Vec<Host>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version FROM hosts WHERE status = 'UP'",
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version, total_cpus, total_memory_bytes, available_memory_bytes, load_average, disk_total_bytes, disk_available_bytes, resources_updated_at FROM hosts WHERE status = 'UP'",
     )
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| Host {
-            id: r.get("id"),
-            name: r.get("name"),
-            address: r.get("address"),
-            port: r.get("port"),
-            host_user: r.get("host_user"),
-            password: r.get("password"),
-            status: r.get("status"),
-            cloud_hypervisor_version: r.get("cloud_hypervisor_version"),
-            kernel_version: r.get("kernel_version"),
-        })
-        .collect())
+    Ok(rows.into_iter().map(|r| host_from_row(&r)).collect())
 }
 
 /// Update version information for a host (called after GetNodeInfo).
@@ -308,23 +314,53 @@ pub async fn update_versions(
     Ok(())
 }
 
+/// Update resource metrics for a host (called after GetNodeInfo).
+#[allow(clippy::too_many_arguments)]
+pub async fn update_resources(
+    pool: &PgPool,
+    id: Uuid,
+    total_cpus: i32,
+    total_memory_bytes: i64,
+    available_memory_bytes: i64,
+    load_average: f64,
+    disk_total_bytes: i64,
+    disk_available_bytes: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+UPDATE hosts SET
+    total_cpus = $1,
+    total_memory_bytes = $2,
+    available_memory_bytes = $3,
+    load_average = $4,
+    disk_total_bytes = $5,
+    disk_available_bytes = $6,
+    resources_updated_at = NOW()
+WHERE id = $7
+        "#,
+    )
+    .bind(total_cpus)
+    .bind(total_memory_bytes)
+    .bind(available_memory_bytes)
+    .bind(load_average)
+    .bind(disk_total_bytes)
+    .bind(disk_available_bytes)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 // TODO: figure out how to not fetch the entire host. Maybe with SELECT exists()?
 pub async fn by_name(pool: &PgPool, name: &str) -> Result<Option<Host>, sqlx::Error> {
-    let host = sqlx::query_as!(
-        Host,
-        r#"
-        SELECT id, name, address, port, host_user, password,
-               status as "status: _",
-               cloud_hypervisor_version, kernel_version
-        FROM hosts
-        WHERE name = $1
-        "#,
-        name,
+    let row = sqlx::query(
+        "SELECT id, name, address, port, host_user, password, status, cloud_hypervisor_version, kernel_version, total_cpus, total_memory_bytes, available_memory_bytes, load_average, disk_total_bytes, disk_available_bytes, resources_updated_at FROM hosts WHERE name = $1",
     )
+    .bind(name)
     .fetch_optional(pool)
     .await?;
 
-    Ok(host)
+    Ok(row.map(|r| host_from_row(&r)))
 }
 
 #[cfg(test)]

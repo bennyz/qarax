@@ -283,6 +283,13 @@ message NodeInfo {
   string hostname = 1;
   string cloud_hypervisor_version = 2;
   string kernel_version = 3;
+  // Resource info
+  int32 total_cpus = 4;
+  int64 total_memory_bytes = 5;
+  int64 available_memory_bytes = 6;
+  double load_average_1m = 7;
+  int64 disk_total_bytes = 8;
+  int64 disk_available_bytes = 9;
 }
 
 // ============================================================================

@@ -492,9 +492,7 @@ impl VmService for VmServiceImpl {
             }
         };
 
-        // Get kernel version (the one we provide for VMs)
-        // We can try to extract it from the vmlinux file if we want to be fancy,
-        // but for now let's just use the host kernel version as a proxy or just "custom"
+        // Get kernel version
         let kernel_version = std::fs::read_to_string("/proc/version")
             .unwrap_or_else(|_| "unknown".to_string())
             .split_whitespace()
@@ -502,10 +500,25 @@ impl VmService for VmServiceImpl {
             .unwrap_or("unknown")
             .to_string();
 
+        // Resource info
+        let total_cpus = num_cpus::get() as i32;
+
+        let (total_memory_bytes, available_memory_bytes) = parse_meminfo();
+
+        let load_average_1m = parse_loadavg();
+
+        let (disk_total_bytes, disk_available_bytes) = disk_usage(self.manager.runtime_dir());
+
         Ok(Response::new(NodeInfo {
             hostname,
             cloud_hypervisor_version: ch_version,
             kernel_version,
+            total_cpus,
+            total_memory_bytes,
+            available_memory_bytes,
+            load_average_1m,
+            disk_total_bytes,
+            disk_available_bytes,
         }))
     }
 
@@ -822,7 +835,13 @@ async fn check_overlaybd_registry(config_json: &str) -> AnyhowResult<String> {
 
     // Probe the OCI registry v2 endpoint.
     let probe = format!("{}/v2/", url.trim_end_matches('/'));
-    let response = reqwest::get(&probe)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
+    let response = client
+        .get(&probe)
+        .send()
         .await
         .map_err(|e| anyhow::anyhow!("Cannot reach registry at {}: {}", probe, e))?;
 
@@ -836,6 +855,53 @@ async fn check_overlaybd_registry(config_json: &str) -> AnyhowResult<String> {
             url,
             status
         ))
+    }
+}
+
+/// Parse /proc/meminfo to get total and available memory in bytes.
+fn parse_meminfo() -> (i64, i64) {
+    let content = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    let mut total: i64 = 0;
+    let mut available: i64 = 0;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total = parse_meminfo_kb(rest) * 1024;
+        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            available = parse_meminfo_kb(rest) * 1024;
+        }
+    }
+    (total, available)
+}
+
+fn parse_meminfo_kb(s: &str) -> i64 {
+    s.trim()
+        .strip_suffix("kB")
+        .unwrap_or(s)
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(0)
+}
+
+/// Parse 1-minute load average from /proc/loadavg.
+fn parse_loadavg() -> f64 {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
+        .unwrap_or(0.0)
+}
+
+/// Get total and available disk bytes for a path via statvfs.
+fn disk_usage(path: &std::path::Path) -> (i64, i64) {
+    match nix::sys::statvfs::statvfs(path) {
+        Ok(stat) => {
+            let total = stat.blocks() as i64 * stat.fragment_size() as i64;
+            let available = stat.blocks_available() as i64 * stat.fragment_size() as i64;
+            (total, available)
+        }
+        Err(_) => (0, 0),
     }
 }
 

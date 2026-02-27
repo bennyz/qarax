@@ -63,6 +63,7 @@ pub enum StoragePoolType {
     Local,
     Nfs,
     #[sqlx(rename = "OVERLAYBD")]
+    #[serde(alias = "overlaybd")]
     OverlayBd,
 }
 
@@ -116,6 +117,21 @@ WHERE id = $1
     .await?;
 
     Ok(row.into())
+}
+
+pub async fn get_batch(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<StoragePool>, sqlx::Error> {
+    let rows: Vec<StoragePoolRow> = sqlx::query_as::<_, StoragePoolRow>(
+        r#"
+SELECT id, name, pool_type, status, config, capacity_bytes, allocated_bytes
+FROM storage_pools
+WHERE id = ANY($1)
+        "#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| r.into()).collect())
 }
 
 pub async fn create(pool: &PgPool, new_pool: NewStoragePool) -> Result<Uuid, sqlx::Error> {

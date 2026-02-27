@@ -175,7 +175,7 @@ pub async fn attach_host(
             error = %e,
             "gRPC attach_storage_pool failed"
         );
-        crate::errors::Error::InternalServerError
+        crate::errors::Error::UnprocessableEntity(format!("Failed to attach pool to node: {e}"))
     })?;
 
     // Record the attachment in the DB.
@@ -216,7 +216,7 @@ pub async fn detach_host(
             error = %e,
             "gRPC detach_storage_pool failed"
         );
-        crate::errors::Error::InternalServerError
+        crate::errors::Error::UnprocessableEntity(format!("Failed to detach pool from node: {e}"))
     })?;
 
     // Remove the DB record.

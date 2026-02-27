@@ -1,0 +1,216 @@
+# Containerfile for qarax Control Plane VM Image (Hyperconverged)
+#
+# Builds an OCI image containing everything needed to run the qarax control
+# plane AND qarax-node inside a Cloud Hypervisor VM. This makes the CP VM a
+# fully self-contained hyperconverged node: control plane + compute.
+#
+# Includes: PostgreSQL, qarax, qarax-node, Cloud Hypervisor, overlaybd,
+# virtiofsd, kernel/initramfs for nested VMs, and systemd services.
+#
+# The image is exported to a flat rootfs tarball, then the demo script builds
+# a GPT disk image with an ESP (FAT32, kernel + BLS entry) and an ext4 root
+# partition. Cloud Hypervisor boots via --firmware (hypervisor-fw).
+#
+# Build:
+#   cargo build --release -p qarax -p qarax-node -p qarax-init
+#   podman build -f demos/Containerfile.control-plane -t qarax-control-plane .
+
+FROM fedora:43
+
+ARG CLOUD_HYPERVISOR_VERSION=v51.0
+ARG OVERLAYBD_VERSION=1.0.16
+ARG OVERLAYBD_RPM_SUFFIX=20250818.4601fb2
+ARG OVERLAYBD_RPM_DIST=azurelinux.3.0
+ARG ACI_VERSION=1.4.1
+ARG ACI_RPM_SUFFIX=20260114025326.c6ba42c
+
+# Install PostgreSQL, qarax-node runtime dependencies, and minimal tools
+RUN dnf install -y \
+    postgresql-server \
+    postgresql \
+    iproute \
+    iproute-tc \
+    procps-ng \
+    util-linux \
+    qemu-img \
+    socat \
+    iptables \
+    nftables \
+    virtiofsd \
+    e2fsprogs \
+    cpio \
+    busybox \
+    kmod \
+    libnl3 \
+    openssh-server \
+    kernel-core \
+    kernel-modules \
+    && dnf clean all \
+    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
+
+# Initialize PostgreSQL data directory (can't use postgresql-setup, no systemd during build)
+RUN su - postgres -c "initdb -D /var/lib/pgsql/data"
+
+# Configure PostgreSQL: listen on localhost, trust local connections
+RUN sed -i 's/^#listen_addresses.*/listen_addresses = '\''127.0.0.1'\''/' /var/lib/pgsql/data/postgresql.conf && \
+    sed -i 's/^host.*127.*ident/host    all    all    127.0.0.1\/32    trust/' /var/lib/pgsql/data/pg_hba.conf && \
+    sed -i 's/^local.*peer/local   all    all    trust/' /var/lib/pgsql/data/pg_hba.conf
+
+# Create qarax database and user (run postgres temporarily to set up)
+# /run/postgresql is needed for the Unix socket but doesn't exist without systemd
+RUN mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql && \
+    su - postgres -c "pg_ctl start -D /var/lib/pgsql/data -l /tmp/pg-init.log -w" && \
+    su - postgres -c "createuser qarax" && \
+    su - postgres -c "createdb -O qarax qarax" && \
+    su - postgres -c "pg_ctl stop -D /var/lib/pgsql/data -w"
+
+# Install Cloud Hypervisor (static binary)
+RUN curl -fsSL \
+    "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CLOUD_HYPERVISOR_VERSION}/cloud-hypervisor-static" \
+    -o /usr/local/bin/cloud-hypervisor && \
+    chmod +x /usr/local/bin/cloud-hypervisor
+
+# Install overlaybd-tcmu
+RUN curl -fsSL \
+    "https://github.com/containerd/overlaybd/releases/download/v${OVERLAYBD_VERSION}/overlaybd-${OVERLAYBD_VERSION}-${OVERLAYBD_RPM_SUFFIX}.${OVERLAYBD_RPM_DIST}.x86_64.rpm" \
+    -o /tmp/overlaybd.rpm && \
+    cd / && rpm2cpio /tmp/overlaybd.rpm | cpio -idm --no-absolute-filenames && \
+    rm /tmp/overlaybd.rpm
+
+# Install overlaybd-snapshotter convertor
+RUN curl -fsSL \
+    "https://github.com/containerd/accelerated-container-image/releases/download/v${ACI_VERSION}/overlaybd-snapshotter-${ACI_VERSION}-${ACI_RPM_SUFFIX}.x86_64.rpm" \
+    -o /tmp/aci.rpm && \
+    cd / && rpm2cpio /tmp/aci.rpm | cpio -idm --no-absolute-filenames && \
+    rm /tmp/aci.rpm
+
+# Copy qarax, qarax-node, and qarax-init binaries
+COPY target/x86_64-unknown-linux-musl/release/qarax /usr/local/bin/qarax
+COPY target/x86_64-unknown-linux-musl/release/qarax-node /usr/local/bin/qarax-node
+COPY target/x86_64-unknown-linux-musl/release/qarax-init /usr/local/bin/qarax-init
+RUN chmod +x /usr/local/bin/qarax /usr/local/bin/qarax-node /usr/local/bin/qarax-init
+
+# Copy configuration
+COPY configuration/ /etc/qarax/configuration/
+
+# Create directories for VM data and overlaybd
+RUN mkdir -p /var/lib/qarax/vms \
+    /var/lib/qarax/images \
+    /var/lib/qarax/disks \
+    /var/lib/qarax/overlaybd \
+    /opt/overlaybd/registry_cache \
+    /opt/overlaybd/gzip_cache
+
+# Download Cloud Hypervisor kernel (vmlinux)
+RUN curl -fsSL \
+    "https://github.com/cloud-hypervisor/linux/releases/download/ch-release-v6.16.9-20251112/vmlinux-x86_64" \
+    -o /var/lib/qarax/images/vmlinux && \
+    chmod 644 /var/lib/qarax/images/vmlinux
+
+# Build test initramfs
+COPY e2e/init-test.sh /tmp/init-test.sh
+RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
+    cp /usr/sbin/busybox /tmp/initramfs/bin/ && \
+    cd /tmp/initramfs/bin && \
+    for cmd in sh cat echo mount ls sleep poweroff; do ln -s busybox $cmd; done && \
+    cp /tmp/init-test.sh /tmp/initramfs/init && \
+    chmod +x /tmp/initramfs/init && \
+    cd /tmp/initramfs && \
+    find . | cpio -o -H newc | gzip > /var/lib/qarax/images/test-initramfs.gz && \
+    rm -rf /tmp/initramfs /tmp/init-test.sh
+
+# Create production symlinks so production.yaml vm_defaults paths resolve
+RUN ln -sf /var/lib/qarax/images/vmlinux /var/lib/qarax/images/vmlinux-production && \
+    ln -sf /var/lib/qarax/images/test-initramfs.gz /var/lib/qarax/images/initramfs-production.gz
+
+# Create qarax systemd service
+RUN cat > /etc/systemd/system/qarax.service << 'EOF'
+[Unit]
+Description=qarax Control Plane API Server
+Documentation=https://github.com/qarax/qarax
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/qarax
+Restart=always
+RestartSec=3
+WorkingDirectory=/etc/qarax
+
+Environment="APP_ENVIRONMENT=production"
+Environment="QARAX_CONFIG_DIR=/etc/qarax/configuration"
+Environment="RUST_LOG=info"
+Environment="RUST_BACKTRACE=1"
+Environment="DATABASE_URL=postgres://qarax:qarax@127.0.0.1:5432/qarax"
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qarax
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Copy overlaybd-tcmu systemd service
+COPY deployments/overlaybd-tcmu.service /etc/systemd/system/overlaybd-tcmu.service
+
+# Copy qarax-node systemd service
+COPY deployments/qarax-node.service /etc/systemd/system/qarax-node.service
+
+# Configure kernel modules to load at boot (needed for overlaybd and KVM)
+RUN mkdir -p /etc/modules-load.d && \
+    cat > /etc/modules-load.d/qarax.conf << 'EOF'
+target_core_user
+tcm_loop
+kvm
+kvm_intel
+kvm_amd
+EOF
+
+# Ensure /run/postgresql exists at boot (systemd tmpfiles.d)
+RUN echo "d /run/postgresql 0755 postgres postgres -" > /etc/tmpfiles.d/postgresql.conf
+
+# Enable services via symlinks (can't use systemctl during build)
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /usr/lib/systemd/system/postgresql.service /etc/systemd/system/multi-user.target.wants/postgresql.service && \
+    ln -sf /etc/systemd/system/qarax.service /etc/systemd/system/multi-user.target.wants/qarax.service && \
+    ln -sf /etc/systemd/system/overlaybd-tcmu.service /etc/systemd/system/multi-user.target.wants/overlaybd-tcmu.service && \
+    ln -sf /etc/systemd/system/qarax-node.service /etc/systemd/system/multi-user.target.wants/qarax-node.service && \
+    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service
+
+# Configure static network (192.168.100.10/24)
+RUN mkdir -p /etc/systemd/network && \
+    cat > /etc/systemd/network/10-eth0.network << 'EOF'
+[Match]
+Name=en* eth*
+
+[Network]
+Address=192.168.100.10/24
+Gateway=192.168.100.1
+DNS=8.8.8.8
+EOF
+
+# Enable systemd-networkd and systemd-resolved via symlinks
+RUN mkdir -p /etc/systemd/system/network-online.target.wants && \
+    ln -sf /usr/lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/systemd-networkd.service && \
+    ln -sf /usr/lib/systemd/system/systemd-resolved.service /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
+
+# Point resolv.conf at systemd-resolved (can't symlink during build — podman bind-mounts it)
+# Use a tmpfiles.d rule to create the symlink at boot instead
+RUN echo "L /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf" > /etc/tmpfiles.d/resolv.conf
+
+# Configure SSH: generate host keys and allow root login
+RUN ssh-keygen -A && \
+    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# Configure hostname
+RUN echo "qarax-cp" > /etc/hostname
+
+# Set root password for debug access
+RUN echo "root:qarax" | chpasswd
+
+# Create /etc/fstab for root filesystem (vda2 = root, vda1 = ESP)
+RUN echo "/dev/vda2   /       ext4    defaults    0 1" > /etc/fstab && \
+    echo "/dev/vda1   /boot   vfat    defaults    0 2" >> /etc/fstab

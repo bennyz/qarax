@@ -96,6 +96,27 @@ FROM storage_objects
     Ok(storage_objects)
 }
 
+pub async fn get_batch(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<StorageObject>, sqlx::Error> {
+    let rows: Vec<StorageObjectRow> = sqlx::query_as::<_, StorageObjectRow>(
+        r#"
+SELECT id,
+        name,
+        storage_pool_id,
+        object_type,
+        size_bytes,
+        config,
+        parent_id
+FROM storage_objects
+WHERE id = ANY($1)
+        "#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| r.into()).collect())
+}
+
 pub async fn get(pool: &PgPool, object_id: Uuid) -> Result<StorageObject, sqlx::Error> {
     let storage_object: StorageObjectRow = sqlx::query_as!(
         StorageObjectRow,

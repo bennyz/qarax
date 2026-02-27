@@ -178,6 +178,9 @@ pub async fn init(
         hostname = %node_info.hostname,
         ch_version = %node_info.cloud_hypervisor_version,
         kernel_version = %node_info.kernel_version,
+        total_cpus = node_info.total_cpus,
+        total_memory_bytes = node_info.total_memory_bytes,
+        load_average = node_info.load_average_1m,
         "Node info retrieved"
     );
 
@@ -186,6 +189,18 @@ pub async fn init(
         host_id,
         &node_info.cloud_hypervisor_version,
         &node_info.kernel_version,
+    )
+    .await?;
+
+    hosts::update_resources(
+        env.pool(),
+        host_id,
+        node_info.total_cpus,
+        node_info.total_memory_bytes,
+        node_info.available_memory_bytes,
+        node_info.load_average_1m,
+        node_info.disk_total_bytes,
+        node_info.disk_available_bytes,
     )
     .await?;
 

@@ -88,6 +88,12 @@ struct HostRow {
     host_user: String,
     #[tabled(rename = "CH Version")]
     ch_version: String,
+    #[tabled(rename = "CPUs")]
+    total_cpus: String,
+    #[tabled(rename = "Memory")]
+    memory: String,
+    #[tabled(rename = "Load")]
+    load: String,
 }
 
 pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<()> {
@@ -109,6 +115,18 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
                         ch_version: h
                             .cloud_hypervisor_version
                             .clone()
+                            .unwrap_or_else(|| "-".to_string()),
+                        total_cpus: h
+                            .total_cpus
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        memory: h
+                            .total_memory_bytes
+                            .map(format_bytes)
+                            .unwrap_or_else(|| "-".to_string()),
+                        load: h
+                            .load_average
+                            .map(|l| format!("{:.2}", l))
                             .unwrap_or_else(|| "-".to_string()),
                     })
                     .collect();
@@ -180,4 +198,14 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
     }
 
     Ok(())
+}
+
+fn format_bytes(bytes: i64) -> String {
+    const GIB: i64 = 1024 * 1024 * 1024;
+    const MIB: i64 = 1024 * 1024;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else {
+        format!("{:.0} MiB", bytes as f64 / MIB as f64)
+    }
 }

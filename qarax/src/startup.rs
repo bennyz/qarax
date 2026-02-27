@@ -16,6 +16,11 @@ pub async fn run(
     // Spawn background task to reconcile VM status with the live node state
     tokio::spawn(crate::vm_monitor::start_vm_monitor(a.pool_arc()));
 
+    // Spawn background task to poll host resource metrics
+    tokio::spawn(crate::resource_monitor::start_resource_monitor(
+        a.pool_arc(),
+    ));
+
     let app = app(a);
     let server = axum::serve(listener, app);
     Ok(server)

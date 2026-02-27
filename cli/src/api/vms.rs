@@ -5,8 +5,7 @@ use uuid::Uuid;
 use crate::client::Client;
 
 use super::models::{
-    AttachDiskRequest, CreateVmResponse, CreateVmResult, NewVm, Vm, VmOverlaybdDisk,
-    VmStartResponse,
+    AttachDiskRequest, CreateVmResponse, CreateVmResult, NewVm, Vm, VmDisk, VmStartResponse,
 };
 
 pub async fn list(client: &Client) -> anyhow::Result<Vec<Vm>> {
@@ -70,6 +69,6 @@ pub async fn attach_disk(
     client: &Client,
     vm_id: Uuid,
     req: &AttachDiskRequest,
-) -> anyhow::Result<VmOverlaybdDisk> {
+) -> anyhow::Result<VmDisk> {
     client.post(&format!("/vms/{vm_id}/disks"), req).await
 }

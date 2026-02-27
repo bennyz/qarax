@@ -43,7 +43,8 @@ oci-client = { version = "0.16", default-features = false, features = ["rustls-t
 tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
-nix = { version = "0.29", features = ["term"] }
+nix = { version = "0.29", features = ["term", "fs"] }
+num_cpus = "1"
 
 [dev-dependencies]
 tokio-stream = { version = "0.1.14", features = ["net"] }
