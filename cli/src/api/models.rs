@@ -62,6 +62,13 @@ pub struct Host {
     pub host_user: String,
     pub cloud_hypervisor_version: Option<String>,
     pub kernel_version: Option<String>,
+    pub total_cpus: Option<i32>,
+    pub total_memory_bytes: Option<i64>,
+    pub available_memory_bytes: Option<i64>,
+    pub load_average: Option<f64>,
+    pub disk_total_bytes: Option<i64>,
+    pub disk_available_bytes: Option<i64>,
+    pub resources_updated_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,15 +219,24 @@ pub struct AttachDiskRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct VmOverlaybdDisk {
+pub struct VmDisk {
     pub id: Uuid,
     pub vm_id: Uuid,
+    pub storage_object_id: Option<Uuid>,
     pub disk_id: String,
-    pub image_ref: String,
-    pub image_digest: Option<String>,
-    pub registry_url: String,
-    pub storage_pool_id: Option<Uuid>,
-    pub boot_order: i32,
+    pub device_path: String,
+    pub boot_order: Option<i32>,
+    pub read_only: bool,
+    pub direct: bool,
+    pub vhost_user: bool,
+    pub vhost_socket: Option<String>,
+    pub num_queues: i32,
+    pub queue_size: i32,
+    pub rate_limiter: Option<serde_json::Value>,
+    pub rate_limit_group: Option<String>,
+    pub pci_segment: i32,
+    pub serial_number: Option<String>,
+    pub config: serde_json::Value,
 }
 
 // ─── Storage pool import ──────────────────────────────────────────────────────

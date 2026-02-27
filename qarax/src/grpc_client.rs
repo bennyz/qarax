@@ -29,17 +29,6 @@ pub struct NodeClient {
     address: String,
 }
 
-/// OverlayBD disk specification for block-based OCI image booting.
-#[derive(Debug, Clone)]
-pub struct OverlaybdDiskSpec {
-    /// Virtio device id, e.g. "vda"
-    pub disk_id: String,
-    /// OCI image reference in the target registry
-    pub oci_image_ref: String,
-    /// Target registry URL, e.g. "http://my-registry:5000"
-    pub registry_url: String,
-}
-
 /// Parameters for creating a VM on the node
 #[derive(Debug)]
 pub struct CreateVmRequest {
@@ -55,8 +44,8 @@ pub struct CreateVmRequest {
     pub fs_configs: Vec<FsConfig>,
     /// Whether to enable shared memory (required for vhost-user-fs)
     pub memory_shared: bool,
-    /// OverlayBD disk for lazy block-level OCI image boot (mutually exclusive with fs_configs)
-    pub overlaybd_disk: Option<OverlaybdDiskSpec>,
+    /// Disk configurations resolved from vm_disks + storage objects
+    pub disks: Vec<DiskConfig>,
 }
 
 /// Convert DB network interfaces to proto NetConfig for the node.
@@ -167,7 +156,7 @@ impl NodeClient {
             cmdline,
             fs_configs,
             memory_shared,
-            overlaybd_disk,
+            disks: extra_disks,
         } = req;
         debug!("Creating VM {} on node {}", vm_id, self.address);
 
@@ -199,29 +188,8 @@ impl NodeClient {
             });
         }
 
-        // Add OverlayBD disk if specified (lazy block-level OCI image boot)
-        if let Some(obd) = overlaybd_disk {
-            debug!(
-                "Adding OverlayBD disk {} for image {}",
-                obd.disk_id, obd.oci_image_ref
-            );
-            disks.push(DiskConfig {
-                id: obd.disk_id,
-                path: None, // filled in by qarax-node after mounting
-                readonly: Some(false),
-                direct: None,
-                vhost_user: None,
-                vhost_socket: None,
-                num_queues: None,
-                queue_size: None,
-                rate_limiter: None,
-                rate_limit_group: None,
-                pci_segment: None,
-                serial: None,
-                oci_image_ref: Some(obd.oci_image_ref),
-                registry_url: Some(obd.registry_url),
-            });
-        }
+        // Append disks resolved from vm_disks + storage objects
+        disks.extend(extra_disks);
 
         let config = VmConfig {
             vm_id: vm_id.to_string(),

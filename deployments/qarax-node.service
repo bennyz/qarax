@@ -3,7 +3,7 @@ Description=Qarax Node - Virtual Machine Manager
 Documentation=https://github.com/qarax/qarax
 After=network-online.target overlaybd-tcmu.service
 Wants=network-online.target
-Requires=overlaybd-tcmu.service
+Wants=overlaybd-tcmu.service
 
 [Service]
 Type=simple

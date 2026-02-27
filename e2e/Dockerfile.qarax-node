@@ -1,7 +1,7 @@
 # Dockerfile for qarax-node container (E2E testing)
 # Runs qarax-node with Cloud Hypervisor for VM management
 
-FROM fedora:41
+FROM fedora:43
 
 ARG CLOUD_HYPERVISOR_VERSION=v51.0
 ARG OVERLAYBD_VERSION=1.0.16
@@ -41,7 +41,7 @@ RUN curl -fsSL \
 RUN curl -fsSL \
     "https://github.com/containerd/overlaybd/releases/download/v${OVERLAYBD_VERSION}/overlaybd-${OVERLAYBD_VERSION}-${OVERLAYBD_RPM_SUFFIX}.${OVERLAYBD_RPM_DIST}.x86_64.rpm" \
     -o /tmp/overlaybd.rpm && \
-    cd / && rpm2cpio /tmp/overlaybd.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    cd / && rpm2cpio /tmp/overlaybd.rpm | cpio -idm --no-absolute-filenames && \
     mkdir -p /opt/overlaybd/registry_cache /opt/overlaybd/gzip_cache && \
     rm /tmp/overlaybd.rpm
 
@@ -50,7 +50,7 @@ RUN curl -fsSL \
 RUN curl -fsSL \
     "https://github.com/containerd/accelerated-container-image/releases/download/v${ACI_VERSION}/overlaybd-snapshotter-${ACI_VERSION}-${ACI_RPM_SUFFIX}.x86_64.rpm" \
     -o /tmp/aci.rpm && \
-    cd / && rpm2cpio /tmp/aci.rpm | cpio -idm --no-absolute-filenames 2>/dev/null && \
+    cd / && rpm2cpio /tmp/aci.rpm | cpio -idm --no-absolute-filenames && \
     rm /tmp/aci.rpm
 
 # Copy qarax-node and qarax-init binaries
@@ -82,7 +82,7 @@ RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
     cp /tmp/init-test.sh /tmp/initramfs/init && \
     chmod +x /tmp/initramfs/init && \
     cd /tmp/initramfs && \
-    find . | cpio -o -H newc 2>/dev/null | gzip > /var/lib/qarax/images/test-initramfs.gz && \
+    find . | cpio -o -H newc | gzip > /var/lib/qarax/images/test-initramfs.gz && \
     rm -rf /tmp/initramfs /tmp/init-test.sh && \
     ls -la /var/lib/qarax/images/
 

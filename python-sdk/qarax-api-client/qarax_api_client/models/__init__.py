@@ -23,7 +23,6 @@ from .new_transfer import NewTransfer
 from .new_vm import NewVm
 from .new_vm_filesystem import NewVmFilesystem
 from .new_vm_network import NewVmNetwork
-from .new_vm_overlaybd_disk import NewVmOverlaybdDisk
 from .rate_limiter_config import RateLimiterConfig
 from .storage_object import StorageObject
 from .storage_object_type import StorageObjectType
@@ -37,11 +36,11 @@ from .transfer_type import TransferType
 from .update_host_request import UpdateHostRequest
 from .vhost_mode import VhostMode
 from .vm import Vm
+from .vm_disk import VmDisk
 from .vm_filesystem import VmFilesystem
 from .vm_metrics import VmMetrics
 from .vm_metrics_counters import VmMetricsCounters
 from .vm_metrics_counters_additional_property import VmMetricsCountersAdditionalProperty
-from .vm_overlaybd_disk import VmOverlaybdDisk
 from .vm_start_response import VmStartResponse
 from .vm_status import VmStatus
 
@@ -69,7 +68,6 @@ __all__ = (
     "NewVm",
     "NewVmFilesystem",
     "NewVmNetwork",
-    "NewVmOverlaybdDisk",
     "RateLimiterConfig",
     "StorageObject",
     "StorageObjectType",
@@ -83,11 +81,11 @@ __all__ = (
     "UpdateHostRequest",
     "VhostMode",
     "Vm",
+    "VmDisk",
     "VmFilesystem",
     "VmMetrics",
     "VmMetricsCounters",
     "VmMetricsCountersAdditionalProperty",
-    "VmOverlaybdDisk",
     "VmStartResponse",
     "VmStatus",
 )

@@ -5,6 +5,7 @@ pub mod grpc_client;
 pub mod handlers;
 pub mod host_deployer;
 pub mod model;
+pub mod resource_monitor;
 pub mod startup;
 pub mod transfer_executor;
 pub mod vm_monitor;

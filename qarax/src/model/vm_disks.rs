@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, types::Json};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct VmDisk {
     pub id: Uuid,
     pub vm_id: Uuid,
@@ -201,4 +202,49 @@ ORDER BY boot_order NULLS LAST, device_path
         .map(|vd: VmDiskRow| vd.into())
         .collect();
     Ok(vm_disks)
+}
+
+pub async fn create(pool: &PgPool, disk: &NewVmDisk) -> Result<Uuid, sqlx::Error> {
+    let id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"
+INSERT INTO vm_disks (
+    id, vm_id, storage_object_id, disk_id, device_path, boot_order,
+    read_only, direct, vhost_user, vhost_socket,
+    num_queues, queue_size, rate_limiter, rate_limit_group,
+    pci_segment, serial_number, config
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        "#,
+    )
+    .bind(id)
+    .bind(disk.vm_id)
+    .bind(disk.storage_object_id)
+    .bind(&disk.disk_id)
+    .bind(&disk.device_path)
+    .bind(disk.boot_order)
+    .bind(disk.read_only.unwrap_or(false))
+    .bind(disk.direct.unwrap_or(false))
+    .bind(disk.vhost_user.unwrap_or(false))
+    .bind(&disk.vhost_socket)
+    .bind(disk.num_queues.unwrap_or(1))
+    .bind(disk.queue_size.unwrap_or(128))
+    .bind(disk.rate_limiter.as_ref().map(sqlx::types::Json))
+    .bind(&disk.rate_limit_group)
+    .bind(disk.pci_segment.unwrap_or(0))
+    .bind(&disk.serial_number)
+    .bind(sqlx::types::Json(&disk.config))
+    .execute(pool)
+    .await?;
+
+    Ok(id)
+}
+
+pub async fn delete_by_vm(pool: &PgPool, vm_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM vm_disks WHERE vm_id = $1")
+        .bind(vm_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

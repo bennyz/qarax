@@ -12,16 +12,17 @@ use uuid::Uuid;
 use crate::{
     App,
     grpc_client::{
-        CreateVmRequest, NodeClient, OverlaybdDiskSpec, net_configs_from_db, node::FsConfig,
+        CreateVmRequest, NodeClient, net_configs_from_db,
+        node::{DiskConfig, FsConfig},
     },
     model::{
         boot_sources, hosts,
         hosts::Host,
         jobs::{self, JobType, NewJob},
-        network_interfaces, storage_objects,
-        storage_pools::{self, OverlayBdPoolConfig},
+        network_interfaces, storage_objects, storage_pools,
+        storage_pools::OverlayBdPoolConfig,
+        vm_disks::{self, NewVmDisk},
         vm_filesystems::{self, NewVmFilesystem},
-        vm_overlaybd_disks::{self, NewVmOverlaybdDisk},
         vms::{self, NewVm, Vm, VmStatus},
     },
 };
@@ -47,13 +48,15 @@ pub struct VmMetrics {
     pub counters: HashMap<String, HashMap<String, i64>>,
 }
 
-/// Pick a random UP host for scheduling a new VM.
-async fn pick_host(env: &App) -> Result<Host> {
-    hosts::pick_up_host(env.pool()).await?.ok_or_else(|| {
-        crate::errors::Error::UnprocessableEntity(
-            "no hosts in UP state available for scheduling".into(),
-        )
-    })
+/// Pick an UP host with sufficient resources for scheduling a new VM.
+async fn pick_host(env: &App, requested_memory: i64) -> Result<Host> {
+    hosts::pick_up_host(env.pool(), requested_memory)
+        .await?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "no hosts in UP state with sufficient resources available for scheduling".into(),
+            )
+        })
 }
 
 /// Resolve the host that a VM is assigned to, for routing subsequent operations.
@@ -147,7 +150,7 @@ pub async fn create(
     tx.commit().await?;
 
     // Pick a host and record it
-    let host = pick_host(&env).await?;
+    let host = pick_host(&env, vm.memory_size).await?;
     let _ = vms::update_host_id(env.pool(), id, host.id).await;
 
     Ok(ApiResponse {
@@ -165,7 +168,7 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
         .expect("image_ref checked before calling");
 
     // Pick host eagerly so we return 422 immediately if none are UP
-    let host = pick_host(&env).await?;
+    let host = pick_host(&env, vm.memory_size).await?;
 
     // Check if the selected host has an OverlayBD storage pool; if so, use that path.
     let overlaybd_pool = storage_pools::find_overlaybd_for_host(env.pool(), host.id)
@@ -353,23 +356,62 @@ async fn run_overlaybd_create(
 
     let _ = jobs::update_progress(db_pool, job_id, 50).await;
 
-    // Step 2: Persist OverlayBD disk record (boot_order = 0 marks it as the boot disk)
-    let disk_id = "vda".to_string();
-    let disk_record = NewVmOverlaybdDisk {
-        vm_id,
-        disk_id,
-        image_ref: import_result.image_ref.clone(),
-        image_digest: if import_result.digest.is_empty() {
-            None
-        } else {
-            Some(import_result.digest.clone())
+    // Step 2: Create a storage object for the imported image, then persist a vm_disk record
+    let so_config = serde_json::json!({
+        "image_ref": import_result.image_ref,
+        "registry_url": registry_url,
+        "digest": if import_result.digest.is_empty() { None } else { Some(&import_result.digest) },
+    });
+    let so_id = match storage_objects::create(
+        db_pool,
+        storage_objects::NewStorageObject {
+            name: format!("overlaybd-{}", vm_id),
+            storage_pool_id: Some(storage_pool_id),
+            object_type: storage_objects::StorageObjectType::OciImage,
+            size_bytes: 0,
+            config: so_config,
+            parent_id: None,
         },
-        registry_url,
-        storage_pool_id: Some(storage_pool_id),
-        boot_order: 0,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let msg = format!("Failed to create storage object for OverlayBD disk: {}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
     };
-    if let Err(e) = vm_overlaybd_disks::create(db_pool, &disk_record).await {
-        tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist OverlayBD disk record");
+
+    let disk_record = NewVmDisk {
+        vm_id,
+        storage_object_id: Some(so_id),
+        disk_id: "vda".to_string(),
+        device_path: "/dev/vda".to_string(),
+        boot_order: Some(0),
+        read_only: Some(false),
+        direct: None,
+        vhost_user: None,
+        vhost_socket: None,
+        num_queues: None,
+        queue_size: None,
+        rate_limiter: None,
+        rate_limit_group: None,
+        pci_segment: None,
+        serial_number: None,
+        config: serde_json::Value::default(),
+    };
+    if let Err(e) = vm_disks::create(db_pool, &disk_record).await {
+        let msg = format!("Failed to persist OverlayBD disk record: {}", e);
+        tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+        if let Err(cleanup_err) = storage_objects::delete(db_pool, so_id).await {
+            tracing::warn!(vm_id = %vm_id, storage_object_id = %so_id, error = %cleanup_err, "Failed to clean up orphaned storage object");
+        }
+        let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+        let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+        return;
     }
 
     // Mark VM as created (node provisioning is deferred to vm start)
@@ -866,49 +908,138 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         (d.kernel.clone(), d.initramfs.clone(), d.cmdline.clone())
     };
 
-    // Load disks and filesystems
-    let overlaybd_disks = vm_overlaybd_disks::list_by_vm(env.pool(), vm_id).await?;
+    // Load disks, filesystems, and networks
+    let db_disks = vm_disks::list_by_vm(env.pool(), vm_id).await?;
     let filesystems = vm_filesystems::list_by_vm(env.pool(), vm_id).await?;
     let db_networks = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
 
     let networks = net_configs_from_db(&db_networks);
 
-    // Choose boot disk / cmdline based on what's attached
-    let (overlaybd_disk, fs_configs, cmdline, memory_shared) =
-        if let Some(disk) = overlaybd_disks.iter().min_by_key(|d| d.boot_order) {
-            let obd = OverlaybdDiskSpec {
-                disk_id: disk.disk_id.clone(),
-                oci_image_ref: disk.image_ref.clone(),
-                registry_url: disk.registry_url.clone(),
-            };
-            (
-                Some(obd),
-                vec![],
-                "console=ttyS0 root=/dev/vda rw init=/.qarax-init".to_string(),
-                false,
-            )
-        } else if !filesystems.is_empty() {
-            let fs = &filesystems[0];
-            let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
-            let fs_config = FsConfig {
-                tag: fs.tag.clone(),
-                socket: socket_path,
-                num_queues: fs.num_queues,
-                queue_size: fs.queue_size,
-                pci_segment: fs.pci_segment,
-                id: Some("fs0".to_string()),
-                bootstrap_path: None,
-            };
-            (
-                None,
-                vec![fs_config],
-                "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string(),
-                true,
-            )
-        } else {
-            // Plain boot with kernel/initramfs only
-            (None, vec![], default_cmdline, vm.memory_shared)
+    // Batch-fetch storage objects and pools to avoid N+1 queries
+    let so_ids: Vec<Uuid> = db_disks
+        .iter()
+        .filter_map(|d| d.storage_object_id)
+        .collect();
+
+    let objects = storage_objects::get_batch(env.pool(), &so_ids).await?;
+    let objects_map: std::collections::HashMap<Uuid, _> =
+        objects.into_iter().map(|o| (o.id, o)).collect();
+
+    let pool_ids: Vec<Uuid> = objects_map
+        .values()
+        .map(|o| o.storage_pool_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let pools = storage_pools::get_batch(env.pool(), &pool_ids).await?;
+    let pools_map: std::collections::HashMap<Uuid, _> =
+        pools.into_iter().map(|p| (p.id, p)).collect();
+
+    // Resolve each vm_disk to a DiskConfig using the pre-fetched maps
+    let mut resolved_disks: Vec<DiskConfig> = Vec::new();
+    let mut has_overlaybd_boot = false;
+
+    for disk in &db_disks {
+        if let Some(so_id) = disk.storage_object_id {
+            let obj = objects_map
+                .get(&so_id)
+                .ok_or(crate::errors::Error::NotFound)?;
+            let pool = pools_map
+                .get(&obj.storage_pool_id)
+                .ok_or(crate::errors::Error::NotFound)?;
+
+            match pool.pool_type {
+                storage_pools::StoragePoolType::OverlayBd => {
+                    let image_ref = obj
+                        .config
+                        .get("image_ref")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let registry_url = obj
+                        .config
+                        .get("registry_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+
+                    resolved_disks.push(DiskConfig {
+                        id: disk.disk_id.clone(),
+                        path: None,
+                        readonly: Some(disk.read_only),
+                        direct: if disk.direct { Some(true) } else { None },
+                        vhost_user: if disk.vhost_user { Some(true) } else { None },
+                        vhost_socket: disk.vhost_socket.clone(),
+                        num_queues: Some(disk.num_queues),
+                        queue_size: Some(disk.queue_size),
+                        rate_limiter: None,
+                        rate_limit_group: disk.rate_limit_group.clone(),
+                        pci_segment: if disk.pci_segment != 0 {
+                            Some(disk.pci_segment)
+                        } else {
+                            None
+                        },
+                        serial: disk.serial_number.clone(),
+                        oci_image_ref: Some(image_ref),
+                        registry_url: Some(registry_url),
+                    });
+                    has_overlaybd_boot = true;
+                }
+                storage_pools::StoragePoolType::Local | storage_pools::StoragePoolType::Nfs => {
+                    let path = storage_objects::get_path_from_config(&obj.config);
+                    resolved_disks.push(DiskConfig {
+                        id: disk.disk_id.clone(),
+                        path,
+                        readonly: Some(disk.read_only),
+                        direct: if disk.direct { Some(true) } else { None },
+                        vhost_user: if disk.vhost_user { Some(true) } else { None },
+                        vhost_socket: disk.vhost_socket.clone(),
+                        num_queues: Some(disk.num_queues),
+                        queue_size: Some(disk.queue_size),
+                        rate_limiter: None,
+                        rate_limit_group: disk.rate_limit_group.clone(),
+                        pci_segment: if disk.pci_segment != 0 {
+                            Some(disk.pci_segment)
+                        } else {
+                            None
+                        },
+                        serial: disk.serial_number.clone(),
+                        oci_image_ref: None,
+                        registry_url: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Choose cmdline based on what's attached
+    let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
+        (
+            vec![],
+            "console=ttyS0 root=/dev/vda rw init=/.qarax-init".to_string(),
+            false,
+        )
+    } else if !filesystems.is_empty() {
+        let fs = &filesystems[0];
+        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
+        let fs_config = FsConfig {
+            tag: fs.tag.clone(),
+            socket: socket_path,
+            num_queues: fs.num_queues,
+            queue_size: fs.queue_size,
+            pci_segment: fs.pci_segment,
+            id: Some("fs0".to_string()),
+            bootstrap_path: None,
         };
+        (
+            vec![fs_config],
+            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string(),
+            true,
+        )
+    } else {
+        // Plain boot with kernel/initramfs only
+        (vec![], default_cmdline, vm.memory_shared)
+    };
 
     Ok(CreateVmRequest {
         vm_id,
@@ -921,7 +1052,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         cmdline,
         fs_configs,
         memory_shared,
-        overlaybd_disk,
+        disks: resolved_disks,
     })
 }
 
@@ -935,7 +1066,7 @@ pub struct AttachDiskRequest {
     pub boot_order: Option<i32>,
 }
 
-/// Attach an OverlayBD storage object to a VM as a bootable disk.
+/// Attach a storage object to a VM as a disk.
 #[utoipa::path(
     post,
     path = "/vms/{vm_id}/disks",
@@ -944,7 +1075,7 @@ pub struct AttachDiskRequest {
     ),
     request_body = AttachDiskRequest,
     responses(
-        (status = 201, description = "Disk attached", body = crate::model::vm_overlaybd_disks::VmOverlaybdDisk),
+        (status = 201, description = "Disk attached", body = crate::model::vm_disks::VmDisk),
         (status = 404, description = "VM or storage object not found"),
         (status = 422, description = "VM not in Created state"),
         (status = 500, description = "Internal server error")
@@ -957,7 +1088,6 @@ pub async fn attach_disk(
     Path(vm_id): Path<Uuid>,
     Json(req): Json<AttachDiskRequest>,
 ) -> Result<axum::response::Response> {
-    use crate::model::vm_overlaybd_disks::VmOverlaybdDisk;
     use axum::response::IntoResponse as _;
 
     let vm = vms::get(env.pool(), vm_id).await?;
@@ -967,48 +1097,31 @@ pub async fn attach_disk(
         ));
     }
 
-    let obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
+    // Verify the storage object exists
+    let _obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
 
-    // Resolve registry URL from the object config or from the pool
-    let registry_url = obj
-        .config
-        .get("registry_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-
-    let image_ref = obj
-        .config
-        .get("image_ref")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-
-    let disk_record = NewVmOverlaybdDisk {
+    let disk_id_str = req.disk_id.clone().unwrap_or_else(|| "vda".to_string());
+    let disk_record = NewVmDisk {
         vm_id,
-        disk_id: req.disk_id.clone().unwrap_or_else(|| "vda".to_string()),
-        image_ref,
-        image_digest: obj
-            .config
-            .get("digest")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        registry_url,
-        storage_pool_id: Some(obj.storage_pool_id),
-        boot_order: req.boot_order.unwrap_or(0),
+        storage_object_id: Some(req.storage_object_id),
+        disk_id: disk_id_str.clone(),
+        device_path: format!("/dev/{}", disk_id_str),
+        boot_order: Some(req.boot_order.unwrap_or(0)),
+        read_only: Some(false),
+        direct: None,
+        vhost_user: None,
+        vhost_socket: None,
+        num_queues: None,
+        queue_size: None,
+        rate_limiter: None,
+        rate_limit_group: None,
+        pci_segment: None,
+        serial_number: None,
+        config: serde_json::Value::default(),
     };
 
-    let disk_id = vm_overlaybd_disks::create(env.pool(), &disk_record).await?;
-    let disk = VmOverlaybdDisk {
-        id: disk_id,
-        vm_id: disk_record.vm_id,
-        disk_id: disk_record.disk_id,
-        image_ref: disk_record.image_ref,
-        image_digest: disk_record.image_digest,
-        registry_url: disk_record.registry_url,
-        storage_pool_id: disk_record.storage_pool_id,
-        boot_order: disk_record.boot_order,
-    };
+    let id = vm_disks::create(env.pool(), &disk_record).await?;
+    let disk = vm_disks::get(env.pool(), id).await?;
 
     Ok(ApiResponse {
         data: disk,

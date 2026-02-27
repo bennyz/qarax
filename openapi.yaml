@@ -700,7 +700,7 @@ paths:
     post:
       tags:
       - vms
-      summary: Attach an OverlayBD storage object to a VM as a bootable disk.
+      summary: Attach a storage object to a VM as a disk.
       operationId: attach_disk
       parameters:
       - name: vm_id
@@ -722,7 +722,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VmOverlaybdDisk'
+                $ref: '#/components/schemas/VmDisk'
         '404':
           description: VM or storage object not found
         '422':
@@ -961,10 +961,25 @@ components:
       properties:
         address:
           type: string
+        available_memory_bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
         cloud_hypervisor_version:
           type:
           - string
           - 'null'
+        disk_available_bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        disk_total_bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
         host_user:
           type: string
         id:
@@ -974,13 +989,33 @@ components:
           type:
           - string
           - 'null'
+        load_average:
+          type:
+          - number
+          - 'null'
+          format: double
         name:
           type: string
         port:
           type: integer
           format: int32
+        resources_updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
         status:
           $ref: '#/components/schemas/HostStatus'
+        total_cpus:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        total_memory_bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
     HostStatus:
       type: string
       enum:
@@ -1488,36 +1523,6 @@ components:
           - boolean
           - 'null'
           description: Enable vhost-user networking
-    NewVmOverlaybdDisk:
-      type: object
-      required:
-      - vm_id
-      - disk_id
-      - image_ref
-      - registry_url
-      - boot_order
-      properties:
-        boot_order:
-          type: integer
-          format: int32
-        disk_id:
-          type: string
-        image_digest:
-          type:
-          - string
-          - 'null'
-        image_ref:
-          type: string
-        registry_url:
-          type: string
-        storage_pool_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
-        vm_id:
-          type: string
-          format: uuid
     RateLimiterConfig:
       type: object
       properties:
@@ -1792,6 +1797,70 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/VmStatus'
+    VmDisk:
+      type: object
+      required:
+      - id
+      - vm_id
+      - disk_id
+      - device_path
+      - read_only
+      - direct
+      - vhost_user
+      - num_queues
+      - queue_size
+      - pci_segment
+      - config
+      properties:
+        boot_order:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        config: {}
+        device_path:
+          type: string
+        direct:
+          type: boolean
+        disk_id:
+          type: string
+        id:
+          type: string
+          format: uuid
+        num_queues:
+          type: integer
+          format: int32
+        pci_segment:
+          type: integer
+          format: int32
+        queue_size:
+          type: integer
+          format: int32
+        rate_limit_group:
+          type:
+          - string
+          - 'null'
+        rate_limiter: {}
+        read_only:
+          type: boolean
+        serial_number:
+          type:
+          - string
+          - 'null'
+        storage_object_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        vhost_socket:
+          type:
+          - string
+          - 'null'
+        vhost_user:
+          type: boolean
+        vm_id:
+          type: string
+          format: uuid
     VmFilesystem:
       type: object
       required:
@@ -1853,40 +1922,6 @@ components:
           format: int64
         status:
           $ref: '#/components/schemas/VmStatus'
-        vm_id:
-          type: string
-          format: uuid
-    VmOverlaybdDisk:
-      type: object
-      required:
-      - id
-      - vm_id
-      - disk_id
-      - image_ref
-      - registry_url
-      - boot_order
-      properties:
-        boot_order:
-          type: integer
-          format: int32
-        disk_id:
-          type: string
-        id:
-          type: string
-          format: uuid
-        image_digest:
-          type:
-          - string
-          - 'null'
-        image_ref:
-          type: string
-        registry_url:
-          type: string
-        storage_pool_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
         vm_id:
           type: string
           format: uuid
