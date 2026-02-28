@@ -905,7 +905,11 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         )
     } else {
         let d = env.vm_defaults();
-        (d.kernel.clone(), d.initramfs.clone().filter(|s| !s.is_empty()), d.cmdline.clone())
+        (
+            d.kernel.clone(),
+            d.initramfs.clone().filter(|s| !s.is_empty()),
+            d.cmdline.clone(),
+        )
     };
 
     // Load disks, filesystems, and networks
@@ -1014,11 +1018,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
 
     // Choose cmdline based on what's attached
     let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
-        (
-            vec![],
-            "console=ttyS0 root=/dev/vda rw".to_string(),
-            false,
-        )
+        (vec![], "console=ttyS0 root=/dev/vda rw".to_string(), false)
     } else if !filesystems.is_empty() {
         let fs = &filesystems[0];
         let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);

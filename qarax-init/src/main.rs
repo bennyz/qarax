@@ -100,11 +100,9 @@ fn setup_loopback() {
 /// Parse `root=DEVICE` from /proc/cmdline.
 fn parse_root_device() -> Option<String> {
     let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
-    cmdline.split_whitespace().find_map(|param| {
-        param
-            .strip_prefix("root=")
-            .map(|dev| dev.to_string())
-    })
+    cmdline
+        .split_whitespace()
+        .find_map(|param| param.strip_prefix("root=").map(|dev| dev.to_string()))
 }
 
 /// When running from an initramfs, mount the root device and switch_root into it.
@@ -141,17 +139,15 @@ fn maybe_switch_root() -> bool {
     }
 
     // Move pseudo-filesystems to the new root
-    for (src, dst) in [("/dev", "/newroot/dev"), ("/proc", "/newroot/proc"), ("/sys", "/newroot/sys")] {
-        if std::path::Path::new(dst).exists() {
-            if let Err(e) = mount(
-                Some(src),
-                dst,
-                None::<&str>,
-                MsFlags::MS_MOVE,
-                None::<&str>,
-            ) {
-                log(format!("warning: move mount {src} -> {dst}: {e}"));
-            }
+    for (src, dst) in [
+        ("/dev", "/newroot/dev"),
+        ("/proc", "/newroot/proc"),
+        ("/sys", "/newroot/sys"),
+    ] {
+        if std::path::Path::new(dst).exists()
+            && let Err(e) = mount(Some(src), dst, None::<&str>, MsFlags::MS_MOVE, None::<&str>)
+        {
+            log(format!("warning: move mount {src} -> {dst}: {e}"));
         }
     }
 
@@ -161,20 +157,17 @@ fn maybe_switch_root() -> bool {
         return false;
     }
 
-    if let Err(e) = mount(
-        Some("."),
-        "/",
-        None::<&str>,
-        MsFlags::MS_MOVE,
-        None::<&str>,
-    ) {
+    if let Err(e) = mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>) {
         log(format!("mount --move . / failed: {e}"));
         return false;
     }
 
     let dot = std::ffi::CString::new(".").unwrap();
     if unsafe { libc::chroot(dot.as_ptr()) } != 0 {
-        log(format!("chroot failed: {}", std::io::Error::last_os_error()));
+        log(format!(
+            "chroot failed: {}",
+            std::io::Error::last_os_error()
+        ));
         return false;
     }
 
