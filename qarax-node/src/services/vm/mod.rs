@@ -8,9 +8,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::cloud_hypervisor::VmManager;
 use crate::rpc::node::{
-    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, AttachStoragePoolRequest,
-    AttachStoragePoolResponse, ConsoleInput, ConsoleLogResponse, ConsoleOutput,
-    ConsolePtyPathResponse, DetachStoragePoolRequest, DeviceCounters, ImportOverlayBdRequest,
+    AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest, AttachNetworkRequest,
+    AttachNetworkResponse, AttachStoragePoolRequest, AttachStoragePoolResponse, ConsoleInput,
+    ConsoleLogResponse, ConsoleOutput, ConsolePtyPathResponse, DetachNetworkRequest,
+    DetachNetworkResponse, DetachStoragePoolRequest, DeviceCounters, ImportOverlayBdRequest,
     ImportOverlayBdResponse, NodeInfo, OciImageRequest, OciImageResponse, RemoveDeviceRequest,
     StoragePoolKind, VmConfig, VmCounters, VmId, VmList, VmState, vm_service_server::VmService,
 };
@@ -746,6 +747,79 @@ impl VmService for VmServiceImpl {
                 }))
             }
         }
+    }
+
+    async fn attach_network(
+        &self,
+        request: Request<AttachNetworkRequest>,
+    ) -> Result<Response<AttachNetworkResponse>, Status> {
+        let req = request.into_inner();
+        info!("Attaching network bridge: {}", req.bridge_name);
+
+        // Extract prefix length from subnet for the gateway CIDR
+        let prefix = req
+            .subnet
+            .split_once('/')
+            .map(|(_, p)| p)
+            .unwrap_or("24");
+        let gateway_cidr = format!("{}/{}", req.gateway, prefix);
+
+        // Create bridge and set IP
+        crate::networking::bridge::create_bridge(&req.bridge_name)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to create bridge: {}", e)))?;
+
+        crate::networking::bridge::set_bridge_ip(&req.bridge_name, &gateway_cidr)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to set bridge IP: {}", e)))?;
+
+        // Start dnsmasq for DHCP
+        let dns = if req.dns.is_empty() {
+            &req.gateway
+        } else {
+            &req.dns
+        };
+        crate::networking::dnsmasq::start_dnsmasq(
+            &req.bridge_name,
+            &req.dhcp_range_start,
+            &req.dhcp_range_end,
+            &req.gateway,
+            dns,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("Failed to start dnsmasq: {}", e)))?;
+
+        // Setup NAT
+        crate::networking::nftables::setup_nat(&req.bridge_name, &req.subnet)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to setup NAT: {}", e)))?;
+
+        info!("Network bridge {} attached successfully", req.bridge_name);
+        Ok(Response::new(AttachNetworkResponse {}))
+    }
+
+    async fn detach_network(
+        &self,
+        request: Request<DetachNetworkRequest>,
+    ) -> Result<Response<DetachNetworkResponse>, Status> {
+        let req = request.into_inner();
+        info!("Detaching network bridge: {}", req.bridge_name);
+
+        // Stop dnsmasq
+        if let Err(e) = crate::networking::dnsmasq::stop_dnsmasq(&req.bridge_name).await {
+            warn!("Failed to stop dnsmasq for {}: {}", req.bridge_name, e);
+        }
+
+        // We don't know the subnet here, so teardown NAT with a best-effort approach.
+        // The bridge deletion will stop any forwarding anyway.
+
+        // Delete bridge
+        if let Err(e) = crate::networking::bridge::delete_bridge(&req.bridge_name).await {
+            warn!("Failed to delete bridge {}: {}", req.bridge_name, e);
+        }
+
+        info!("Network bridge {} detached", req.bridge_name);
+        Ok(Response::new(DetachNetworkResponse {}))
     }
 
     async fn detach_storage_pool(

@@ -40,6 +40,8 @@ pub enum Commands {
     Transfer(commands::transfer::TransferArgs),
     /// Boot source operations
     BootSource(commands::boot_source::BootSourceArgs),
+    /// Network operations
+    Network(commands::network::NetworkArgs),
     /// Async job operations
     Job(commands::job::JobArgs),
 }
@@ -56,6 +58,7 @@ async fn main() -> Result<()> {
         Commands::StorageObject(args) => {
             commands::storage::run_object(args, &client, cli.json).await
         }
+        Commands::Network(args) => commands::network::run(args, &client, cli.json).await,
         Commands::Transfer(args) => commands::transfer::run(args, &client, cli.json).await,
         Commands::BootSource(args) => commands::boot_source::run(args, &client, cli.json).await,
         Commands::Job(args) => commands::job::run(args, &client, cli.json).await,

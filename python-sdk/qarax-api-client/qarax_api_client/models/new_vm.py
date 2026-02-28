@@ -6,6 +6,7 @@ from uuid import UUID
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.boot_mode import BootMode
 from ..models.hypervisor import Hypervisor
 from ..types import UNSET, Unset
 
@@ -25,6 +26,7 @@ class NewVm:
         max_vcpus (int):
         memory_size (int):
         name (str):
+        boot_mode (BootMode | None | Unset):
         boot_source_id (None | Unset | UUID):
         config (Any | Unset):
         cpu_topology (Any | Unset):
@@ -50,6 +52,7 @@ class NewVm:
     max_vcpus: int
     memory_size: int
     name: str
+    boot_mode: BootMode | None | Unset = UNSET
     boot_source_id: None | Unset | UUID = UNSET
     config: Any | Unset = UNSET
     cpu_topology: Any | Unset = UNSET
@@ -76,6 +79,14 @@ class NewVm:
         memory_size = self.memory_size
 
         name = self.name
+
+        boot_mode: None | str | Unset
+        if isinstance(self.boot_mode, Unset):
+            boot_mode = UNSET
+        elif isinstance(self.boot_mode, BootMode):
+            boot_mode = self.boot_mode.value
+        else:
+            boot_mode = self.boot_mode
 
         boot_source_id: None | str | Unset
         if isinstance(self.boot_source_id, Unset):
@@ -172,6 +183,8 @@ class NewVm:
                 "name": name,
             }
         )
+        if boot_mode is not UNSET:
+            field_dict["boot_mode"] = boot_mode
         if boot_source_id is not UNSET:
             field_dict["boot_source_id"] = boot_source_id
         if config is not UNSET:
@@ -217,6 +230,23 @@ class NewVm:
         memory_size = d.pop("memory_size")
 
         name = d.pop("name")
+
+        def _parse_boot_mode(data: object) -> BootMode | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                boot_mode_type_1 = BootMode(data)
+
+                return boot_mode_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(BootMode | None | Unset, data)
+
+        boot_mode = _parse_boot_mode(d.pop("boot_mode", UNSET))
 
         def _parse_boot_source_id(data: object) -> None | Unset | UUID:
             if data is None:
@@ -357,6 +387,7 @@ class NewVm:
             max_vcpus=max_vcpus,
             memory_size=memory_size,
             name=name,
+            boot_mode=boot_mode,
             boot_source_id=boot_source_id,
             config=config,
             cpu_topology=cpu_topology,

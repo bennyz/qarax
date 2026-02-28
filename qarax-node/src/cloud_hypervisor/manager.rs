@@ -387,6 +387,29 @@ impl VmManager {
             }
         }
 
+        // Attach TAP devices to bridges if specified
+        for net in config.networks.iter() {
+            if let (Some(tap_name), Some(bridge_name)) = (&net.tap, &net.bridge)
+                && let Err(e) =
+                    crate::networking::bridge::attach_to_bridge(tap_name, bridge_name).await
+            {
+                tracing::error!(
+                    "Failed to attach TAP {} to bridge {}: {}",
+                    tap_name,
+                    bridge_name,
+                    e
+                );
+                // Clean up TAPs we created
+                for tap in &tap_devices {
+                    Self::delete_tap_device(tap).await;
+                }
+                return Err(VmManagerError::TapError(format!(
+                    "Failed to attach TAP {} to bridge {}: {}",
+                    tap_name, bridge_name, e
+                )));
+            }
+        }
+
         // Resolve OverlayBD disks: mount each disk that has oci_image_ref set and replace
         // the path with the resulting block device.
         let mut has_overlaybd = false;

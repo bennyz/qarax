@@ -6,6 +6,7 @@ from uuid import UUID
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.boot_mode import BootMode
 from ..models.hypervisor import Hypervisor
 from ..models.vm_status import VmStatus
 from ..types import UNSET, Unset
@@ -17,6 +18,7 @@ T = TypeVar("T", bound="Vm")
 class Vm:
     """
     Attributes:
+        boot_mode (BootMode):
         boot_vcpus (int):
         config (Any):
         hypervisor (Hypervisor):
@@ -40,6 +42,7 @@ class Vm:
         memory_hugepage_size (int | None | Unset):
     """
 
+    boot_mode: BootMode
     boot_vcpus: int
     config: Any
     hypervisor: Hypervisor
@@ -64,6 +67,8 @@ class Vm:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        boot_mode = self.boot_mode.value
+
         boot_vcpus = self.boot_vcpus
 
         config = self.config
@@ -138,6 +143,7 @@ class Vm:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "boot_mode": boot_mode,
                 "boot_vcpus": boot_vcpus,
                 "config": config,
                 "hypervisor": hypervisor,
@@ -174,6 +180,8 @@ class Vm:
     @classmethod
     def from_dict(cls: type[T], src_dict: Any) -> T:
         d = dict(src_dict)
+        boot_mode = BootMode(d.pop("boot_mode"))
+
         boot_vcpus = d.pop("boot_vcpus")
 
         config = d.pop("config")
@@ -275,6 +283,7 @@ class Vm:
         memory_hugepage_size = _parse_memory_hugepage_size(d.pop("memory_hugepage_size", UNSET))
 
         vm = cls(
+            boot_mode=boot_mode,
             boot_vcpus=boot_vcpus,
             config=config,
             hypervisor=hypervisor,

@@ -20,6 +20,7 @@ use validator::ValidationErrors;
 mod boot_source;
 mod host;
 mod job;
+mod network;
 mod storage_object;
 mod storage_pool;
 mod transfer;
@@ -66,6 +67,13 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         transfer::handler::list,
         transfer::handler::get,
         job::handler::get,
+        network::handler::list,
+        network::handler::get,
+        network::handler::create,
+        network::handler::delete,
+        network::handler::attach_host,
+        network::handler::detach_host,
+        network::handler::list_ips,
     ),
     components(
         schemas(
@@ -110,6 +118,11 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::handlers::vm::handler::AttachDiskRequest,
             crate::handlers::storage_pool::handler::ImportToPoolRequest,
             crate::handlers::storage_pool::handler::ImportToPoolResponse,
+            crate::model::networks::Network,
+            crate::model::networks::NewNetwork,
+            crate::model::networks::NetworkStatus,
+            crate::model::networks::IpAllocation,
+            crate::handlers::network::handler::AttachHostRequest,
         )
     ),
     tags(
@@ -119,7 +132,8 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         (name = "storage-pools", description = "Storage pool management endpoints"),
         (name = "boot-sources", description = "Boot source management endpoints"),
         (name = "transfers", description = "File transfer management endpoints"),
-        (name = "jobs", description = "Async job management endpoints")
+        (name = "jobs", description = "Async job management endpoints"),
+        (name = "networks", description = "Network management endpoints")
     ),
     info(
         title = "Qarax API",
@@ -140,6 +154,7 @@ pub fn app(env: App) -> Router {
         .merge(boot_sources())
         .merge(transfers())
         .merge(jobs())
+        .merge(networks())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(
             ServiceBuilder::new()
@@ -243,6 +258,30 @@ fn transfers() -> Router {
 
 fn jobs() -> Router {
     Router::new().route("/jobs/{job_id}", get(job::handler::get))
+}
+
+fn networks() -> Router {
+    Router::new()
+        .route(
+            "/networks",
+            get(network::handler::list).post(network::handler::create),
+        )
+        .route(
+            "/networks/{network_id}",
+            get(network::handler::get).delete(network::handler::delete),
+        )
+        .route(
+            "/networks/{network_id}/hosts",
+            post(network::handler::attach_host),
+        )
+        .route(
+            "/networks/{network_id}/hosts/{host_id}",
+            axum::routing::delete(network::handler::detach_host),
+        )
+        .route(
+            "/networks/{network_id}/ips",
+            get(network::handler::list_ips),
+        )
 }
 
 fn boot_sources() -> Router {

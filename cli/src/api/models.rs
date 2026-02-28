@@ -11,6 +11,7 @@ pub struct Vm {
     pub status: String,
     pub hypervisor: String,
     pub boot_source_id: Option<Uuid>,
+    pub boot_mode: String,
     pub description: Option<String>,
     pub boot_vcpus: i32,
     pub max_vcpus: i32,
@@ -28,9 +29,13 @@ pub struct NewVm {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boot_source_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<Uuid>,
     pub config: serde_json::Value,
 }
 
@@ -194,6 +199,46 @@ pub struct NewBootSource {
     pub initrd_image_id: Option<Uuid>,
 }
 
+// ─── Networks ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Network {
+    pub id: Uuid,
+    pub name: String,
+    pub subnet: String,
+    pub gateway: Option<String>,
+    pub dns: Option<String>,
+    pub network_type: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NewNetwork {
+    pub name: String,
+    pub subnet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttachHostToNetworkRequest {
+    pub host_id: Uuid,
+    pub bridge_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IpAllocation {
+    pub id: Uuid,
+    pub network_id: Uuid,
+    pub ip_address: String,
+    pub vm_id: Option<Uuid>,
+    pub allocated_at: String,
+}
+
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -214,7 +259,7 @@ pub struct Job {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AttachDiskRequest {
     pub storage_object_id: Uuid,
-    pub disk_id: Option<String>,
+    pub logical_name: Option<String>,
     pub boot_order: Option<i32>,
 }
 
@@ -223,7 +268,7 @@ pub struct VmDisk {
     pub id: Uuid,
     pub vm_id: Uuid,
     pub storage_object_id: Option<Uuid>,
-    pub disk_id: String,
+    pub logical_name: String,
     pub device_path: String,
     pub boot_order: Option<i32>,
     pub read_only: bool,

@@ -17,12 +17,12 @@ class AttachDiskRequest:
     Attributes:
         storage_object_id (UUID): Storage object ID (must be `oci_image` type).
         boot_order (int | None | Unset): Boot priority — lower is higher priority (default: `0`).
-        disk_id (None | str | Unset): Disk identifier inside the VM (default: `"vda"`).
+        logical_name (None | str | Unset): Logical device name inside the VM (e.g. "vda"); auto-generated if omitted.
     """
 
     storage_object_id: UUID
     boot_order: int | None | Unset = UNSET
-    disk_id: None | str | Unset = UNSET
+    logical_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,11 +34,11 @@ class AttachDiskRequest:
         else:
             boot_order = self.boot_order
 
-        disk_id: None | str | Unset
-        if isinstance(self.disk_id, Unset):
-            disk_id = UNSET
+        logical_name: None | str | Unset
+        if isinstance(self.logical_name, Unset):
+            logical_name = UNSET
         else:
-            disk_id = self.disk_id
+            logical_name = self.logical_name
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -49,8 +49,8 @@ class AttachDiskRequest:
         )
         if boot_order is not UNSET:
             field_dict["boot_order"] = boot_order
-        if disk_id is not UNSET:
-            field_dict["disk_id"] = disk_id
+        if logical_name is not UNSET:
+            field_dict["logical_name"] = logical_name
 
         return field_dict
 
@@ -68,19 +68,19 @@ class AttachDiskRequest:
 
         boot_order = _parse_boot_order(d.pop("boot_order", UNSET))
 
-        def _parse_disk_id(data: object) -> None | str | Unset:
+        def _parse_logical_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        disk_id = _parse_disk_id(d.pop("disk_id", UNSET))
+        logical_name = _parse_logical_name(d.pop("logical_name", UNSET))
 
         attach_disk_request = cls(
             storage_object_id=storage_object_id,
             boot_order=boot_order,
-            disk_id=disk_id,
+            logical_name=logical_name,
         )
 
         attach_disk_request.additional_properties = d

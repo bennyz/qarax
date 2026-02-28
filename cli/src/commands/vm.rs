@@ -12,7 +12,10 @@ use crate::{
     console,
 };
 
-use super::{format_bytes, print_json, resolve_boot_source_id, resolve_object_id, resolve_vm_id};
+use super::{
+    format_bytes, print_json, resolve_boot_source_id, resolve_network_id, resolve_object_id,
+    resolve_vm_id,
+};
 
 #[derive(Args)]
 pub struct VmArgs {
@@ -52,6 +55,12 @@ enum VmCommand {
         /// OCI image reference (triggers async creation)
         #[arg(long)]
         image_ref: Option<String>,
+        /// Boot mode: kernel (default) or firmware
+        #[arg(long, default_value = "kernel")]
+        boot_mode: String,
+        /// Network name or ID to attach the VM to (allocates an IP automatically)
+        #[arg(long)]
+        network: Option<String>,
     },
     /// Delete a VM
     Delete {
@@ -95,9 +104,9 @@ enum VmCommand {
         /// Storage object name or ID to attach as a disk
         #[arg(long)]
         object: String,
-        /// Disk device ID inside the VM (default: vda)
+        /// Logical device name inside the VM (e.g. "vda"); auto-generated if omitted
         #[arg(long)]
-        disk_id: Option<String>,
+        logical_name: Option<String>,
         /// Boot order priority (lower = higher priority; default: 0)
         #[arg(long)]
         boot_order: Option<i32>,
@@ -164,6 +173,7 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                         .map(|h| h.to_string())
                         .unwrap_or_else(|| "-".to_string())
                 );
+                println!("Boot mode:   {}", vm.boot_mode);
                 println!("vCPUs:       {}/{}", vm.boot_vcpus, vm.max_vcpus);
                 println!("Memory:      {}", format_bytes(vm.memory_size));
                 if let Some(bs) = vm.boot_source_id {
@@ -186,10 +196,21 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
             boot_source,
             description,
             image_ref,
+            boot_mode,
+            network,
         } => {
             let boot_source_id = match boot_source {
                 Some(ref s) => Some(resolve_boot_source_id(client, s).await?),
                 None => None,
+            };
+            let network_id = match network {
+                Some(ref s) => Some(resolve_network_id(client, s).await?),
+                None => None,
+            };
+            let boot_mode_opt = if boot_mode == "kernel" {
+                None
+            } else {
+                Some(boot_mode)
             };
             let new_vm = NewVm {
                 name,
@@ -198,8 +219,10 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                 max_vcpus: max_vcpus.unwrap_or(vcpus),
                 memory_size: memory,
                 boot_source_id,
+                boot_mode: boot_mode_opt,
                 description,
                 image_ref: image_ref.clone(),
+                network_id,
                 config: serde_json::json!({}),
             };
 
@@ -274,14 +297,14 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
         VmCommand::AttachDisk {
             vm,
             object,
-            disk_id,
+            logical_name,
             boot_order,
         } => {
             let vm_id = resolve_vm_id(client, &vm).await?;
             let object_id = resolve_object_id(client, &object).await?;
             let req = AttachDiskRequest {
                 storage_object_id: object_id,
-                disk_id,
+                logical_name,
                 boot_order,
             };
             let disk = api::vms::attach_disk(client, vm_id, &req).await?;
@@ -289,8 +312,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                 print_json(&disk)?;
             } else {
                 println!(
-                    "Attached disk {} (object={}, disk_id={}) to VM {}",
-                    disk.id, object_id, disk.disk_id, vm_id
+                    "Attached disk {} (object={}, name={}) to VM {}",
+                    disk.id, object_id, disk.logical_name, vm_id
                 );
             }
         }

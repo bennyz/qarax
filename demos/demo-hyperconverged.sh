@@ -30,6 +30,10 @@
 #   sudo ./demos/demo-hyperconverged.sh             # Full build + run
 #   sudo SKIP_BUILD=1 ./demos/demo-hyperconverged.sh # Skip cargo build
 #   sudo ./demos/demo-hyperconverged.sh --cleanup    # Tear down everything
+#   sudo ./demos/demo-hyperconverged.sh --with-local # Also create a local storage pool
+#   sudo ./demos/demo-hyperconverged.sh --with-nfs --nfs-url server:/export  # Also create an NFS pool
+#   sudo ./demos/demo-hyperconverged.sh --with-local-vm  # Also boot a firmware VM with cloud image
+#   sudo ./demos/demo-hyperconverged.sh --with-db-vm    # Also boot an OCI PostgreSQL VM
 
 set -euo pipefail
 
@@ -109,9 +113,67 @@ cleanup() {
 	echo -e "${GREEN}Cleanup complete.${NC}"
 }
 
-if [[ "${1:-}" == "--cleanup" ]]; then
-	cleanup
-	exit 0
+# ── Parse flags ───────────────────────────────────────────────────────────
+
+WITH_LOCAL=0
+WITH_NFS=0
+NFS_URL=""
+WITH_LOCAL_VM=0
+WITH_DB_VM=0
+LOCAL_POOL_PATH="/var/lib/qarax/images"
+CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.raw.xz}"
+DB_IMAGE="${DB_IMAGE:-docker.io/library/postgres:17-alpine}"
+
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--cleanup)
+		cleanup
+		exit 0
+		;;
+	--with-local)
+		WITH_LOCAL=1
+		shift
+		;;
+	--with-nfs)
+		WITH_NFS=1
+		shift
+		;;
+	--nfs-url)
+		NFS_URL="$2"
+		shift 2
+		;;
+	--with-local-vm)
+		WITH_LOCAL_VM=1
+		WITH_LOCAL=1  # local VM needs a local pool for the cloud image
+		shift
+		;;
+	--with-db-vm)
+		WITH_DB_VM=1
+		shift
+		;;
+	--db-image)
+		DB_IMAGE="$2"
+		shift 2
+		;;
+	--local-pool-path)
+		LOCAL_POOL_PATH="$2"
+		shift 2
+		;;
+	--cloud-image-url)
+		CLOUD_IMAGE_URL="$2"
+		shift 2
+		;;
+	*)
+		echo -e "${RED}Unknown option: $1${NC}"
+		echo "Usage: $0 [--cleanup] [--with-local] [--with-nfs --nfs-url HOST:/PATH] [--with-local-vm] [--with-db-vm]"
+		exit 1
+		;;
+	esac
+done
+
+if [[ "$WITH_NFS" -eq 1 && -z "$NFS_URL" ]]; then
+	echo -e "${RED}--with-nfs requires --nfs-url <server:/export/path>${NC}"
+	exit 1
 fi
 
 # ── Preflight checks ──────────────────────────────────────────────────────
@@ -438,9 +500,9 @@ echo ""
 
 echo ""
 
-# ── Phase 5: Create workload VM ───────────────────────────────────────────
+# ── Phase 5: Create storage pools and workload VMs ────────────────────────
 
-echo -e "${YELLOW}Phase 5: Create workload VM${NC}"
+echo -e "${YELLOW}Phase 5: Create storage pools and workload VMs${NC}"
 
 DEMO_IMAGE="${DEMO_IMAGE:-public.ecr.aws/docker/library/alpine:latest}"
 DEMO_VM_NAME="alpine-vm"
@@ -448,11 +510,23 @@ DEMO_VM_MEMORY=268435456  # 256 MiB
 
 export QARAX_SERVER="${QARAX_API}"
 
+# -- Default network (always created) --
+
+echo "Creating default network (10.0.0.0/24)..."
+"$QARAX_CLI" network create --name default --subnet 10.0.0.0/24 --gateway 10.0.0.1
+
+echo "Attaching network to host..."
+"$QARAX_CLI" network attach-host --network default --host local-node --bridge-name qbr0
+
+echo ""
+
+# -- OverlayBD pool (always created) --
+
 echo "Creating overlaybd storage pool..."
 "$QARAX_CLI" storage-pool create --name overlaybd-pool --pool-type overlaybd \
 	--config '{"url":"http://'"${HOST_TAP_IP}"':'"${REGISTRY_PORT}"'"}'
 
-echo "Attaching pool to host..."
+echo "Attaching overlaybd pool to host..."
 "$QARAX_CLI" storage-pool attach-host overlaybd-pool local-node
 
 echo "Importing OCI image: ${DEMO_IMAGE}..."
@@ -460,16 +534,105 @@ echo "Importing OCI image: ${DEMO_IMAGE}..."
 	--image-ref "${DEMO_IMAGE}" \
 	--name alpine-obd
 
-echo "Creating VM: ${DEMO_VM_NAME}..."
-"$QARAX_CLI" vm create --name "${DEMO_VM_NAME}" --vcpus 1 --memory "${DEMO_VM_MEMORY}"
+echo "Creating OCI VM: ${DEMO_VM_NAME}..."
+"$QARAX_CLI" vm create --name "${DEMO_VM_NAME}" --vcpus 1 --memory "${DEMO_VM_MEMORY}" --network default
 
-echo "Attaching disk..."
+echo "Attaching OCI disk..."
 "$QARAX_CLI" vm attach-disk "${DEMO_VM_NAME}" --object alpine-obd
 
-echo "Starting VM..."
+echo "Starting OCI VM..."
 "$QARAX_CLI" vm start "${DEMO_VM_NAME}"
 
 echo ""
+
+# -- Local storage pool (optional) --
+
+if [[ "$WITH_LOCAL" -eq 1 ]]; then
+	echo "Creating local storage pool..."
+	"$QARAX_CLI" storage-pool create --name local-pool --pool-type local \
+		--config '{"path":"'"${LOCAL_POOL_PATH}"'"}'
+
+	echo "Attaching local pool to host..."
+	"$QARAX_CLI" storage-pool attach-host local-pool local-node
+
+	echo -e "${GREEN}Local storage pool 'local-pool' created (path: ${LOCAL_POOL_PATH})${NC}"
+	echo ""
+fi
+
+# -- NFS storage pool (optional) --
+
+if [[ "$WITH_NFS" -eq 1 ]]; then
+	echo "Creating NFS storage pool..."
+	"$QARAX_CLI" storage-pool create --name nfs-pool --pool-type nfs \
+		--config '{"url":"'"${NFS_URL}"'"}'
+
+	echo "Attaching NFS pool to host..."
+	"$QARAX_CLI" storage-pool attach-host nfs-pool local-node
+
+	echo -e "${GREEN}NFS storage pool 'nfs-pool' created (url: ${NFS_URL})${NC}"
+	echo ""
+fi
+
+# -- Firmware-boot VM with cloud image (optional) --
+
+if [[ "$WITH_LOCAL_VM" -eq 1 ]]; then
+	CLOUD_VM_NAME="cloud-vm"
+
+	echo "Transferring cloud image into local pool..."
+	"$QARAX_CLI" transfer create --pool local-pool --name cloud-disk \
+		--source "$CLOUD_IMAGE_URL" --object-type disk
+
+	echo "Creating firmware-boot VM: ${CLOUD_VM_NAME}..."
+	"$QARAX_CLI" vm create --name "${CLOUD_VM_NAME}" --vcpus 1 \
+		--memory "${DEMO_VM_MEMORY}" --boot-mode firmware
+
+	echo "Attaching cloud disk..."
+	"$QARAX_CLI" vm attach-disk "${CLOUD_VM_NAME}" --object cloud-disk
+
+	echo "Starting firmware-boot VM..."
+	"$QARAX_CLI" vm start "${CLOUD_VM_NAME}"
+
+	echo -e "${GREEN}Firmware-boot VM '${CLOUD_VM_NAME}' started${NC}"
+	echo ""
+fi
+
+# -- OCI database VM (optional) --
+# Uses --image-ref which triggers the async path: the server imports the image
+# into the overlaybd pool, creates a storage object, and attaches a vda disk
+# automatically — no manual import or attach-disk needed.
+
+if [[ "$WITH_DB_VM" -eq 1 ]]; then
+	DB_VM_NAME="db-vm"
+	DB_VM_MEMORY=536870912  # 512 MiB
+
+	echo "Creating OCI database VM: ${DB_VM_NAME} (image: ${DB_IMAGE})..."
+	"$QARAX_CLI" vm create --name "${DB_VM_NAME}" --vcpus 1 --memory "${DB_VM_MEMORY}" \
+		--image-ref "${DB_IMAGE}" --network default
+
+	echo "Starting database VM..."
+	"$QARAX_CLI" vm start "${DB_VM_NAME}"
+
+	echo -e "${GREEN}OCI database VM '${DB_VM_NAME}' started (image: ${DB_IMAGE})${NC}"
+	echo ""
+	echo -e "${YELLOW}Database VM usage:${NC}"
+	echo "  Once the VM is running, attach a console to interact with it:"
+	echo ""
+	echo "    qarax vm attach ${DB_VM_NAME}"
+	echo ""
+	echo "  Inside the VM, PostgreSQL will be running. Connect with:"
+	echo ""
+	echo "    psql -U postgres"
+	echo ""
+	echo "  From the host (if networking is configured), connect to the VM's IP:"
+	echo ""
+	echo "    psql -h <vm-ip> -U postgres"
+	echo ""
+	echo "  Check VM status and logs:"
+	echo ""
+	echo "    qarax vm get ${DB_VM_NAME}"
+	echo "    qarax vm console ${DB_VM_NAME}"
+	echo ""
+fi
 
 # ── Phase 6: Summary ──────────────────────────────────────────────────────
 
@@ -481,9 +644,23 @@ echo "  Swagger UI:  http://${CP_VM_IP}:8000/swagger-ui"
 echo "  qarax-node:  ${CP_VM_IP}:${QARAX_NODE_PORT}"
 echo "  Console log: ${CP_CONSOLE_LOG}"
 echo ""
-echo "Workload VM:"
-echo "  Name:        ${DEMO_VM_NAME}"
-echo "  Image:       ${DEMO_IMAGE}"
+echo "Storage pools:"
+echo "  overlaybd-pool   (overlaybd, registry: http://${HOST_TAP_IP}:${REGISTRY_PORT})"
+if [[ "$WITH_LOCAL" -eq 1 ]]; then
+	echo "  local-pool        (local, path: ${LOCAL_POOL_PATH})"
+fi
+if [[ "$WITH_NFS" -eq 1 ]]; then
+	echo "  nfs-pool          (nfs, url: ${NFS_URL})"
+fi
+echo ""
+echo "Workload VMs:"
+echo "  ${DEMO_VM_NAME}         (OCI: ${DEMO_IMAGE})"
+if [[ "$WITH_DB_VM" -eq 1 ]]; then
+	echo "  db-vm             (OCI: ${DB_IMAGE}, PostgreSQL)"
+fi
+if [[ "$WITH_LOCAL_VM" -eq 1 ]]; then
+	echo "  cloud-vm          (firmware boot, cloud image)"
+fi
 echo ""
 echo "Local OCI Registry:"
 echo "  Host URL:    http://localhost:${REGISTRY_PORT}"
@@ -492,9 +669,17 @@ echo ""
 echo "Set server for CLI commands:"
 echo "  export QARAX_SERVER=http://${CP_VM_IP}:8000"
 echo ""
-echo "Interact with the workload VM:"
-echo "  qarax vm attach ${DEMO_VM_NAME}"
+echo "Interact with VMs:"
 echo "  qarax vm list"
+echo "  qarax vm attach ${DEMO_VM_NAME}"
+if [[ "$WITH_DB_VM" -eq 1 ]]; then
+	echo "  qarax vm attach db-vm          # interactive console"
+	echo "  qarax vm console db-vm         # view boot/console log"
+	echo "  # Inside the VM:  psql -U postgres"
+fi
+if [[ "$WITH_LOCAL_VM" -eq 1 ]]; then
+	echo "  qarax vm attach cloud-vm"
+fi
 echo ""
 echo "Cleanup:"
 echo "  sudo ./demos/demo-hyperconverged.sh --cleanup"

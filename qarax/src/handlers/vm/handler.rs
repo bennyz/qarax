@@ -19,11 +19,11 @@ use crate::{
         boot_sources, hosts,
         hosts::Host,
         jobs::{self, JobType, NewJob},
-        network_interfaces, storage_objects, storage_pools,
+        network_interfaces, networks, storage_objects, storage_pools,
         storage_pools::OverlayBdPoolConfig,
         vm_disks::{self, NewVmDisk},
         vm_filesystems::{self, NewVmFilesystem},
-        vms::{self, NewVm, Vm, VmStatus},
+        vms::{self, BootMode, NewVm, Vm, VmStatus},
     },
 };
 
@@ -153,6 +153,49 @@ pub async fn create(
     let host = pick_host(&env, vm.memory_size).await?;
     let _ = vms::update_host_id(env.pool(), id, host.id).await;
 
+    // If network_id is provided, allocate an IP and create a default network interface
+    if let Some(network_id) = vm.network_id {
+        let ip = networks::next_available_ip(env.pool(), network_id)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?
+            .ok_or_else(|| {
+                crate::errors::Error::UnprocessableEntity("No available IPs in network".into())
+            })?;
+
+        networks::allocate_ip(env.pool(), network_id, &ip, Some(id))
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+
+        // Create a default network interface for this VM
+        let net = crate::model::vms::NewVmNetwork {
+            id: "net0".to_string(),
+            network_id: Some(network_id),
+            mac: None,
+            tap: None,
+            ip: Some(ip),
+            mask: None,
+            mtu: None,
+            host_mac: None,
+            interface_type: None,
+            vhost_user: None,
+            vhost_socket: None,
+            vhost_mode: None,
+            num_queues: None,
+            queue_size: None,
+            rate_limiter: None,
+            offload_tso: None,
+            offload_ufo: None,
+            offload_csum: None,
+            pci_segment: None,
+            iommu: None,
+        };
+        let mut net_tx = env.pool().begin().await?;
+        network_interfaces::create(&mut net_tx, id, &net)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+        net_tx.commit().await?;
+    }
+
     Ok(ApiResponse {
         data: id.to_string(),
         code: StatusCode::CREATED,
@@ -178,30 +221,48 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
             crate::errors::Error::InternalServerError
         })?;
 
-    // Resolve boot source or use defaults (stored for use at start time)
-    let (_kernel, _initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
-        let resolved = boot_sources::resolve(env.pool(), boot_source_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to resolve boot_source_id {}: {}", boot_source_id, e);
-                crate::errors::Error::UnprocessableEntity(format!(
-                    "Invalid boot_source_id: {}",
-                    boot_source_id
-                ))
-            })?;
-        (
-            resolved.kernel_path,
-            resolved.initramfs_path,
-            resolved.kernel_params,
-        )
-    } else {
-        let vm_defaults = env.vm_defaults();
-        (
-            vm_defaults.kernel.clone(),
-            vm_defaults.initramfs.clone().filter(|s| !s.is_empty()),
-            vm_defaults.cmdline.clone(),
-        )
-    };
+    // Resolve boot info based on boot_mode (stored for use at start time)
+    let boot_mode = vm.boot_mode.clone().unwrap_or(BootMode::Kernel);
+    match boot_mode {
+        BootMode::Kernel => {
+            let (_kernel, _initramfs, _cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
+                let resolved = boot_sources::resolve(env.pool(), boot_source_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Failed to resolve boot_source_id {}: {}",
+                            boot_source_id,
+                            e
+                        );
+                        crate::errors::Error::UnprocessableEntity(format!(
+                            "Invalid boot_source_id: {}",
+                            boot_source_id
+                        ))
+                    })?;
+                (
+                    resolved.kernel_path,
+                    resolved.initramfs_path,
+                    resolved.kernel_params,
+                )
+            } else {
+                let vm_defaults = env.vm_defaults();
+                (
+                    vm_defaults.kernel.clone(),
+                    vm_defaults.initramfs.clone().filter(|s| !s.is_empty()),
+                    vm_defaults.cmdline.clone(),
+                )
+            };
+        }
+        BootMode::Firmware => {
+            let d = env.vm_defaults();
+            let firmware = d.firmware.clone().filter(|s| !s.is_empty());
+            if firmware.is_none() {
+                return Err(crate::errors::Error::UnprocessableEntity(
+                    "firmware boot mode requires a firmware path (set vm_defaults.firmware or VM_FIRMWARE env var)".into(),
+                ));
+            }
+        }
+    }
 
     // Create VM row with PENDING status
     let mut tx = env.pool().begin().await?;
@@ -385,11 +446,24 @@ async fn run_overlaybd_create(
         }
     };
 
+    // Pick the next available vd* disk ID (vda, vdb, vdc, ...)
+    let existing_disks = match vm_disks::list_by_vm(db_pool, vm_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("Failed to list existing disks: {}", e);
+            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
+            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
+            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
+            return;
+        }
+    };
+    let logical_name = next_disk_id(&existing_disks);
+
     let disk_record = NewVmDisk {
         vm_id,
         storage_object_id: Some(so_id),
-        disk_id: "vda".to_string(),
-        device_path: "/dev/vda".to_string(),
+        logical_name: logical_name.clone(),
+        device_path: format!("/dev/{}", logical_name),
         boot_order: Some(0),
         read_only: Some(false),
         direct: None,
@@ -891,25 +965,42 @@ async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model
 async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> {
     let vm_id = vm.id;
 
-    // Resolve boot source or fall back to defaults
-    let (kernel, initramfs, default_cmdline) = if let Some(boot_source_id) = vm.boot_source_id {
-        let resolved = boot_sources::resolve(env.pool(), boot_source_id)
-            .await
-            .map_err(|e| {
-                crate::errors::Error::UnprocessableEntity(format!("Invalid boot_source_id: {}", e))
+    // Resolve boot payload based on boot_mode
+    let (kernel, firmware, initramfs, default_cmdline) = match vm.boot_mode {
+        BootMode::Firmware => {
+            let d = env.vm_defaults();
+            let fw = d.firmware.clone().filter(|s| !s.is_empty()).ok_or_else(|| {
+                crate::errors::Error::UnprocessableEntity(
+                    "firmware boot mode requires a firmware path (set vm_defaults.firmware or VM_FIRMWARE env var)".into(),
+                )
             })?;
-        (
-            resolved.kernel_path,
-            resolved.initramfs_path,
-            resolved.kernel_params,
-        )
-    } else {
-        let d = env.vm_defaults();
-        (
-            d.kernel.clone(),
-            d.initramfs.clone().filter(|s| !s.is_empty()),
-            d.cmdline.clone(),
-        )
+            (None, Some(fw), None, None)
+        }
+        BootMode::Kernel => {
+            let (k, i, c) = if let Some(boot_source_id) = vm.boot_source_id {
+                let resolved = boot_sources::resolve(env.pool(), boot_source_id)
+                    .await
+                    .map_err(|e| {
+                        crate::errors::Error::UnprocessableEntity(format!(
+                            "Invalid boot_source_id: {}",
+                            e
+                        ))
+                    })?;
+                (
+                    resolved.kernel_path,
+                    resolved.initramfs_path,
+                    resolved.kernel_params,
+                )
+            } else {
+                let d = env.vm_defaults();
+                (
+                    d.kernel.clone(),
+                    d.initramfs.clone().filter(|s| !s.is_empty()),
+                    d.cmdline.clone(),
+                )
+            };
+            (Some(k), None, i, Some(c))
+        }
     };
 
     // Load disks, filesystems, and networks
@@ -917,7 +1008,20 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let filesystems = vm_filesystems::list_by_vm(env.pool(), vm_id).await?;
     let db_networks = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
 
-    let networks = net_configs_from_db(&db_networks);
+    let mut networks = net_configs_from_db(&db_networks);
+
+    // Populate bridge field from host_networks if the VM has a host and network interfaces
+    if let Some(host_id) = vm.host_id {
+        for (i, db_net) in db_networks.iter().enumerate() {
+            if let Some(net_id) = db_net.network_id
+                && let Ok(Some(bridge_name)) =
+                    networks::get_host_bridge(env.pool(), host_id, net_id).await
+                && let Some(net_config) = networks.get_mut(i)
+            {
+                net_config.bridge = Some(bridge_name);
+            }
+        }
+    }
 
     // Batch-fetch storage objects and pools to avoid N+1 queries
     let so_ids: Vec<Uuid> = db_disks
@@ -938,6 +1042,21 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let pools = storage_pools::get_batch(env.pool(), &pool_ids).await?;
     let pools_map: std::collections::HashMap<Uuid, _> =
         pools.into_iter().map(|p| (p.id, p)).collect();
+
+    // Verify that the VM's host has access to all LOCAL storage pools
+    if let Some(host_id) = vm.host_id {
+        for pool in pools_map.values() {
+            if pool.pool_type == storage_pools::StoragePoolType::Local {
+                let has_pool = storage_pools::host_has_pool(env.pool(), host_id, pool.id).await?;
+                if !has_pool {
+                    return Err(crate::errors::Error::UnprocessableEntity(format!(
+                        "Host {} is not attached to local storage pool {}",
+                        host_id, pool.id
+                    )));
+                }
+            }
+        }
+    }
 
     // Resolve each vm_disk to a DiskConfig using the pre-fetched maps
     let mut resolved_disks: Vec<DiskConfig> = Vec::new();
@@ -968,7 +1087,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
                         .to_string();
 
                     resolved_disks.push(DiskConfig {
-                        id: disk.disk_id.clone(),
+                        id: disk.logical_name.clone(),
                         path: None,
                         readonly: Some(disk.read_only),
                         direct: if disk.direct { Some(true) } else { None },
@@ -992,7 +1111,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
                 storage_pools::StoragePoolType::Local | storage_pools::StoragePoolType::Nfs => {
                     let path = storage_objects::get_path_from_config(&obj.config);
                     resolved_disks.push(DiskConfig {
-                        id: disk.disk_id.clone(),
+                        id: disk.logical_name.clone(),
                         path,
                         readonly: Some(disk.read_only),
                         direct: if disk.direct { Some(true) } else { None },
@@ -1018,7 +1137,11 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
 
     // Choose cmdline based on what's attached
     let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
-        (vec![], "console=ttyS0 root=/dev/vda rw".to_string(), false)
+        (
+            vec![],
+            Some("console=ttyS0 root=/dev/vda rw".to_string()),
+            false,
+        )
     } else if !filesystems.is_empty() {
         let fs = &filesystems[0];
         let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
@@ -1033,11 +1156,11 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         };
         (
             vec![fs_config],
-            "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string(),
+            Some("console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string()),
             true,
         )
     } else {
-        // Plain boot with kernel/initramfs only
+        // Plain boot with kernel/initramfs only (or firmware — cmdline stays None)
         (vec![], default_cmdline, vm.memory_shared)
     };
 
@@ -1048,6 +1171,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         memory_size: vm.memory_size,
         networks,
         kernel,
+        firmware,
         initramfs,
         cmdline,
         fs_configs,
@@ -1056,12 +1180,26 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     })
 }
 
+/// Pick a unique disk ID for a new disk given the existing disks on a VM.
+/// Uses the format `disk{N}` where N is the next available index.
+fn next_disk_id(existing: &[vm_disks::VmDisk]) -> String {
+    let used: std::collections::HashSet<&str> =
+        existing.iter().map(|d| d.logical_name.as_str()).collect();
+    for i in 0u32.. {
+        let id = format!("disk{}", i);
+        if !used.contains(id.as_str()) {
+            return id;
+        }
+    }
+    unreachable!()
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AttachDiskRequest {
     /// Storage object ID (must be `oci_image` type).
     pub storage_object_id: Uuid,
-    /// Disk identifier inside the VM (default: `"vda"`).
-    pub disk_id: Option<String>,
+    /// Logical device name inside the VM (e.g. "vda"); auto-generated if omitted.
+    pub logical_name: Option<String>,
     /// Boot priority — lower is higher priority (default: `0`).
     pub boot_order: Option<i32>,
 }
@@ -1097,16 +1235,43 @@ pub async fn attach_disk(
         ));
     }
 
-    // Verify the storage object exists
-    let _obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
+    // Verify the storage object exists and check local pool affinity
+    let obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
+    let pool = storage_pools::get(env.pool(), obj.storage_pool_id).await?;
+    if pool.pool_type == storage_pools::StoragePoolType::Local {
+        let host_id = vm.host_id.ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "Cannot attach a local disk to a VM with no assigned host".into(),
+            )
+        })?;
+        let has_pool = storage_pools::host_has_pool(env.pool(), host_id, pool.id).await?;
+        if !has_pool {
+            return Err(crate::errors::Error::UnprocessableEntity(format!(
+                "VM's host {} is not attached to local storage pool {}",
+                host_id, pool.id
+            )));
+        }
+    }
 
-    let disk_id_str = req.disk_id.clone().unwrap_or_else(|| "vda".to_string());
+    let existing = vm_disks::list_by_vm(env.pool(), vm_id).await?;
+    let logical_name = match req.logical_name.clone() {
+        Some(name) => name,
+        None => next_disk_id(&existing),
+    };
+    let boot_order = req.boot_order.unwrap_or_else(|| {
+        existing
+            .iter()
+            .filter_map(|d| d.boot_order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0)
+    });
     let disk_record = NewVmDisk {
         vm_id,
         storage_object_id: Some(req.storage_object_id),
-        disk_id: disk_id_str.clone(),
-        device_path: format!("/dev/{}", disk_id_str),
-        boot_order: Some(req.boot_order.unwrap_or(0)),
+        logical_name: logical_name.clone(),
+        device_path: format!("/dev/{}", logical_name),
+        boot_order: Some(boot_order),
         read_only: Some(false),
         direct: None,
         vhost_user: None,
@@ -1128,4 +1293,75 @@ pub async fn attach_disk(
         code: StatusCode::CREATED,
     }
     .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::vm_disks::VmDisk;
+    use uuid::Uuid;
+
+    fn make_disk(logical_name: &str) -> VmDisk {
+        VmDisk {
+            id: Uuid::new_v4(),
+            vm_id: Uuid::new_v4(),
+            storage_object_id: None,
+            logical_name: logical_name.to_string(),
+            device_path: format!("/dev/{}", logical_name),
+            boot_order: None,
+            read_only: false,
+            direct: false,
+            vhost_user: false,
+            vhost_socket: None,
+            num_queues: 1,
+            queue_size: 128,
+            rate_limiter: None,
+            rate_limit_group: None,
+            pci_segment: 0,
+            serial_number: None,
+            config: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn next_disk_id_empty() {
+        assert_eq!(next_disk_id(&[]), "disk0");
+    }
+
+    #[test]
+    fn next_disk_id_skips_existing() {
+        let existing = vec![make_disk("disk0"), make_disk("disk1")];
+        assert_eq!(next_disk_id(&existing), "disk2");
+    }
+
+    #[test]
+    fn next_disk_id_fills_gap() {
+        let existing = vec![make_disk("disk0"), make_disk("disk2")];
+        assert_eq!(next_disk_id(&existing), "disk1");
+    }
+
+    #[test]
+    fn next_disk_id_ignores_non_disk_names() {
+        let existing = vec![make_disk("vda"), make_disk("rootfs")];
+        assert_eq!(next_disk_id(&existing), "disk0");
+    }
+
+    #[test]
+    fn boot_mode_default_is_kernel() {
+        let mode: Option<BootMode> = None;
+        assert_eq!(mode.unwrap_or(BootMode::Kernel), BootMode::Kernel);
+    }
+
+    #[test]
+    fn boot_mode_serde_roundtrip() {
+        let json = serde_json::to_string(&BootMode::Firmware).unwrap();
+        assert_eq!(json, r#""firmware""#);
+        let parsed: BootMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, BootMode::Firmware);
+
+        let json = serde_json::to_string(&BootMode::Kernel).unwrap();
+        assert_eq!(json, r#""kernel""#);
+        let parsed: BootMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, BootMode::Kernel);
+    }
 }

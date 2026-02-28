@@ -852,11 +852,11 @@ components:
           - 'null'
           format: int32
           description: 'Boot priority — lower is higher priority (default: `0`).'
-        disk_id:
+        logical_name:
           type:
           - string
           - 'null'
-          description: 'Disk identifier inside the VM (default: `"vda"`).'
+          description: Logical device name inside the VM (e.g. "vda"); auto-generated if omitted.
         storage_object_id:
           type: string
           format: uuid
@@ -869,6 +869,11 @@ components:
         host_id:
           type: string
           format: uuid
+    BootMode:
+      type: string
+      enum:
+      - kernel
+      - firmware
     BootSource:
       type: object
       required:
@@ -1313,6 +1318,10 @@ components:
       - max_vcpus
       - memory_size
       properties:
+        boot_mode:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/BootMode'
         boot_source_id:
           type:
           - string
@@ -1726,6 +1735,7 @@ components:
       - name
       - status
       - hypervisor
+      - boot_mode
       - boot_vcpus
       - max_vcpus
       - kvm_hyperv
@@ -1737,6 +1747,8 @@ components:
       - memory_thp
       - config
       properties:
+        boot_mode:
+          $ref: '#/components/schemas/BootMode'
         boot_source_id:
           type:
           - string
@@ -1802,7 +1814,7 @@ components:
       required:
       - id
       - vm_id
-      - disk_id
+      - logical_name
       - device_path
       - read_only
       - direct
@@ -1822,11 +1834,11 @@ components:
           type: string
         direct:
           type: boolean
-        disk_id:
-          type: string
         id:
           type: string
           format: uuid
+        logical_name:
+          type: string
         num_queues:
           type: integer
           format: int32

@@ -1,6 +1,7 @@
 pub mod boot_source;
 pub mod host;
 pub mod job;
+pub mod network;
 pub mod storage;
 pub mod transfer;
 pub mod vm;
@@ -58,6 +59,19 @@ pub async fn resolve_object_id(client: &Client, name_or_id: &str) -> anyhow::Res
         .find(|o| o.name == name_or_id)
         .map(|o| o.id)
         .ok_or_else(|| anyhow::anyhow!("no storage object named {:?}", name_or_id))
+}
+
+/// Resolve a network name or UUID string to a UUID.
+pub async fn resolve_network_id(client: &Client, name_or_id: &str) -> anyhow::Result<Uuid> {
+    if let Ok(id) = Uuid::parse_str(name_or_id) {
+        return Ok(id);
+    }
+    let networks = api::networks::list(client).await?;
+    networks
+        .into_iter()
+        .find(|n| n.name == name_or_id)
+        .map(|n| n.id)
+        .ok_or_else(|| anyhow::anyhow!("no network named {:?}", name_or_id))
 }
 
 /// Resolve a boot source name or UUID string to a UUID.
