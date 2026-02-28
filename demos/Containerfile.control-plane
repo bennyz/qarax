@@ -107,21 +107,16 @@ RUN curl -fsSL \
     -o /var/lib/qarax/images/vmlinux && \
     chmod 644 /var/lib/qarax/images/vmlinux
 
-# Build test initramfs
-COPY e2e/init-test.sh /tmp/init-test.sh
-RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
-    cp /usr/sbin/busybox /tmp/initramfs/bin/ && \
-    cd /tmp/initramfs/bin && \
-    for cmd in sh cat echo mount ls sleep poweroff; do ln -s busybox $cmd; done && \
-    cp /tmp/init-test.sh /tmp/initramfs/init && \
+# Build production initramfs with qarax-init (handles root mounting + switch_root)
+RUN mkdir -p /tmp/initramfs/{dev,proc,sys,newroot} && \
+    cp /usr/local/bin/qarax-init /tmp/initramfs/init && \
     chmod +x /tmp/initramfs/init && \
     cd /tmp/initramfs && \
-    find . | cpio -o -H newc | gzip > /var/lib/qarax/images/test-initramfs.gz && \
-    rm -rf /tmp/initramfs /tmp/init-test.sh
+    find . | cpio -o -H newc | gzip > /var/lib/qarax/images/initramfs-production.gz && \
+    rm -rf /tmp/initramfs
 
 # Create production symlinks so production.yaml vm_defaults paths resolve
-RUN ln -sf /var/lib/qarax/images/vmlinux /var/lib/qarax/images/vmlinux-production && \
-    ln -sf /var/lib/qarax/images/test-initramfs.gz /var/lib/qarax/images/initramfs-production.gz
+RUN ln -sf /var/lib/qarax/images/vmlinux /var/lib/qarax/images/vmlinux-production
 
 # Create qarax systemd service
 RUN cat > /etc/systemd/system/qarax.service << 'EOF'

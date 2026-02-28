@@ -553,6 +553,21 @@ impl VmService for VmServiceImpl {
 
         info!("Opening PTY for VM {}: {}", vm_id, pty_path);
 
+        // Verify the PTY device still exists before trying to open it.
+        // When the Cloud Hypervisor process exits, the kernel removes the PTY
+        // slave device, but we may still have the path cached.
+        if !std::path::Path::new(&pty_path).exists() {
+            let is_running = self.manager.is_vm_process_alive(&vm_id).await;
+            error!(
+                "PTY {} for VM {} does not exist (process alive: {})",
+                pty_path, vm_id, is_running
+            );
+            return Err(Status::failed_precondition(format!(
+                "VM console PTY {} no longer exists — the VM process may have crashed",
+                pty_path
+            )));
+        }
+
         // Open two independent file descriptors for the PTY slave — one for
         // reading (VM output) and one for writing (user input).
         //
@@ -567,7 +582,7 @@ impl VmService for VmServiceImpl {
             .open(&pty_path)
             .map_err(|e| {
                 error!("Failed to open PTY {} for reading: {}", pty_path, e);
-                Status::internal(format!("Failed to open PTY: {}", e))
+                Status::internal(format!("Failed to open PTY {}: {}", pty_path, e))
             })?;
 
         // Put the PTY slave into raw mode (termios is device-wide, so one

@@ -97,10 +97,100 @@ fn setup_loopback() {
     log("loopback interface up");
 }
 
+/// Parse `root=DEVICE` from /proc/cmdline.
+fn parse_root_device() -> Option<String> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
+    cmdline.split_whitespace().find_map(|param| {
+        param
+            .strip_prefix("root=")
+            .map(|dev| dev.to_string())
+    })
+}
+
+/// When running from an initramfs, mount the root device and switch_root into it.
+/// Returns true if we switched root, false if already on the real rootfs.
+fn maybe_switch_root() -> bool {
+    // If /.qarax-config.json exists, we're already on the real rootfs
+    if std::path::Path::new("/.qarax-config.json").exists() {
+        return false;
+    }
+
+    let root_dev = match parse_root_device() {
+        Some(dev) => dev,
+        None => {
+            log("no root= on cmdline, staying on initramfs");
+            return false;
+        }
+    };
+
+    log(format!("switching root to {root_dev}"));
+
+    // Create mount point
+    let _ = std::fs::create_dir_all("/newroot");
+
+    // Mount the root device
+    if let Err(e) = mount(
+        Some(root_dev.as_str()),
+        "/newroot",
+        Some("ext4"),
+        MsFlags::empty(),
+        None::<&str>,
+    ) {
+        log(format!("failed to mount {root_dev} on /newroot: {e}"));
+        return false;
+    }
+
+    // Move pseudo-filesystems to the new root
+    for (src, dst) in [("/dev", "/newroot/dev"), ("/proc", "/newroot/proc"), ("/sys", "/newroot/sys")] {
+        if std::path::Path::new(dst).exists() {
+            if let Err(e) = mount(
+                Some(src),
+                dst,
+                None::<&str>,
+                MsFlags::MS_MOVE,
+                None::<&str>,
+            ) {
+                log(format!("warning: move mount {src} -> {dst}: {e}"));
+            }
+        }
+    }
+
+    // switch_root: chdir, mount --move newroot to /, chroot
+    if let Err(e) = std::env::set_current_dir("/newroot") {
+        log(format!("chdir /newroot failed: {e}"));
+        return false;
+    }
+
+    if let Err(e) = mount(
+        Some("."),
+        "/",
+        None::<&str>,
+        MsFlags::MS_MOVE,
+        None::<&str>,
+    ) {
+        log(format!("mount --move . / failed: {e}"));
+        return false;
+    }
+
+    let dot = std::ffi::CString::new(".").unwrap();
+    if unsafe { libc::chroot(dot.as_ptr()) } != 0 {
+        log(format!("chroot failed: {}", std::io::Error::last_os_error()));
+        return false;
+    }
+
+    let _ = std::env::set_current_dir("/");
+
+    log("switch_root complete");
+    true
+}
+
 fn main() {
     try_mount("proc", "/proc", "proc");
     try_mount("sysfs", "/sys", "sysfs");
     try_mount("devtmpfs", "/dev", "devtmpfs");
+
+    // If running from initramfs, mount the real root and switch into it.
+    maybe_switch_root();
 
     setup_loopback();
 

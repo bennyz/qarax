@@ -94,11 +94,8 @@ cleanup() {
 		podman rm -f "$REGISTRY_CONTAINER_NAME" 2>/dev/null || true
 	fi
 
-	# Remove NAT masquerade rule
-	DEFAULT_IFACE=$(ip route show default | awk '{print $5; exit}')
-	if [[ -n "$DEFAULT_IFACE" ]]; then
-		iptables -t nat -D POSTROUTING -s 192.168.100.0/24 -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null || true
-	fi
+	# Remove NAT masquerade rule (interface-agnostic)
+	iptables -t nat -D POSTROUTING -s 192.168.100.0/24 -j MASQUERADE 2>/dev/null || true
 
 	# Remove TAP device
 	if ip link show "$TAP_NAME" &>/dev/null; then
@@ -163,11 +160,6 @@ if [[ ! -f "$CH_FIRMWARE" ]]; then
 		"https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${CH_FIRMWARE_VERSION}/hypervisor-fw" \
 		-o "$CH_FIRMWARE"
 	echo -e "${GREEN}Downloaded hypervisor-fw v${CH_FIRMWARE_VERSION} to ${CH_FIRMWARE}${NC}"
-fi
-
-if ! command -v qarax &>/dev/null; then
-	echo -e "${YELLOW}Warning: qarax CLI not on PATH. Host registration will fail.${NC}"
-	echo "Build with: cargo install --path cli"
 fi
 
 # ── Phase 1: Build ─────────────────────────────────────────────────────────
@@ -299,6 +291,11 @@ losetup -d "$LOOP_DEV"
 rmdir "$ROOTFS_MOUNT"
 rm -f "$ROOTFS_TAR"
 
+# Build the CLI last so the `qarax` binary in target/ is the CLI, not the server.
+echo "Building qarax CLI..."
+cargo build --release -p cli
+QARAX_CLI="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
+
 echo -e "${GREEN}Phase 1 complete. Rootfs: ${CP_ROOTFS} ($(du -h "$CP_ROOTFS" | cut -f1))${NC}"
 echo ""
 
@@ -353,15 +350,11 @@ ip link set "$TAP_NAME" up
 ip addr add "${HOST_TAP_IP}/24" dev "$TAP_NAME" 2>/dev/null || true
 
 # Enable IP forwarding and NAT masquerade (needed for VM internet access)
+# Use interface-agnostic rule so it survives switching between wifi/ethernet.
 sysctl -q net.ipv4.ip_forward=1
-DEFAULT_IFACE=$(ip route show default | awk '{print $5; exit}')
-if [[ -n "$DEFAULT_IFACE" ]]; then
-	if ! iptables -t nat -C POSTROUTING -s 192.168.100.0/24 -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null; then
-		echo "Setting up NAT masquerade via ${DEFAULT_IFACE}..."
-		iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o "$DEFAULT_IFACE" -j MASQUERADE
-	fi
-else
-	echo -e "${YELLOW}Warning: no default route found, VM may lack internet access${NC}"
+if ! iptables -t nat -C POSTROUTING -s 192.168.100.0/24 -j MASQUERADE 2>/dev/null; then
+	echo "Setting up NAT masquerade for 192.168.100.0/24..."
+	iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -j MASQUERADE
 fi
 
 echo "Launching Cloud Hypervisor VM..."
@@ -445,7 +438,40 @@ echo ""
 
 echo ""
 
-# ── Phase 5: Summary ──────────────────────────────────────────────────────
+# ── Phase 5: Create workload VM ───────────────────────────────────────────
+
+echo -e "${YELLOW}Phase 5: Create workload VM${NC}"
+
+DEMO_IMAGE="${DEMO_IMAGE:-public.ecr.aws/docker/library/alpine:latest}"
+DEMO_VM_NAME="alpine-vm"
+DEMO_VM_MEMORY=268435456  # 256 MiB
+
+export QARAX_SERVER="${QARAX_API}"
+
+echo "Creating overlaybd storage pool..."
+"$QARAX_CLI" storage-pool create --name overlaybd-pool --pool-type overlaybd \
+	--config '{"url":"http://'"${HOST_TAP_IP}"':'"${REGISTRY_PORT}"'"}'
+
+echo "Attaching pool to host..."
+"$QARAX_CLI" storage-pool attach-host overlaybd-pool local-node
+
+echo "Importing OCI image: ${DEMO_IMAGE}..."
+"$QARAX_CLI" storage-pool import --pool overlaybd-pool \
+	--image-ref "${DEMO_IMAGE}" \
+	--name alpine-obd
+
+echo "Creating VM: ${DEMO_VM_NAME}..."
+"$QARAX_CLI" vm create --name "${DEMO_VM_NAME}" --vcpus 1 --memory "${DEMO_VM_MEMORY}"
+
+echo "Attaching disk..."
+"$QARAX_CLI" vm attach-disk "${DEMO_VM_NAME}" --object alpine-obd
+
+echo "Starting VM..."
+"$QARAX_CLI" vm start "${DEMO_VM_NAME}"
+
+echo ""
+
+# ── Phase 6: Summary ──────────────────────────────────────────────────────
 
 echo -e "${GREEN}=== Hyperconverged qarax Demo Ready ===${NC}"
 echo ""
@@ -455,6 +481,10 @@ echo "  Swagger UI:  http://${CP_VM_IP}:8000/swagger-ui"
 echo "  qarax-node:  ${CP_VM_IP}:${QARAX_NODE_PORT}"
 echo "  Console log: ${CP_CONSOLE_LOG}"
 echo ""
+echo "Workload VM:"
+echo "  Name:        ${DEMO_VM_NAME}"
+echo "  Image:       ${DEMO_IMAGE}"
+echo ""
 echo "Local OCI Registry:"
 echo "  Host URL:    http://localhost:${REGISTRY_PORT}"
 echo "  VM URL:      http://${HOST_TAP_IP}:${REGISTRY_PORT}"
@@ -462,28 +492,9 @@ echo ""
 echo "Set server for CLI commands:"
 echo "  export QARAX_SERVER=http://${CP_VM_IP}:8000"
 echo ""
-echo "Example commands:"
-echo "  qarax host list"
-echo "  qarax vm create --name test --vcpus 1 --memory 268435456"
+echo "Interact with the workload VM:"
+echo "  qarax vm attach ${DEMO_VM_NAME}"
 echo "  qarax vm list"
-echo ""
-echo "Create a workload VM from OCI image:"
-echo "  # 1. Create overlaybd storage pool (uses local registry):"
-echo "  qarax storage-pool create --name overlaybd-pool --pool-type overlaybd \\"
-echo "    --config '{\"url\":\"http://${HOST_TAP_IP}:${REGISTRY_PORT}\"}'"
-echo ""
-echo "  # 2. Attach pool to host:"
-echo "  qarax storage-pool attach-host overlaybd-pool local-node"
-echo ""
-echo "  # 3. Import an OCI image:"
-echo "  qarax storage-pool import --pool overlaybd-pool \\"
-echo "    --image-ref public.ecr.aws/docker/library/alpine:latest \\"
-echo "    --name alpine-obd"
-echo ""
-echo "  # 4. Create VM and attach disk:"
-echo "  qarax vm create --name alpine-vm --vcpus 1 --memory 268435456"
-echo "  qarax vm attach-disk alpine-vm --object alpine-obd"
-echo "  qarax vm start alpine-vm"
 echo ""
 echo "Cleanup:"
 echo "  sudo ./demos/demo-hyperconverged.sh --cleanup"
