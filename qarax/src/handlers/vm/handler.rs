@@ -198,7 +198,7 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
         let vm_defaults = env.vm_defaults();
         (
             vm_defaults.kernel.clone(),
-            vm_defaults.initramfs.clone(),
+            vm_defaults.initramfs.clone().filter(|s| !s.is_empty()),
             vm_defaults.cmdline.clone(),
         )
     };
@@ -875,10 +875,10 @@ async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model
             }
         }
         Err(e) => {
-            error!("Failed to attach to console for VM {}: {}", vm_id, e);
+            error!("Failed to attach to console for VM {}: {:#}", vm_id, e);
             let _ = ws_sender
                 .send(Message::Text(
-                    format!("Failed to attach to console: {}", e).into(),
+                    format!("Failed to attach to console: {:#}", e).into(),
                 ))
                 .await;
         }
@@ -905,7 +905,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         )
     } else {
         let d = env.vm_defaults();
-        (d.kernel.clone(), d.initramfs.clone(), d.cmdline.clone())
+        (d.kernel.clone(), d.initramfs.clone().filter(|s| !s.is_empty()), d.cmdline.clone())
     };
 
     // Load disks, filesystems, and networks
@@ -1016,7 +1016,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
         (
             vec![],
-            "console=ttyS0 root=/dev/vda rw init=/.qarax-init".to_string(),
+            "console=ttyS0 root=/dev/vda rw".to_string(),
             false,
         )
     } else if !filesystems.is_empty() {

@@ -1128,7 +1128,9 @@ impl VmManager {
             rate_limit_group: disk.rate_limit_group.clone(),
             queue_affinity: None,
             backing_files: None,
-            image_type: None,
+            // Explicitly set raw to prevent CH from autodetecting and disabling
+            // sector 0 writes, which breaks ext4 superblock updates.
+            image_type: Some(models::DiskImageType::Raw),
             sparse: None,
         }
     }
@@ -1465,6 +1467,24 @@ impl VmManager {
         }
 
         Ok(pty_path)
+    }
+
+    /// Check whether the Cloud Hypervisor process for a VM is still alive.
+    ///
+    /// Returns `false` if the process has exited, is a zombie, or was never
+    /// tracked (e.g. a recovered VM).
+    pub async fn is_vm_process_alive(&self, vm_id: &str) -> bool {
+        let mut vms = self.vms.lock().await;
+        let Some(instance) = vms.get_mut(vm_id) else {
+            return false;
+        };
+        match &mut instance.process {
+            Some(child) => child.try_wait().ok().flatten().is_none(),
+            None => {
+                // No process handle (recovered VM) — check socket reachability
+                instance.socket_path.exists()
+            }
+        }
     }
 
     /// Get the console device PTY path if available
