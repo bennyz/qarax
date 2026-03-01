@@ -28,6 +28,8 @@ make run-local VM=1 # Same, but run qarax-node in a libvirt VM
 make stop-local     # Stop and remove the local Docker stack
 ```
 
+To verify changes, run: `make fmt lint sdk build openapi test`.
+
 Build/test a single crate: `cargo build -p qarax-node` or `cargo test -p qarax -- test_name`
 
 **macOS note:** The default build target is `x86_64-unknown-linux-musl` (in `.cargo/config.toml`), but the Makefile auto-detects macOS and overrides to the host target. To build manually on macOS, pass `--target` explicitly or use `make build`.
@@ -117,3 +119,7 @@ YAML files in `configuration/` (base.yaml, local.yaml, production.yaml), selecte
 ## CI
 
 GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) → unit tests → E2E tests. E2E tests run on push to master or PRs with `run-e2e` label. E2E uses pytest against a Docker Compose stack with KVM passthrough (`e2e/`).
+
+## Skills
+
+- Use `.github/skills/cloud-hypervisor/SKILL.md` when you need Cloud Hypervisor capabilities or implementation details.

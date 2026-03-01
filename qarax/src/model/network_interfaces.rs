@@ -250,7 +250,7 @@ INSERT INTO network_interfaces (
     )
     .bind(id)
     .bind(vm_id)
-    .bind(Option::<Uuid>::None) // network_id: nullable, not provided via API
+    .bind(n.network_id) // network_id: set when using managed networking
     .bind(&n.id)
     .bind(&n.tap)
     .bind(&n.mac)

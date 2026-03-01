@@ -30,6 +30,8 @@ RUN dnf install -y \
     postgresql \
     iproute \
     iproute-tc \
+    dnsmasq \
+    passt \
     procps-ng \
     util-linux \
     qemu-img \

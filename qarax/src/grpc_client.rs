@@ -16,12 +16,12 @@ pub mod node {
 }
 
 use node::{
-    AttachStoragePoolRequest, ConsoleConfig, ConsoleInput, ConsoleLogResponse, CopyFileRequest,
-    CpusConfig, DetachStoragePoolRequest, DiskConfig, DownloadFileRequest, FsConfig,
-    ImportOverlayBdRequest, ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo,
-    OciImageRequest, OciImageResponse, PayloadConfig, StoragePoolKind, VmConfig, VmCounters, VmId,
-    VmState, file_transfer_service_client::FileTransferServiceClient,
-    vm_service_client::VmServiceClient,
+    AttachNetworkRequest, AttachStoragePoolRequest, ConsoleConfig, ConsoleInput,
+    ConsoleLogResponse, CopyFileRequest, CpusConfig, DetachNetworkRequest,
+    DetachStoragePoolRequest, DiskConfig, DownloadFileRequest, FsConfig, ImportOverlayBdRequest,
+    ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, OciImageRequest, OciImageResponse,
+    PayloadConfig, StoragePoolKind, VmConfig, VmCounters, VmId, VmState,
+    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -37,9 +37,10 @@ pub struct CreateVmRequest {
     pub max_vcpus: i32,
     pub memory_size: i64,
     pub networks: Vec<NetConfig>,
-    pub kernel: String,
+    pub kernel: Option<String>,
+    pub firmware: Option<String>,
     pub initramfs: Option<String>,
-    pub cmdline: String,
+    pub cmdline: Option<String>,
     /// Filesystem (virtiofs) devices for OCI image boot
     pub fs_configs: Vec<FsConfig>,
     /// Whether to enable shared memory (required for vhost-user-fs)
@@ -50,12 +51,21 @@ pub struct CreateVmRequest {
 
 /// Convert DB network interfaces to proto NetConfig for the node.
 pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
+    fn normalize_ip(value: &Option<String>) -> Option<String> {
+        value
+            .as_deref()
+            .map(|v| v.split('/').next().unwrap_or(v).to_string())
+    }
+    fn normalize_num_queues(value: i32) -> Option<i32> {
+        if value <= 1 { None } else { Some(value) }
+    }
+
     networks
         .iter()
         .map(|n| NetConfig {
             id: n.device_id.clone(),
             tap: n.tap_name.clone(),
-            ip: n.ip_address.clone(),
+            ip: normalize_ip(&n.ip_address),
             mask: None,
             mac: n.mac_address.clone(),
             host_mac: n.host_mac.clone(),
@@ -66,7 +76,7 @@ pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
                 "server" => node::VhostMode::Server as i32,
                 _ => node::VhostMode::Client as i32,
             }),
-            num_queues: Some(n.num_queues),
+            num_queues: normalize_num_queues(n.num_queues),
             queue_size: Some(n.queue_size),
             rate_limiter: None,
             offload_tso: Some(n.offload_tso),
@@ -78,6 +88,7 @@ pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
                 None
             },
             iommu: Some(n.iommu),
+            bridge: None, // populated later from host_networks lookup
         })
         .collect()
 }
@@ -108,6 +119,7 @@ pub fn net_configs_from_api(networks: &[NewVmNetwork]) -> Vec<NetConfig> {
             offload_csum: n.offload_csum,
             pci_segment: n.pci_segment,
             iommu: n.iommu,
+            bridge: None,
         })
         .collect()
 }
@@ -152,6 +164,7 @@ impl NodeClient {
             memory_size,
             networks,
             kernel,
+            firmware,
             initramfs,
             cmdline,
             fs_configs,
@@ -211,10 +224,10 @@ impl NodeClient {
                 thp: None,
             }),
             payload: Some(PayloadConfig {
-                kernel: Some(kernel),
-                cmdline: Some(cmdline),
-                initramfs: initramfs.filter(|s| !s.trim().is_empty()), // Skip empty initramfs
-                firmware: None,
+                kernel: kernel.filter(|s| !s.is_empty()),
+                cmdline: cmdline.filter(|s| !s.is_empty()),
+                initramfs: initramfs.filter(|s| !s.trim().is_empty()),
+                firmware: firmware.filter(|s| !s.is_empty()),
             }),
             disks,
             networks,
@@ -598,6 +611,82 @@ impl NodeClient {
             })?;
 
         debug!("Storage pool {} detached", pool.id);
+        Ok(())
+    }
+
+    /// Attach a network (create bridge, start dnsmasq, setup NAT) on the node.
+    /// If `parent_interface` is non-empty, bridges that NIC instead of creating
+    /// an isolated bridge (skips dnsmasq and NAT).
+    #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attach_network(
+        &self,
+        bridge_name: &str,
+        subnet: &str,
+        gateway: &str,
+        dns: &str,
+        dhcp_range_start: &str,
+        dhcp_range_end: &str,
+        parent_interface: &str,
+    ) -> Result<()> {
+        debug!(
+            "Attaching network bridge {} on node {}",
+            bridge_name, self.address
+        );
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        client
+            .attach_network(AttachNetworkRequest {
+                bridge_name: bridge_name.to_string(),
+                subnet: subnet.to_string(),
+                gateway: gateway.to_string(),
+                dns: dns.to_string(),
+                dhcp_range_start: dhcp_range_start.to_string(),
+                dhcp_range_end: dhcp_range_end.to_string(),
+                parent_interface: parent_interface.to_string(),
+            })
+            .await
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC attach_network failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?;
+
+        debug!("Network bridge {} attached", bridge_name);
+        Ok(())
+    }
+
+    /// Detach a network (stop dnsmasq, teardown NAT, delete bridge) on the node.
+    #[instrument(skip(self))]
+    pub async fn detach_network(&self, bridge_name: &str) -> Result<()> {
+        debug!(
+            "Detaching network bridge {} on node {}",
+            bridge_name, self.address
+        );
+
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+
+        client
+            .detach_network(DetachNetworkRequest {
+                bridge_name: bridge_name.to_string(),
+            })
+            .await
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "gRPC detach_network failed: code={:?} message={}",
+                    s.code(),
+                    s.message()
+                )
+            })?;
+
+        debug!("Network bridge {} detached", bridge_name);
         Ok(())
     }
 

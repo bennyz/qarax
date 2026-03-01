@@ -12,6 +12,7 @@ pub struct ApplicationSettings {
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct VmDefaultsSettings {
     pub kernel: String,
+    pub firmware: Option<String>,
     pub initramfs: Option<String>,
     pub cmdline: String,
 }
@@ -110,6 +111,10 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         .set_override_option(
             "vm_defaults.cmdline",
             std::env::var("VM_CMDLINE").ok().filter(|s| !s.is_empty()),
+        )?
+        .set_override_option(
+            "vm_defaults.firmware",
+            std::env::var("VM_FIRMWARE").ok().filter(|s| !s.is_empty()),
         )?
         .build()?;
     settings.try_deserialize::<Settings>()

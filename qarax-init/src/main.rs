@@ -182,6 +182,12 @@ fn main() {
     try_mount("sysfs", "/sys", "sysfs");
     try_mount("devtmpfs", "/dev", "devtmpfs");
 
+    // Create standard fd symlinks expected by many programs
+    let _ = std::os::unix::fs::symlink("/proc/self/fd", "/dev/fd");
+    let _ = std::os::unix::fs::symlink("/proc/self/fd/0", "/dev/stdin");
+    let _ = std::os::unix::fs::symlink("/proc/self/fd/1", "/dev/stdout");
+    let _ = std::os::unix::fs::symlink("/proc/self/fd/2", "/dev/stderr");
+
     // If running from initramfs, mount the real root and switch into it.
     maybe_switch_root();
 

@@ -18,8 +18,8 @@ class VmDisk:
         config (Any):
         device_path (str):
         direct (bool):
-        disk_id (str):
         id (UUID):
+        logical_name (str):
         num_queues (int):
         pci_segment (int):
         queue_size (int):
@@ -37,8 +37,8 @@ class VmDisk:
     config: Any
     device_path: str
     direct: bool
-    disk_id: str
     id: UUID
+    logical_name: str
     num_queues: int
     pci_segment: int
     queue_size: int
@@ -60,9 +60,9 @@ class VmDisk:
 
         direct = self.direct
 
-        disk_id = self.disk_id
-
         id = str(self.id)
+
+        logical_name = self.logical_name
 
         num_queues = self.num_queues
 
@@ -117,8 +117,8 @@ class VmDisk:
                 "config": config,
                 "device_path": device_path,
                 "direct": direct,
-                "disk_id": disk_id,
                 "id": id,
+                "logical_name": logical_name,
                 "num_queues": num_queues,
                 "pci_segment": pci_segment,
                 "queue_size": queue_size,
@@ -151,9 +151,9 @@ class VmDisk:
 
         direct = d.pop("direct")
 
-        disk_id = d.pop("disk_id")
-
         id = UUID(d.pop("id"))
+
+        logical_name = d.pop("logical_name")
 
         num_queues = d.pop("num_queues")
 
@@ -226,8 +226,8 @@ class VmDisk:
             config=config,
             device_path=device_path,
             direct=direct,
-            disk_id=disk_id,
             id=id,
+            logical_name=logical_name,
             num_queues=num_queues,
             pci_segment=pci_segment,
             queue_size=queue_size,

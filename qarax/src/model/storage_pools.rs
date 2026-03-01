@@ -215,6 +215,23 @@ pub async fn find_host_for_pool(pool: &PgPool, pool_id: Uuid) -> Result<Option<U
     Ok(row.map(|(id,)| id))
 }
 
+/// Check whether a host is attached to a given storage pool.
+pub async fn host_has_pool(
+    pool: &PgPool,
+    host_id: Uuid,
+    pool_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM host_storage_pools WHERE host_id = $1 AND storage_pool_id = $2",
+    )
+    .bind(host_id)
+    .bind(pool_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.0 > 0)
+}
+
 /// Return the first active OverlayBD storage pool that the given host is attached to, if any.
 pub async fn find_overlaybd_for_host(
     pool: &PgPool,

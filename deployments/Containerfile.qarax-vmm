@@ -30,6 +30,7 @@ RUN dnf install -y \
     socat \
     iptables \
     nftables \
+    passt \
     # Storage tools
     lvm2 \
     e2fsprogs \

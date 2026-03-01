@@ -6,6 +6,7 @@ from uuid import UUID
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.boot_mode import BootMode
 from ..models.hypervisor import Hypervisor
 from ..types import UNSET, Unset
 
@@ -25,6 +26,7 @@ class NewVm:
         max_vcpus (int):
         memory_size (int):
         name (str):
+        boot_mode (BootMode | None | Unset):
         boot_source_id (None | Unset | UUID):
         config (Any | Unset):
         cpu_topology (Any | Unset):
@@ -41,6 +43,7 @@ class NewVm:
         memory_prefault (bool | None | Unset):
         memory_shared (bool | None | Unset):
         memory_thp (bool | None | Unset):
+        network_id (None | Unset | UUID): Network ID to attach the VM to (triggers IPAM allocation).
         networks (list[NewVmNetwork] | None | Unset): Optional network interfaces to attach at create time (passed to
             qarax-node).
     """
@@ -50,6 +53,7 @@ class NewVm:
     max_vcpus: int
     memory_size: int
     name: str
+    boot_mode: BootMode | None | Unset = UNSET
     boot_source_id: None | Unset | UUID = UNSET
     config: Any | Unset = UNSET
     cpu_topology: Any | Unset = UNSET
@@ -63,6 +67,7 @@ class NewVm:
     memory_prefault: bool | None | Unset = UNSET
     memory_shared: bool | None | Unset = UNSET
     memory_thp: bool | None | Unset = UNSET
+    network_id: None | Unset | UUID = UNSET
     networks: list[NewVmNetwork] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -76,6 +81,14 @@ class NewVm:
         memory_size = self.memory_size
 
         name = self.name
+
+        boot_mode: None | str | Unset
+        if isinstance(self.boot_mode, Unset):
+            boot_mode = UNSET
+        elif isinstance(self.boot_mode, BootMode):
+            boot_mode = self.boot_mode.value
+        else:
+            boot_mode = self.boot_mode
 
         boot_source_id: None | str | Unset
         if isinstance(self.boot_source_id, Unset):
@@ -149,6 +162,14 @@ class NewVm:
         else:
             memory_thp = self.memory_thp
 
+        network_id: None | str | Unset
+        if isinstance(self.network_id, Unset):
+            network_id = UNSET
+        elif isinstance(self.network_id, UUID):
+            network_id = str(self.network_id)
+        else:
+            network_id = self.network_id
+
         networks: list[dict[str, Any]] | None | Unset
         if isinstance(self.networks, Unset):
             networks = UNSET
@@ -172,6 +193,8 @@ class NewVm:
                 "name": name,
             }
         )
+        if boot_mode is not UNSET:
+            field_dict["boot_mode"] = boot_mode
         if boot_source_id is not UNSET:
             field_dict["boot_source_id"] = boot_source_id
         if config is not UNSET:
@@ -198,6 +221,8 @@ class NewVm:
             field_dict["memory_shared"] = memory_shared
         if memory_thp is not UNSET:
             field_dict["memory_thp"] = memory_thp
+        if network_id is not UNSET:
+            field_dict["network_id"] = network_id
         if networks is not UNSET:
             field_dict["networks"] = networks
 
@@ -217,6 +242,23 @@ class NewVm:
         memory_size = d.pop("memory_size")
 
         name = d.pop("name")
+
+        def _parse_boot_mode(data: object) -> BootMode | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                boot_mode_type_1 = BootMode(data)
+
+                return boot_mode_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(BootMode | None | Unset, data)
+
+        boot_mode = _parse_boot_mode(d.pop("boot_mode", UNSET))
 
         def _parse_boot_source_id(data: object) -> None | Unset | UUID:
             if data is None:
@@ -329,6 +371,23 @@ class NewVm:
 
         memory_thp = _parse_memory_thp(d.pop("memory_thp", UNSET))
 
+        def _parse_network_id(data: object) -> None | Unset | UUID:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                network_id_type_0 = UUID(data)
+
+                return network_id_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | UUID, data)
+
+        network_id = _parse_network_id(d.pop("network_id", UNSET))
+
         def _parse_networks(data: object) -> list[NewVmNetwork] | None | Unset:
             if data is None:
                 return data
@@ -357,6 +416,7 @@ class NewVm:
             max_vcpus=max_vcpus,
             memory_size=memory_size,
             name=name,
+            boot_mode=boot_mode,
             boot_source_id=boot_source_id,
             config=config,
             cpu_topology=cpu_topology,
@@ -370,6 +430,7 @@ class NewVm:
             memory_prefault=memory_prefault,
             memory_shared=memory_shared,
             memory_thp=memory_thp,
+            network_id=network_id,
             networks=networks,
         )
 

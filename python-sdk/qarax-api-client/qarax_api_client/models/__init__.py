@@ -2,6 +2,7 @@
 
 from .attach_disk_request import AttachDiskRequest
 from .attach_host_request import AttachHostRequest
+from .boot_mode import BootMode
 from .boot_source import BootSource
 from .create_vm_response import CreateVmResponse
 from .deploy_host_request import DeployHostRequest
@@ -11,12 +12,16 @@ from .hypervisor import Hypervisor
 from .import_to_pool_request import ImportToPoolRequest
 from .import_to_pool_response import ImportToPoolResponse
 from .interface_type import InterfaceType
+from .ip_allocation import IpAllocation
 from .job import Job
 from .job_status import JobStatus
 from .job_type import JobType
+from .network import Network
 from .network_interface import NetworkInterface
+from .network_status import NetworkStatus
 from .new_boot_source import NewBootSource
 from .new_host import NewHost
+from .new_network import NewNetwork
 from .new_storage_object import NewStorageObject
 from .new_storage_pool import NewStoragePool
 from .new_transfer import NewTransfer
@@ -47,6 +52,7 @@ from .vm_status import VmStatus
 __all__ = (
     "AttachDiskRequest",
     "AttachHostRequest",
+    "BootMode",
     "BootSource",
     "CreateVmResponse",
     "DeployHostRequest",
@@ -56,12 +62,16 @@ __all__ = (
     "ImportToPoolRequest",
     "ImportToPoolResponse",
     "InterfaceType",
+    "IpAllocation",
     "Job",
     "JobStatus",
     "JobType",
+    "Network",
     "NetworkInterface",
+    "NetworkStatus",
     "NewBootSource",
     "NewHost",
+    "NewNetwork",
     "NewStorageObject",
     "NewStoragePool",
     "NewTransfer",

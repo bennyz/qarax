@@ -22,6 +22,7 @@ pub struct Vm {
     pub status: VmStatus,
     pub hypervisor: Hypervisor,
     pub boot_source_id: Option<Uuid>,
+    pub boot_mode: BootMode,
     pub description: Option<String>,
 
     // CPU configuration
@@ -55,6 +56,7 @@ pub struct VmRow {
     pub status: VmStatus,
     pub hypervisor: Hypervisor,
     pub boot_source_id: Option<Uuid>,
+    pub boot_mode: BootMode,
     pub description: Option<String>,
 
     // CPU configuration
@@ -87,6 +89,7 @@ impl From<VmRow> for Vm {
             host_id: row.host_id,
             hypervisor: row.hypervisor,
             boot_source_id: row.boot_source_id,
+            boot_mode: row.boot_mode,
             description: row.description,
 
             boot_vcpus: row.boot_vcpus,
@@ -125,6 +128,18 @@ pub enum Hypervisor {
     Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema,
 )]
 #[sqlx(rename_all = "SCREAMING_SNAKE_CASE")]
+#[sqlx(type_name = "boot_mode")]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum BootMode {
+    Kernel,
+    Firmware,
+}
+
+#[derive(
+    Deserialize, Serialize, Debug, Clone, Eq, PartialEq, Type, EnumString, Display, ToSchema,
+)]
+#[sqlx(rename_all = "SCREAMING_SNAKE_CASE")]
 #[sqlx(type_name = "vm_status")]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -142,6 +157,9 @@ pub enum VmStatus {
 pub struct NewVmNetwork {
     /// Unique device id (e.g. "net0")
     pub id: String,
+    /// Network ID for managed networking (IPAM)
+    #[serde(default)]
+    pub network_id: Option<Uuid>,
     /// Guest MAC address (optional)
     pub mac: Option<String>,
     /// Pre-created TAP device name (optional)
@@ -204,12 +222,16 @@ pub struct NewVm {
     pub memory_thp: Option<bool>,
 
     pub boot_source_id: Option<Uuid>,
+    pub boot_mode: Option<BootMode>,
     pub description: Option<String>,
 
     /// OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
     /// When set, the handler will check whether the selected host has an OverlayBD storage pool.
     /// If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
     pub image_ref: Option<String>,
+
+    /// Network ID to attach the VM to (triggers IPAM allocation).
+    pub network_id: Option<Uuid>,
 
     /// Optional network interfaces to attach at create time (passed to qarax-node).
     #[serde(default)]
@@ -229,6 +251,7 @@ SELECT id,
         host_id as "host_id?",
         hypervisor as "hypervisor: _",
         boot_source_id as "boot_source_id?",
+        boot_mode as "boot_mode: _",
         description as "description?",
         boot_vcpus,
         max_vcpus,
@@ -264,6 +287,7 @@ SELECT id,
         host_id as "host_id?",
         hypervisor as "hypervisor: _",
         boot_source_id as "boot_source_id?",
+        boot_mode as "boot_mode: _",
         description as "description?",
         boot_vcpus,
         max_vcpus,
@@ -322,14 +346,14 @@ INSERT INTO vms (
     boot_vcpus, max_vcpus, cpu_topology, kvm_hyperv,
     memory_size, memory_hotplug_size, memory_mergeable, memory_shared,
     memory_hugepages, memory_hugepage_size, memory_prefault, memory_thp,
-    boot_source_id, description, image_ref, config
+    boot_source_id, boot_mode, description, image_ref, config
 )
 VALUES (
     $1, $2, $3, $4,
     $5, $6, $7, $8,
     $9, $10, $11, $12,
     $13, $14, $15, $16,
-    $17, $18, $19, $20
+    $17, $18, $19, $20, $21
 )
         "#,
     )
@@ -350,6 +374,7 @@ VALUES (
     .bind(vm.memory_prefault.unwrap_or(false))
     .bind(vm.memory_thp.unwrap_or(false))
     .bind(vm.boot_source_id)
+    .bind(vm.boot_mode.clone().unwrap_or(BootMode::Kernel))
     .bind(&vm.description)
     .bind(&vm.image_ref)
     .bind(config)
@@ -368,6 +393,7 @@ SELECT id,
         host_id,
         hypervisor,
         boot_source_id,
+        boot_mode,
         description,
         boot_vcpus,
         max_vcpus,

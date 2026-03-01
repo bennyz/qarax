@@ -1,0 +1,2 @@
+CREATE TYPE boot_mode AS ENUM ('KERNEL', 'FIRMWARE');
+ALTER TABLE vms ADD COLUMN boot_mode boot_mode NOT NULL DEFAULT 'KERNEL';

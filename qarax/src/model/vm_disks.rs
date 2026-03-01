@@ -8,7 +8,7 @@ pub struct VmDisk {
     pub id: Uuid,
     pub vm_id: Uuid,
     pub storage_object_id: Option<Uuid>, // Optional for vhost-user
-    pub disk_id: String,                 // Unique identifier for Cloud Hypervisor
+    pub logical_name: String,            // Device name for Cloud Hypervisor (e.g. "vda", "rootfs")
     pub device_path: String,             // Device path in guest
     pub boot_order: Option<i32>,
     pub read_only: bool,
@@ -39,7 +39,7 @@ pub struct VmDiskRow {
     pub id: Uuid,
     pub vm_id: Uuid,
     pub storage_object_id: Option<Uuid>,
-    pub disk_id: String,
+    pub logical_name: String,
     pub device_path: String,
     pub boot_order: Option<i32>,
     pub read_only: bool,
@@ -61,7 +61,7 @@ impl From<VmDiskRow> for VmDisk {
             id: row.id,
             vm_id: row.vm_id,
             storage_object_id: row.storage_object_id,
-            disk_id: row.disk_id,
+            logical_name: row.logical_name,
             device_path: row.device_path,
             boot_order: row.boot_order,
             read_only: row.read_only,
@@ -83,7 +83,7 @@ impl From<VmDiskRow> for VmDisk {
 pub struct NewVmDisk {
     pub vm_id: Uuid,
     pub storage_object_id: Option<Uuid>,
-    pub disk_id: String,
+    pub logical_name: String,
     pub device_path: String,
     pub boot_order: Option<i32>,
     pub read_only: Option<bool>,
@@ -108,7 +108,7 @@ pub async fn list(pool: &PgPool) -> Result<Vec<VmDisk>, sqlx::Error> {
 SELECT id,
         vm_id,
         storage_object_id as "storage_object_id?",
-        disk_id,
+        logical_name,
         device_path,
         boot_order as "boot_order?",
         read_only as "read_only!",
@@ -135,14 +135,14 @@ FROM vm_disks
     Ok(vm_disks)
 }
 
-pub async fn get(pool: &PgPool, disk_id: Uuid) -> Result<VmDisk, sqlx::Error> {
+pub async fn get(pool: &PgPool, id: Uuid) -> Result<VmDisk, sqlx::Error> {
     let vm_disk: VmDiskRow = sqlx::query_as!(
         VmDiskRow,
         r#"
 SELECT id,
         vm_id,
         storage_object_id as "storage_object_id?",
-        disk_id,
+        logical_name,
         device_path,
         boot_order as "boot_order?",
         read_only as "read_only!",
@@ -159,7 +159,7 @@ SELECT id,
 FROM vm_disks
 WHERE id = $1
         "#,
-        disk_id
+        id
     )
     .fetch_one(pool)
     .await?;
@@ -174,7 +174,7 @@ pub async fn list_by_vm(pool: &PgPool, vm_id: Uuid) -> Result<Vec<VmDisk>, sqlx:
 SELECT id,
         vm_id,
         storage_object_id as "storage_object_id?",
-        disk_id,
+        logical_name,
         device_path,
         boot_order as "boot_order?",
         read_only as "read_only!",
@@ -210,7 +210,7 @@ pub async fn create(pool: &PgPool, disk: &NewVmDisk) -> Result<Uuid, sqlx::Error
     sqlx::query(
         r#"
 INSERT INTO vm_disks (
-    id, vm_id, storage_object_id, disk_id, device_path, boot_order,
+    id, vm_id, storage_object_id, logical_name, device_path, boot_order,
     read_only, direct, vhost_user, vhost_socket,
     num_queues, queue_size, rate_limiter, rate_limit_group,
     pci_segment, serial_number, config
@@ -221,7 +221,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
     .bind(id)
     .bind(disk.vm_id)
     .bind(disk.storage_object_id)
-    .bind(&disk.disk_id)
+    .bind(&disk.logical_name)
     .bind(&disk.device_path)
     .bind(disk.boot_order)
     .bind(disk.read_only.unwrap_or(false))
