@@ -30,12 +30,16 @@ struct NetworkRow {
 
 impl From<NetworkRow> for Network {
     fn from(row: NetworkRow) -> Self {
+        fn normalize_inet(value: Option<String>) -> Option<String> {
+            value.map(|v| v.split('/').next().unwrap_or(&v).to_string())
+        }
+
         Network {
             id: row.id,
             name: row.name,
             subnet: row.subnet,
-            gateway: row.gateway,
-            dns: row.dns,
+            gateway: normalize_inet(row.gateway),
+            dns: normalize_inet(row.dns),
             network_type: row.network_type,
             status: row.status,
         }
@@ -314,8 +318,10 @@ pub async fn next_available_ip(
         return Ok(None);
     }
 
-    let base_u32 =
-        (octets[0] as u32) << 24 | (octets[1] as u32) << 16 | (octets[2] as u32) << 8 | octets[3] as u32;
+    let base_u32 = (octets[0] as u32) << 24
+        | (octets[1] as u32) << 16
+        | (octets[2] as u32) << 8
+        | octets[3] as u32;
     let host_bits = 32 - prefix_len;
     let network_addr = base_u32 & (u32::MAX << host_bits);
     let broadcast_addr = network_addr | ((1u32 << host_bits) - 1);
@@ -324,7 +330,12 @@ pub async fn next_available_ip(
     let gateway_u32 = network.gateway.as_deref().and_then(|gw| {
         let parts: Vec<u8> = gw.split('.').filter_map(|o| o.parse().ok()).collect();
         if parts.len() == 4 {
-            Some((parts[0] as u32) << 24 | (parts[1] as u32) << 16 | (parts[2] as u32) << 8 | parts[3] as u32)
+            Some(
+                (parts[0] as u32) << 24
+                    | (parts[1] as u32) << 16
+                    | (parts[2] as u32) << 8
+                    | parts[3] as u32,
+            )
         } else {
             None
         }

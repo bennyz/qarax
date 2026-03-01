@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT id,\n       vm_id,\n       tag,\n       num_queues as \"num_queues!\",\n       queue_size as \"queue_size!\",\n       pci_segment as \"pci_segment?\",\n       image_ref as \"image_ref?\",\n       image_digest as \"image_digest?\"\nFROM vm_filesystems\nWHERE vm_id = $1\nORDER BY tag\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "vm_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "tag",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "num_queues!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "queue_size!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "pci_segment?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "image_ref?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "image_digest?",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "43a64fd5fd0864d13559c2fead3ead5ed34e0610074d6e202c4026f59e645b05"
+}

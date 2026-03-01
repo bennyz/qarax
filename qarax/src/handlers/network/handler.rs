@@ -103,6 +103,8 @@ pub async fn delete(
 pub struct AttachHostRequest {
     pub host_id: Uuid,
     pub bridge_name: String,
+    #[serde(default)]
+    pub parent_interface: Option<String>,
 }
 
 #[utoipa::path(
@@ -131,7 +133,16 @@ pub async fn attach_host(
         .await?
         .ok_or(crate::errors::Error::NotFound)?;
 
-    // Compute DHCP range: skip gateway (typically .1), start at .10, end at .254
+    // passt-backed networks don't require bridge/dnsmasq/NAT provisioning.
+    if network.network_type.as_deref() == Some("passt") {
+        networks::attach_host(env.pool(), network_id, body.host_id, &body.bridge_name).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    let parent_interface = body.parent_interface.clone().unwrap_or_default();
+
+    // Both isolated and bridged modes need DHCP range (for dnsmasq to serve VMs).
+    // Bridged mode skips NAT but still needs DHCP.
     let (dhcp_start, dhcp_end) = compute_dhcp_range(&network.subnet, network.gateway.as_deref());
 
     let gateway = network
@@ -151,6 +162,7 @@ pub async fn attach_host(
             &dns,
             &dhcp_start,
             &dhcp_end,
+            &parent_interface,
         )
         .await
         .map_err(|e| {
@@ -246,7 +258,13 @@ fn default_gateway(subnet: &str) -> String {
     if let Some((base, _prefix)) = subnet.split_once('/') {
         let octets: Vec<u8> = base.split('.').filter_map(|o| o.parse().ok()).collect();
         if octets.len() == 4 {
-            return format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3] + 1);
+            return format!(
+                "{}.{}.{}.{}",
+                octets[0],
+                octets[1],
+                octets[2],
+                octets[3] + 1
+            );
         }
     }
     "10.0.0.1".to_string()

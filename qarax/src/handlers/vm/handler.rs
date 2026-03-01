@@ -13,7 +13,7 @@ use crate::{
     App,
     grpc_client::{
         CreateVmRequest, NodeClient, net_configs_from_db,
-        node::{DiskConfig, FsConfig},
+        node::{DiskConfig, FsConfig, VhostMode},
     },
     model::{
         boot_sources, hosts,
@@ -276,6 +276,49 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
     }
 
     tx.commit().await?;
+
+    // If network_id is provided, allocate an IP and create a default interface.
+    // This mirrors the synchronous create path so async image-based VMs get managed networking.
+    if let Some(network_id) = vm.network_id {
+        let ip = networks::next_available_ip(env.pool(), network_id)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?
+            .ok_or_else(|| {
+                crate::errors::Error::UnprocessableEntity("No available IPs in network".into())
+            })?;
+
+        networks::allocate_ip(env.pool(), network_id, &ip, Some(vm_id))
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+
+        let net = crate::model::vms::NewVmNetwork {
+            id: "net0".to_string(),
+            network_id: Some(network_id),
+            mac: None,
+            tap: None,
+            ip: Some(ip),
+            mask: None,
+            mtu: None,
+            host_mac: None,
+            interface_type: None,
+            vhost_user: None,
+            vhost_socket: None,
+            vhost_mode: None,
+            num_queues: None,
+            queue_size: None,
+            rate_limiter: None,
+            offload_tso: None,
+            offload_ufo: None,
+            offload_csum: None,
+            pci_segment: None,
+            iommu: None,
+        };
+        let mut net_tx = env.pool().begin().await?;
+        network_interfaces::create(&mut net_tx, vm_id, &net)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+        net_tx.commit().await?;
+    }
 
     // Record host assignment
     let _ = vms::update_host_id(env.pool(), vm_id, host.id).await;
@@ -963,6 +1006,27 @@ async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model
 
 /// Build a `CreateVmRequest` from DB state — called at `vm start` for lazily-provisioned VMs.
 async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> {
+    fn subnet_mask_from_cidr(subnet: &str) -> Option<String> {
+        let prefix = subnet
+            .split_once('/')
+            .and_then(|(_, p)| p.parse::<u32>().ok())?;
+        if prefix > 32 {
+            return None;
+        }
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix)
+        };
+        Some(format!(
+            "{}.{}.{}.{}",
+            (mask >> 24) & 0xFF,
+            (mask >> 16) & 0xFF,
+            (mask >> 8) & 0xFF,
+            mask & 0xFF
+        ))
+    }
+
     let vm_id = vm.id;
 
     // Resolve boot payload based on boot_mode
@@ -1009,6 +1073,42 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let db_networks = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
 
     let mut networks = net_configs_from_db(&db_networks);
+
+    let mut ip_params = String::new();
+
+    // Managed networking stores IPs in DB as inet (often /32); provide mask from network CIDR.
+    // For passt networks, switch to vhost-user passt backend and let guest networking be dynamic.
+    for (i, db_net) in db_networks.iter().enumerate() {
+        if let Some(net_id) = db_net.network_id
+            && let Some(net_config) = networks.get_mut(i)
+            && let Ok(network) = networks::get(env.pool(), net_id).await
+        {
+            if network.network_type.as_deref() == Some("passt") {
+                net_config.vhost_user = Some(true);
+                net_config.vhost_socket = Some("passt".to_string());
+                net_config.vhost_mode = Some(VhostMode::Client as i32);
+                net_config.tap = None;
+                net_config.bridge = None;
+                net_config.ip = None;
+                net_config.mask = None;
+            } else if net_config.ip.is_some() {
+                if net_config.mask.is_none() {
+                    net_config.mask = subnet_mask_from_cidr(&network.subnet);
+                }
+
+                if network.network_type.as_deref() == Some("bridge") {
+                    let ip = net_config.ip.as_ref().unwrap();
+                    let mask = net_config.mask.as_deref().unwrap_or("");
+                    let gw = network.gateway.as_deref().unwrap_or("");
+                    let dns = network.dns.as_deref().unwrap_or("");
+                    ip_params.push_str(&format!(
+                        " ip={}::{}:{}::eth{}:off:{}",
+                        ip, gw, mask, i, dns
+                    ));
+                }
+            }
+        }
+    }
 
     // Populate bridge field from host_networks if the VM has a host and network interfaces
     if let Some(host_id) = vm.host_id {
@@ -1135,11 +1235,13 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         }
     }
 
+    let has_vhost_user_network = networks.iter().any(|n| n.vhost_user.unwrap_or(false));
+
     // Choose cmdline based on what's attached
     let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
         (
             vec![],
-            Some("console=ttyS0 root=/dev/vda rw".to_string()),
+            Some(format!("console=ttyS0 root=/dev/vda rw{}", ip_params)),
             false,
         )
     } else if !filesystems.is_empty() {
@@ -1156,12 +1258,16 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         };
         (
             vec![fs_config],
-            Some("console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init".to_string()),
+            Some(format!(
+                "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init{}",
+                ip_params
+            )),
             true,
         )
     } else {
         // Plain boot with kernel/initramfs only (or firmware — cmdline stays None)
-        (vec![], default_cmdline, vm.memory_shared)
+        let c = default_cmdline.map(|s| format!("{}{}", s, ip_params));
+        (vec![], c, vm.memory_shared)
     };
 
     Ok(CreateVmRequest {
@@ -1175,7 +1281,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         initramfs,
         cmdline,
         fs_configs,
-        memory_shared,
+        memory_shared: memory_shared || has_vhost_user_network,
         disks: resolved_disks,
     })
 }
@@ -1347,6 +1453,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unnecessary_literal_unwrap)]
     fn boot_mode_default_is_kernel() {
         let mode: Option<BootMode> = None;
         assert_eq!(mode.unwrap_or(BootMode::Kernel), BootMode::Kernel);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+from uuid import UUID
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -29,6 +30,7 @@ class NewVmNetwork:
         mac (None | str | Unset): Guest MAC address (optional)
         mask (None | str | Unset): Network mask (optional)
         mtu (int | None | Unset): MTU (optional)
+        network_id (None | Unset | UUID): Network ID for managed networking (IPAM)
         num_queues (int | None | Unset): Number of virtio queues
         offload_csum (bool | None | Unset): Enable checksum offload
         offload_tso (bool | None | Unset): Enable TCP Segmentation Offload
@@ -50,6 +52,7 @@ class NewVmNetwork:
     mac: None | str | Unset = UNSET
     mask: None | str | Unset = UNSET
     mtu: int | None | Unset = UNSET
+    network_id: None | Unset | UUID = UNSET
     num_queues: int | None | Unset = UNSET
     offload_csum: bool | None | Unset = UNSET
     offload_tso: bool | None | Unset = UNSET
@@ -111,6 +114,14 @@ class NewVmNetwork:
             mtu = UNSET
         else:
             mtu = self.mtu
+
+        network_id: None | str | Unset
+        if isinstance(self.network_id, Unset):
+            network_id = UNSET
+        elif isinstance(self.network_id, UUID):
+            network_id = str(self.network_id)
+        else:
+            network_id = self.network_id
 
         num_queues: int | None | Unset
         if isinstance(self.num_queues, Unset):
@@ -203,6 +214,8 @@ class NewVmNetwork:
             field_dict["mask"] = mask
         if mtu is not UNSET:
             field_dict["mtu"] = mtu
+        if network_id is not UNSET:
+            field_dict["network_id"] = network_id
         if num_queues is not UNSET:
             field_dict["num_queues"] = num_queues
         if offload_csum is not UNSET:
@@ -305,6 +318,23 @@ class NewVmNetwork:
             return cast(int | None | Unset, data)
 
         mtu = _parse_mtu(d.pop("mtu", UNSET))
+
+        def _parse_network_id(data: object) -> None | Unset | UUID:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                network_id_type_0 = UUID(data)
+
+                return network_id_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | UUID, data)
+
+        network_id = _parse_network_id(d.pop("network_id", UNSET))
 
         def _parse_num_queues(data: object) -> int | None | Unset:
             if data is None:
@@ -430,6 +460,7 @@ class NewVmNetwork:
             mac=mac,
             mask=mask,
             mtu=mtu,
+            network_id=network_id,
             num_queues=num_queues,
             offload_csum=offload_csum,
             offload_tso=offload_tso,

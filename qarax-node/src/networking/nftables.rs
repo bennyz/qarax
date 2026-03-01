@@ -28,21 +28,9 @@ pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
     .await;
 
     // Allow forwarding from/to the bridge
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-A", "FORWARD", "-i", bridge, "-j", "ACCEPT",
-        ],
-    )
-    .await;
+    let _ = run_cmd("iptables", &["-A", "FORWARD", "-i", bridge, "-j", "ACCEPT"]).await;
 
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-A", "FORWARD", "-o", bridge, "-j", "ACCEPT",
-        ],
-    )
-    .await;
+    let _ = run_cmd("iptables", &["-A", "FORWARD", "-o", bridge, "-j", "ACCEPT"]).await;
 
     Ok(())
 }
@@ -69,21 +57,9 @@ pub async fn teardown_nat(bridge: &str, subnet: &str) -> Result<()> {
     )
     .await;
 
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-D", "FORWARD", "-i", bridge, "-j", "ACCEPT",
-        ],
-    )
-    .await;
+    let _ = run_cmd("iptables", &["-D", "FORWARD", "-i", bridge, "-j", "ACCEPT"]).await;
 
-    let _ = run_cmd(
-        "iptables",
-        &[
-            "-D", "FORWARD", "-o", bridge, "-j", "ACCEPT",
-        ],
-    )
-    .await;
+    let _ = run_cmd("iptables", &["-D", "FORWARD", "-o", bridge, "-j", "ACCEPT"]).await;
 
     Ok(())
 }
@@ -99,11 +75,6 @@ async fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "{} {} failed: {}",
-            program,
-            args.join(" "),
-            stderr.trim()
-        )
+        anyhow::bail!("{} {} failed: {}", program, args.join(" "), stderr.trim())
     }
 }

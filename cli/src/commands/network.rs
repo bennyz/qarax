@@ -2,10 +2,7 @@ use clap::{Args, Subcommand};
 use tabled::{Table, Tabled};
 
 use crate::{
-    api::{
-        self,
-        models::NewNetwork,
-    },
+    api::{self, models::NewNetwork},
     client::Client,
 };
 
@@ -60,6 +57,11 @@ enum NetworkCommand {
         /// Bridge device name on the host (max 15 chars, e.g. qbr0)
         #[arg(long)]
         bridge_name: String,
+        /// Parent NIC to bridge (e.g. eth0). If set, bridges the NIC instead of
+        /// creating an isolated bridge — skips dnsmasq and NAT. VMs get IPs from
+        /// the upstream network.
+        #[arg(long)]
+        parent_interface: Option<String>,
     },
     /// Detach a network from a host
     DetachHost {
@@ -116,11 +118,8 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
                         id: n.id.to_string(),
                         name: n.name.clone(),
                         subnet: n.subnet.clone(),
-                        gateway: n
-                            .gateway
-                            .clone()
-                            .unwrap_or_else(|| "-".to_string()),
-                        network_type: n.network_type.clone(),
+                        gateway: n.gateway.clone().unwrap_or_else(|| "-".to_string()),
+                        network_type: n.network_type.clone().unwrap_or_else(|| "-".to_string()),
                         status: n.status.clone(),
                     })
                     .collect();
@@ -142,7 +141,10 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
                     net.gateway.unwrap_or_else(|| "-".to_string())
                 );
                 println!("DNS:     {}", net.dns.unwrap_or_else(|| "-".to_string()));
-                println!("Type:    {}", net.network_type);
+                println!(
+                    "Type:    {}",
+                    net.network_type.unwrap_or_else(|| "-".to_string())
+                );
                 println!("Status:  {}", net.status);
             }
         }
@@ -179,14 +181,20 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
             network,
             host,
             bridge_name,
+            parent_interface,
         } => {
             let network_id = resolve_network_id(client, &network).await?;
             let host_id = resolve_host_id(client, &host).await?;
-            api::networks::attach_host(client, network_id, host_id, &bridge_name).await?;
+            api::networks::attach_host(
+                client,
+                network_id,
+                host_id,
+                &bridge_name,
+                parent_interface.as_deref(),
+            )
+            .await?;
             if json {
-                print_json(
-                    &serde_json::json!({ "network_id": network_id, "host_id": host_id }),
-                )?;
+                print_json(&serde_json::json!({ "network_id": network_id, "host_id": host_id }))?;
             } else {
                 println!("Attached host {host} to network {network} (bridge: {bridge_name})");
             }
@@ -197,9 +205,7 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
             let host_id = resolve_host_id(client, &host).await?;
             api::networks::detach_host(client, network_id, host_id).await?;
             if json {
-                print_json(
-                    &serde_json::json!({ "network_id": network_id, "host_id": host_id }),
-                )?;
+                print_json(&serde_json::json!({ "network_id": network_id, "host_id": host_id }))?;
             } else {
                 println!("Detached host {host} from network {network}");
             }

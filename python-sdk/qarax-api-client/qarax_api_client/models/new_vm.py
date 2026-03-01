@@ -43,6 +43,7 @@ class NewVm:
         memory_prefault (bool | None | Unset):
         memory_shared (bool | None | Unset):
         memory_thp (bool | None | Unset):
+        network_id (None | Unset | UUID): Network ID to attach the VM to (triggers IPAM allocation).
         networks (list[NewVmNetwork] | None | Unset): Optional network interfaces to attach at create time (passed to
             qarax-node).
     """
@@ -66,6 +67,7 @@ class NewVm:
     memory_prefault: bool | None | Unset = UNSET
     memory_shared: bool | None | Unset = UNSET
     memory_thp: bool | None | Unset = UNSET
+    network_id: None | Unset | UUID = UNSET
     networks: list[NewVmNetwork] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -160,6 +162,14 @@ class NewVm:
         else:
             memory_thp = self.memory_thp
 
+        network_id: None | str | Unset
+        if isinstance(self.network_id, Unset):
+            network_id = UNSET
+        elif isinstance(self.network_id, UUID):
+            network_id = str(self.network_id)
+        else:
+            network_id = self.network_id
+
         networks: list[dict[str, Any]] | None | Unset
         if isinstance(self.networks, Unset):
             networks = UNSET
@@ -211,6 +221,8 @@ class NewVm:
             field_dict["memory_shared"] = memory_shared
         if memory_thp is not UNSET:
             field_dict["memory_thp"] = memory_thp
+        if network_id is not UNSET:
+            field_dict["network_id"] = network_id
         if networks is not UNSET:
             field_dict["networks"] = networks
 
@@ -359,6 +371,23 @@ class NewVm:
 
         memory_thp = _parse_memory_thp(d.pop("memory_thp", UNSET))
 
+        def _parse_network_id(data: object) -> None | Unset | UUID:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                network_id_type_0 = UUID(data)
+
+                return network_id_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | UUID, data)
+
+        network_id = _parse_network_id(d.pop("network_id", UNSET))
+
         def _parse_networks(data: object) -> list[NewVmNetwork] | None | Unset:
             if data is None:
                 return data
@@ -401,6 +430,7 @@ class NewVm:
             memory_prefault=memory_prefault,
             memory_shared=memory_shared,
             memory_thp=memory_thp,
+            network_id=network_id,
             networks=networks,
         )
 

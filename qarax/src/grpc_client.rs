@@ -21,8 +21,7 @@ use node::{
     DetachStoragePoolRequest, DiskConfig, DownloadFileRequest, FsConfig, ImportOverlayBdRequest,
     ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, OciImageRequest, OciImageResponse,
     PayloadConfig, StoragePoolKind, VmConfig, VmCounters, VmId, VmState,
-    file_transfer_service_client::FileTransferServiceClient,
-    vm_service_client::VmServiceClient,
+    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -52,12 +51,21 @@ pub struct CreateVmRequest {
 
 /// Convert DB network interfaces to proto NetConfig for the node.
 pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
+    fn normalize_ip(value: &Option<String>) -> Option<String> {
+        value
+            .as_deref()
+            .map(|v| v.split('/').next().unwrap_or(v).to_string())
+    }
+    fn normalize_num_queues(value: i32) -> Option<i32> {
+        if value <= 1 { None } else { Some(value) }
+    }
+
     networks
         .iter()
         .map(|n| NetConfig {
             id: n.device_id.clone(),
             tap: n.tap_name.clone(),
-            ip: n.ip_address.clone(),
+            ip: normalize_ip(&n.ip_address),
             mask: None,
             mac: n.mac_address.clone(),
             host_mac: n.host_mac.clone(),
@@ -68,7 +76,7 @@ pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
                 "server" => node::VhostMode::Server as i32,
                 _ => node::VhostMode::Client as i32,
             }),
-            num_queues: Some(n.num_queues),
+            num_queues: normalize_num_queues(n.num_queues),
             queue_size: Some(n.queue_size),
             rate_limiter: None,
             offload_tso: Some(n.offload_tso),
@@ -607,7 +615,10 @@ impl NodeClient {
     }
 
     /// Attach a network (create bridge, start dnsmasq, setup NAT) on the node.
+    /// If `parent_interface` is non-empty, bridges that NIC instead of creating
+    /// an isolated bridge (skips dnsmasq and NAT).
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn attach_network(
         &self,
         bridge_name: &str,
@@ -616,6 +627,7 @@ impl NodeClient {
         dns: &str,
         dhcp_range_start: &str,
         dhcp_range_end: &str,
+        parent_interface: &str,
     ) -> Result<()> {
         debug!(
             "Attaching network bridge {} on node {}",
@@ -634,6 +646,7 @@ impl NodeClient {
                 dns: dns.to_string(),
                 dhcp_range_start: dhcp_range_start.to_string(),
                 dhcp_range_end: dhcp_range_end.to_string(),
+                parent_interface: parent_interface.to_string(),
             })
             .await
             .map_err(|s| {

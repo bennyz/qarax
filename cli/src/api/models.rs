@@ -208,7 +208,8 @@ pub struct Network {
     pub subnet: String,
     pub gateway: Option<String>,
     pub dns: Option<String>,
-    pub network_type: String,
+    #[serde(rename = "type", alias = "network_type")]
+    pub network_type: Option<String>,
     pub status: String,
 }
 
@@ -220,7 +221,7 @@ pub struct NewNetwork {
     pub gateway: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub network_type: Option<String>,
 }
 
@@ -228,6 +229,8 @@ pub struct NewNetwork {
 pub struct AttachHostToNetworkRequest {
     pub host_id: Uuid,
     pub bridge_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_interface: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

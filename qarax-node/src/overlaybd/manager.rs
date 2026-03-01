@@ -145,8 +145,14 @@ impl OverlayBdManager {
             .trim_end_matches('/')
             .to_string();
 
+        let mut excepts = vec![registry_host];
+        let source_host = source_ref.registry().to_string();
+        if source_host.starts_with("localhost") || source_host.starts_with("127.0.0.1") {
+            excepts.push(source_host);
+        }
+
         let client = Client::new(ClientConfig {
-            protocol: ClientProtocol::HttpsExcept(vec![registry_host]),
+            protocol: ClientProtocol::HttpsExcept(excepts),
             ..Default::default()
         });
 
@@ -1105,7 +1111,14 @@ fn build_target_ref(image_ref: &str, registry_url: &str) -> Result<String, Overl
     }
 
     let bare = if image_ref.contains('/') {
-        image_ref.split_once('/').map(|x| x.1).unwrap_or(image_ref)
+        // If the first component is a registry hostname (contains . or :), strip it.
+        // Otherwise, keep the whole string (it's a namespace/repo like "library/ubuntu")
+        let (first, rest) = image_ref.split_once('/').unwrap();
+        if first.contains('.') || first.contains(':') || first == "localhost" {
+            rest
+        } else {
+            image_ref
+        }
     } else {
         image_ref
     };

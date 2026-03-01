@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM vm_filesystems WHERE vm_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8b728e76b0b881f0da323a0f94f573c58ea478b365aae8f4ec16a259fec0cab"
+}

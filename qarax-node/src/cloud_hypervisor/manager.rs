@@ -4,11 +4,12 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -78,6 +79,8 @@ struct VmInstance {
     status: VmStatus,
     /// TAP devices created by qarax-node for this VM (cleaned up on delete)
     tap_devices: Vec<String>,
+    /// passt backend processes started by qarax-node for this VM
+    passt_processes: Vec<Child>,
     /// PTY path for serial console (if PTY mode is enabled)
     serial_pty_path: Option<String>,
     /// PTY path for console device (if PTY mode is enabled)
@@ -291,6 +294,7 @@ impl VmManager {
                 socket_path,
                 status,
                 tap_devices,
+                passt_processes: Vec::new(),
                 serial_pty_path: None,
                 console_pty_path: None,
                 has_overlaybd: false, // Recovery doesn't restore OverlayBD state
@@ -313,6 +317,56 @@ impl VmManager {
             .take(8)
             .collect();
         format!("qt{}n{}", hex_id, net_index)
+    }
+
+    fn passt_socket_path(&self, vm_id: &str, net_index: usize) -> PathBuf {
+        let hex_id: String = vm_id
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .take(8)
+            .collect();
+        self.runtime_dir
+            .join(format!("qp{}n{}.sock", hex_id, net_index))
+    }
+
+    fn should_spawn_passt(net: &ProtoNetConfig) -> bool {
+        net.vhost_user.unwrap_or(false) && net.vhost_socket.as_deref() == Some("passt")
+    }
+
+    async fn start_passt_backend(socket_path: &Path) -> Result<Child, VmManagerError> {
+        if socket_path.exists() {
+            let _ = tokio::fs::remove_file(socket_path).await;
+        }
+
+        let mut child = Command::new("passt")
+            .args(["--vhost-user", "--socket"])
+            .arg(socket_path)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| VmManagerError::ProcessError(format!("failed to spawn passt: {e}")))?;
+
+        for _ in 0..30 {
+            if socket_path.exists() {
+                info!("passt backend ready at {}", socket_path.display());
+                return Ok(child);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        let _ = child.kill().await;
+        Err(VmManagerError::ProcessError(format!(
+            "passt socket not ready: {}",
+            socket_path.display()
+        )))
+    }
+
+    async fn cleanup_passt_processes(processes: &mut Vec<Child>) {
+        for process in processes.iter_mut() {
+            if let Err(e) = process.kill().await {
+                warn!("Failed to kill passt process: {}", e);
+            }
+        }
+        processes.clear();
     }
 
     /// Create a TAP device and bring it up.
@@ -373,13 +427,23 @@ impl VmManager {
         // into the config so CH uses our managed devices (and we can clean them up).
         let mut config = config;
         let mut tap_devices: Vec<String> = Vec::new();
+        let mut passt_processes: Vec<Child> = Vec::new();
         for (i, net) in config.networks.iter_mut().enumerate() {
+            if Self::should_spawn_passt(net) {
+                let socket_path = self.passt_socket_path(&vm_id, i);
+                let passt = Self::start_passt_backend(&socket_path).await?;
+                net.vhost_socket = Some(socket_path.to_string_lossy().to_string());
+                passt_processes.push(passt);
+                continue;
+            }
+
             if !net.vhost_user.unwrap_or(false) && net.tap.is_none() {
                 let tap_name = Self::tap_name_for_net(&vm_id, i);
                 if let Err(e) = Self::create_tap_device(&tap_name).await {
                     for tap in &tap_devices {
                         Self::delete_tap_device(tap).await;
                     }
+                    Self::cleanup_passt_processes(&mut passt_processes).await;
                     return Err(e);
                 }
                 net.tap = Some(tap_name.clone());
@@ -403,6 +467,7 @@ impl VmManager {
                 for tap in &tap_devices {
                     Self::delete_tap_device(tap).await;
                 }
+                Self::cleanup_passt_processes(&mut passt_processes).await;
                 return Err(VmManagerError::TapError(format!(
                     "Failed to attach TAP {} to bridge {}: {}",
                     tap_name, bridge_name, e
@@ -505,14 +570,23 @@ impl VmManager {
 
         let log_file = std::fs::File::create(&log_path).map_err(VmManagerError::SpawnError)?;
 
-        let process = Command::new(&self.ch_binary)
+        let process = match Command::new(&self.ch_binary)
             .arg("--api-socket")
             .arg(&socket_path)
             .stdout(log_file.try_clone().map_err(VmManagerError::SpawnError)?)
             .stderr(log_file)
             .kill_on_drop(true)
             .spawn()
-            .map_err(VmManagerError::SpawnError)?;
+        {
+            Ok(p) => p,
+            Err(e) => {
+                for tap in &tap_devices {
+                    Self::delete_tap_device(tap).await;
+                }
+                Self::cleanup_passt_processes(&mut passt_processes).await;
+                return Err(VmManagerError::SpawnError(e));
+            }
+        };
 
         info!(
             "Cloud Hypervisor process started with PID: {:?}",
@@ -529,7 +603,13 @@ impl VmManager {
                     retries += 1;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
-                Err(e) => return Err(VmManagerError::SpawnError(e)),
+                Err(e) => {
+                    for tap in &tap_devices {
+                        Self::delete_tap_device(tap).await;
+                    }
+                    Self::cleanup_passt_processes(&mut passt_processes).await;
+                    return Err(VmManagerError::SpawnError(e));
+                }
             }
         }
 
@@ -563,8 +643,16 @@ impl VmManager {
         info!("Creating VM with CH config: {}", json_config);
 
         // Send create request via raw API
-        self.send_api_request(&socket_path, "PUT", "/api/v1/vm.create", Some(&json_config))
-            .await?;
+        if let Err(e) = self
+            .send_api_request(&socket_path, "PUT", "/api/v1/vm.create", Some(&json_config))
+            .await
+        {
+            for tap in &tap_devices {
+                Self::delete_tap_device(tap).await;
+            }
+            Self::cleanup_passt_processes(&mut passt_processes).await;
+            return Err(e);
+        }
 
         info!("VM {} created on Cloud Hypervisor", vm_id);
 
@@ -594,7 +682,16 @@ impl VmManager {
             exec_path: Cow::Borrowed(ch_binary_static.as_path()),
         };
 
-        let vm = Machine::connect(machine_config).await?;
+        let vm = match Machine::connect(machine_config).await {
+            Ok(vm) => vm,
+            Err(e) => {
+                for tap in &tap_devices {
+                    Self::delete_tap_device(tap).await;
+                }
+                Self::cleanup_passt_processes(&mut passt_processes).await;
+                return Err(e.into());
+            }
+        };
 
         let instance = VmInstance {
             proto_config: config.clone(),
@@ -603,6 +700,7 @@ impl VmManager {
             socket_path: socket_path.clone(),
             status: VmStatus::Created,
             tap_devices,
+            passt_processes,
             serial_pty_path: serial_pty,
             console_pty_path: console_pty,
             has_overlaybd,
@@ -759,6 +857,9 @@ impl VmManager {
         for tap in &instance.tap_devices {
             Self::delete_tap_device(tap).await;
         }
+
+        // Stop passt backends created by qarax-node
+        Self::cleanup_passt_processes(&mut instance.passt_processes).await;
 
         // Clean up any virtiofsd processes for this VM's fs devices
         if let Some(store) = &self.image_store_manager {

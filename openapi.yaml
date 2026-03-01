@@ -231,6 +231,167 @@ paths:
           description: Job not found
         '500':
           description: Internal server error
+  /networks:
+    get:
+      tags:
+      - networks
+      operationId: list
+      responses:
+        '200':
+          description: List all networks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Network'
+        '500':
+          description: Internal server error
+    post:
+      tags:
+      - networks
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewNetwork'
+        required: true
+      responses:
+        '201':
+          description: Network created successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Invalid input
+        '500':
+          description: Internal server error
+  /networks/{network_id}:
+    get:
+      tags:
+      - networks
+      operationId: get
+      parameters:
+      - name: network_id
+        in: path
+        description: Network unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Network found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Network'
+        '404':
+          description: Network not found
+        '500':
+          description: Internal server error
+    delete:
+      tags:
+      - networks
+      operationId: delete
+      parameters:
+      - name: network_id
+        in: path
+        description: Network unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Network deleted successfully
+        '404':
+          description: Network not found
+        '500':
+          description: Internal server error
+  /networks/{network_id}/hosts:
+    post:
+      tags:
+      - networks
+      operationId: attach_host
+      parameters:
+      - name: network_id
+        in: path
+        description: Network unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachHostRequest'
+        required: true
+      responses:
+        '204':
+          description: Host attached to network
+        '404':
+          description: Network or host not found
+        '422':
+          description: Failed to attach network on node
+        '500':
+          description: Internal server error
+  /networks/{network_id}/hosts/{host_id}:
+    delete:
+      tags:
+      - networks
+      operationId: detach_host
+      parameters:
+      - name: network_id
+        in: path
+        description: Network unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: host_id
+        in: path
+        description: Host unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Host detached from network
+        '404':
+          description: Host not found
+        '422':
+          description: Failed to detach network on node
+        '500':
+          description: Internal server error
+  /networks/{network_id}/ips:
+    get:
+      tags:
+      - networks
+      operationId: list_ips
+      parameters:
+      - name: network_id
+        in: path
+        description: Network unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: List IP allocations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IpAllocation'
+        '500':
+          description: Internal server error
   /storage-objects:
     get:
       tags:
@@ -865,10 +1026,17 @@ components:
       type: object
       required:
       - host_id
+      - bridge_name
       properties:
+        bridge_name:
+          type: string
         host_id:
           type: string
           format: uuid
+        parent_interface:
+          type:
+          - string
+          - 'null'
     BootMode:
       type: string
       enum:
@@ -1064,6 +1232,30 @@ components:
       - macvtap
       - tap
       - vhost_user
+    IpAllocation:
+      type: object
+      required:
+      - id
+      - network_id
+      - ip_address
+      - allocated_at
+      properties:
+        allocated_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        ip_address:
+          type: string
+        network_id:
+          type: string
+          format: uuid
+        vm_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
     Job:
       type: object
       required:
@@ -1131,6 +1323,35 @@ components:
       enum:
       - image_pull
       - vm_start
+    Network:
+      type: object
+      required:
+      - id
+      - name
+      - subnet
+      - status
+      properties:
+        dns:
+          type:
+          - string
+          - 'null'
+        gateway:
+          type:
+          - string
+          - 'null'
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/NetworkStatus'
+        subnet:
+          type: string
+        type:
+          type:
+          - string
+          - 'null'
     NetworkInterface:
       type: object
       required:
@@ -1210,6 +1431,11 @@ components:
         vm_id:
           type: string
           format: uuid
+    NetworkStatus:
+      type: string
+      enum:
+      - active
+      - inactive
     NewBootSource:
       type: object
       required:
@@ -1254,6 +1480,28 @@ components:
         port:
           type: integer
           format: int32
+    NewNetwork:
+      type: object
+      required:
+      - name
+      - subnet
+      properties:
+        dns:
+          type:
+          - string
+          - 'null'
+        gateway:
+          type:
+          - string
+          - 'null'
+        name:
+          type: string
+        subnet:
+          type: string
+        type:
+          type:
+          - string
+          - 'null'
     NewStorageObject:
       type: object
       required:
@@ -1388,6 +1636,12 @@ components:
           - 'null'
         name:
           type: string
+        network_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Network ID to attach the VM to (triggers IPAM allocation).
         networks:
           type:
           - array
@@ -1474,6 +1728,12 @@ components:
           - 'null'
           format: int32
           description: MTU (optional)
+        network_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Network ID for managed networking (IPAM)
         num_queues:
           type:
           - integer
@@ -1969,3 +2229,5 @@ tags:
   description: File transfer management endpoints
 - name: jobs
   description: Async job management endpoints
+- name: networks
+  description: Network management endpoints

@@ -57,10 +57,7 @@ pub async fn stop_dnsmasq(bridge: &str) -> Result<()> {
             let pid = content.trim();
             if !pid.is_empty() {
                 info!("Stopping dnsmasq for bridge {} (PID {})", bridge, pid);
-                let _ = tokio::process::Command::new("kill")
-                    .arg(pid)
-                    .output()
-                    .await;
+                let _ = tokio::process::Command::new("kill").arg(pid).output().await;
             }
             let _ = tokio::fs::remove_file(&pid_file).await;
             Ok(())

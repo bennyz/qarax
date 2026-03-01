@@ -756,24 +756,28 @@ impl VmService for VmServiceImpl {
         let req = request.into_inner();
         info!("Attaching network bridge: {}", req.bridge_name);
 
-        // Extract prefix length from subnet for the gateway CIDR
-        let prefix = req
-            .subnet
-            .split_once('/')
-            .map(|(_, p)| p)
-            .unwrap_or("24");
-        let gateway_cidr = format!("{}/{}", req.gateway, prefix);
+        let bridged = !req.parent_interface.is_empty();
 
-        // Create bridge and set IP
-        crate::networking::bridge::create_bridge(&req.bridge_name)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to create bridge: {}", e)))?;
+        if bridged {
+            // Bridged mode: bridge an existing NIC (its IP moves to the bridge)
+            crate::networking::bridge::bridge_interface(&req.bridge_name, &req.parent_interface)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to bridge interface: {}", e)))?;
+        } else {
+            // Isolated mode: create a new bridge with its own gateway IP
+            let prefix = req.subnet.split_once('/').map(|(_, p)| p).unwrap_or("24");
+            let gateway_cidr = format!("{}/{}", req.gateway, prefix);
 
-        crate::networking::bridge::set_bridge_ip(&req.bridge_name, &gateway_cidr)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to set bridge IP: {}", e)))?;
+            crate::networking::bridge::create_bridge(&req.bridge_name)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to create bridge: {}", e)))?;
 
-        // Start dnsmasq for DHCP
+            crate::networking::bridge::set_bridge_ip(&req.bridge_name, &gateway_cidr)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to set bridge IP: {}", e)))?;
+        }
+
+        // Start dnsmasq for DHCP (both modes need DHCP for guest VMs)
         let dns = if req.dns.is_empty() {
             &req.gateway
         } else {
@@ -789,12 +793,17 @@ impl VmService for VmServiceImpl {
         .await
         .map_err(|e| Status::internal(format!("Failed to start dnsmasq: {}", e)))?;
 
-        // Setup NAT
-        crate::networking::nftables::setup_nat(&req.bridge_name, &req.subnet)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to setup NAT: {}", e)))?;
+        // NAT is only needed in isolated mode — bridged mode shares the upstream network
+        if !bridged {
+            crate::networking::nftables::setup_nat(&req.bridge_name, &req.subnet)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to setup NAT: {}", e)))?;
+        }
 
-        info!("Network bridge {} attached successfully", req.bridge_name);
+        info!(
+            "Network bridge {} attached successfully (bridged={})",
+            req.bridge_name, bridged
+        );
         Ok(Response::new(AttachNetworkResponse {}))
     }
 
@@ -805,17 +814,21 @@ impl VmService for VmServiceImpl {
         let req = request.into_inner();
         info!("Detaching network bridge: {}", req.bridge_name);
 
-        // Stop dnsmasq
+        // Stop dnsmasq (both modes run it for DHCP)
         if let Err(e) = crate::networking::dnsmasq::stop_dnsmasq(&req.bridge_name).await {
             warn!("Failed to stop dnsmasq for {}: {}", req.bridge_name, e);
         }
 
-        // We don't know the subnet here, so teardown NAT with a best-effort approach.
-        // The bridge deletion will stop any forwarding anyway.
-
-        // Delete bridge
-        if let Err(e) = crate::networking::bridge::delete_bridge(&req.bridge_name).await {
-            warn!("Failed to delete bridge {}: {}", req.bridge_name, e);
+        if crate::networking::bridge::is_bridged_interface(&req.bridge_name).await {
+            // Bridged mode: move IP back to parent NIC and delete bridge
+            if let Err(e) = crate::networking::bridge::unbridge_interface(&req.bridge_name).await {
+                warn!("Failed to unbridge {}: {}", req.bridge_name, e);
+            }
+        } else {
+            // Isolated mode: delete bridge
+            if let Err(e) = crate::networking::bridge::delete_bridge(&req.bridge_name).await {
+                warn!("Failed to delete bridge {}: {}", req.bridge_name, e);
+            }
         }
 
         info!("Network bridge {} detached", req.bridge_name);

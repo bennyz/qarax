@@ -34,6 +34,7 @@
 #   sudo ./demos/demo-hyperconverged.sh --with-nfs --nfs-url server:/export  # Also create an NFS pool
 #   sudo ./demos/demo-hyperconverged.sh --with-local-vm  # Also boot a firmware VM with cloud image
 #   sudo ./demos/demo-hyperconverged.sh --with-db-vm    # Also boot an OCI PostgreSQL VM
+#   sudo ./demos/demo-hyperconverged.sh --network-backend passt  # Use passt-backed VM networking
 
 set -euo pipefail
 
@@ -120,6 +121,7 @@ WITH_NFS=0
 NFS_URL=""
 WITH_LOCAL_VM=0
 WITH_DB_VM=0
+NETWORK_BACKEND=""
 LOCAL_POOL_PATH="/var/lib/qarax/images"
 CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.raw.xz}"
 DB_IMAGE="${DB_IMAGE:-docker.io/library/postgres:17-alpine}"
@@ -151,6 +153,10 @@ while [[ $# -gt 0 ]]; do
 		WITH_DB_VM=1
 		shift
 		;;
+	--network-backend)
+		NETWORK_BACKEND="$2"
+		shift 2
+		;;
 	--db-image)
 		DB_IMAGE="$2"
 		shift 2
@@ -165,7 +171,7 @@ while [[ $# -gt 0 ]]; do
 		;;
 	*)
 		echo -e "${RED}Unknown option: $1${NC}"
-		echo "Usage: $0 [--cleanup] [--with-local] [--with-nfs --nfs-url HOST:/PATH] [--with-local-vm] [--with-db-vm]"
+		echo "Usage: $0 [--cleanup] [--with-local] [--with-nfs --nfs-url HOST:/PATH] [--with-local-vm] [--with-db-vm] [--network-backend bridge|passt]"
 		exit 1
 		;;
 	esac
@@ -173,6 +179,15 @@ done
 
 if [[ "$WITH_NFS" -eq 1 && -z "$NFS_URL" ]]; then
 	echo -e "${RED}--with-nfs requires --nfs-url <server:/export/path>${NC}"
+	exit 1
+fi
+
+if [[ -z "$NETWORK_BACKEND" ]]; then
+	NETWORK_BACKEND="bridge"
+fi
+
+if [[ "$NETWORK_BACKEND" != "bridge" && "$NETWORK_BACKEND" != "passt" ]]; then
+	echo -e "${RED}--network-backend must be 'bridge' or 'passt'${NC}"
 	exit 1
 fi
 
@@ -337,7 +352,7 @@ EOF
 cat > "${ROOTFS_MOUNT}/boot/loader/entries/qarax.conf" << EOF
 title   qarax Control Plane
 linux   /vmlinuz-${KVER}
-options root=/dev/vda2 rw console=ttyS0 systemd.unified_cgroup_hierarchy=1
+options root=/dev/vda2 rw console=ttyS0 systemd.unified_cgroup_hierarchy=1 net.ifnames=0 biosdevname=0
 EOF
 
 echo "loader.conf:"
@@ -512,11 +527,11 @@ export QARAX_SERVER="${QARAX_API}"
 
 # -- Default network (always created) --
 
-echo "Creating default network (10.0.0.0/24)..."
-"$QARAX_CLI" network create --name default --subnet 10.0.0.0/24 --gateway 10.0.0.1
+echo "Creating default network (192.168.100.0/24)..."
+"$QARAX_CLI" network create --name default --subnet 192.168.100.0/24 --gateway 192.168.100.1 --network-type "$NETWORK_BACKEND"
 
-echo "Attaching network to host..."
-"$QARAX_CLI" network attach-host --network default --host local-node --bridge-name qbr0
+echo "Attaching network to host (bridged to eth0)..."
+"$QARAX_CLI" network attach-host --network default --host local-node --bridge-name qbr0 --parent-interface eth0
 
 echo ""
 
@@ -605,12 +620,46 @@ if [[ "$WITH_DB_VM" -eq 1 ]]; then
 	DB_VM_NAME="db-vm"
 	DB_VM_MEMORY=536870912  # 512 MiB
 
+	if [[ "$DB_IMAGE" == "docker.io/library/postgres:17-alpine" ]]; then
+		echo "Building custom Postgres image with POSTGRES_HOST_AUTH_METHOD=trust..."
+		cat <<EOF > /tmp/Containerfile.postgres
+FROM ${DB_IMAGE}
+ENV POSTGRES_PASSWORD=postgres
+ENV POSTGRES_HOST_AUTH_METHOD=trust
+EOF
+		podman build -t localhost:${REGISTRY_PORT}/postgres:17-alpine-trust -f /tmp/Containerfile.postgres
+		podman push localhost:${REGISTRY_PORT}/postgres:17-alpine-trust --tls-verify=false
+		# Make sure qarax-node can resolve the host registry IP
+		DB_IMAGE="${HOST_TAP_IP}:${REGISTRY_PORT}/postgres:17-alpine-trust"
+	fi
+
 	echo "Creating OCI database VM: ${DB_VM_NAME} (image: ${DB_IMAGE})..."
 	"$QARAX_CLI" vm create --name "${DB_VM_NAME}" --vcpus 1 --memory "${DB_VM_MEMORY}" \
 		--image-ref "${DB_IMAGE}" --network default
 
 	echo "Starting database VM..."
 	"$QARAX_CLI" vm start "${DB_VM_NAME}"
+
+	DB_VM_JSON=$("$QARAX_CLI" vm get "${DB_VM_NAME}" --json 2>/dev/null || true)
+	DB_VM_ID=$(python3 -c 'import json,sys
+try:
+    print(json.loads(sys.stdin.read()).get("id",""))
+except Exception:
+    print("")' <<< "${DB_VM_JSON}")
+	DB_VM_IP=""
+	if [[ -n "${DB_VM_ID}" ]]; then
+		DB_VM_IPS_JSON=$("$QARAX_CLI" network list-ips default --json 2>/dev/null || true)
+		DB_VM_IP=$(python3 -c 'import json,sys
+vmid=sys.argv[1]
+try:
+    items=json.loads(sys.stdin.read())
+except Exception:
+    items=[]
+for item in items:
+    if item.get("vm_id")==vmid:
+        print((item.get("ip_address","") or "").split("/",1)[0])
+        break' "${DB_VM_ID}" <<< "${DB_VM_IPS_JSON}")
+	fi
 
 	echo -e "${GREEN}OCI database VM '${DB_VM_NAME}' started (image: ${DB_IMAGE})${NC}"
 	echo ""
@@ -623,9 +672,14 @@ if [[ "$WITH_DB_VM" -eq 1 ]]; then
 	echo ""
 	echo "    psql -U postgres"
 	echo ""
-	echo "  From the host (if networking is configured), connect to the VM's IP:"
+	echo "  The VM is bridged to the host network (192.168.100.0/24)."
+	echo "  Connect directly from the host:"
 	echo ""
-	echo "    psql -h <vm-ip> -U postgres"
+	if [[ -n "${DB_VM_IP}" ]]; then
+		echo "    psql -h ${DB_VM_IP} -U postgres"
+	else
+		echo "    psql -h <vm-ip> -U postgres"
+	fi
 	echo ""
 	echo "  Check VM status and logs:"
 	echo ""
