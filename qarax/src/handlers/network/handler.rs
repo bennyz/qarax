@@ -270,8 +270,10 @@ fn default_gateway(subnet: &str) -> String {
     "10.0.0.1".to_string()
 }
 
-/// Compute DHCP range: start at .10, end at .254 (or last usable host).
-fn compute_dhcp_range(subnet: &str, _gateway: Option<&str>) -> (String, String) {
+/// Compute DHCP range: start at the first usable host after the gateway, end at broadcast-1.
+/// The start must align with `next_available_ip` (which also starts at network_addr+1 and
+/// skips the gateway) so the API-allocated IP matches what dnsmasq actually hands out.
+fn compute_dhcp_range(subnet: &str, gateway: Option<&str>) -> (String, String) {
     if let Some((base, prefix_str)) = subnet.split_once('/') {
         let octets: Vec<u8> = base.split('.').filter_map(|o| o.parse().ok()).collect();
         let prefix_len: u32 = prefix_str.parse().unwrap_or(24);
@@ -284,7 +286,26 @@ fn compute_dhcp_range(subnet: &str, _gateway: Option<&str>) -> (String, String) 
             let network_addr = base_u32 & (u32::MAX << host_bits);
             let broadcast_addr = network_addr | ((1u32 << host_bits) - 1);
 
-            let start = network_addr + 10; // .10
+            // Parse the gateway IP so we can skip it when selecting the range start.
+            let gw_u32: Option<u32> = gateway.and_then(|gw| {
+                let parts: Vec<u8> = gw.split('.').filter_map(|o| o.parse().ok()).collect();
+                if parts.len() == 4 {
+                    Some(
+                        (parts[0] as u32) << 24
+                            | (parts[1] as u32) << 16
+                            | (parts[2] as u32) << 8
+                            | parts[3] as u32,
+                    )
+                } else {
+                    None
+                }
+            });
+
+            // Start at network_addr+1, skip the gateway — mirrors next_available_ip logic.
+            let mut start = network_addr + 1;
+            if gw_u32 == Some(start) {
+                start += 1;
+            }
             let end = broadcast_addr - 1; // .254 for /24
 
             let fmt = |addr: u32| {

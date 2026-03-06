@@ -23,6 +23,7 @@ RUN dnf install -y \
     xz \
     cpio \
     gzip \
+    dnsmasq \
     busybox \
     virtiofsd \
     e2fsprogs \
@@ -74,17 +75,31 @@ RUN curl -fsSL \
     chmod 644 /var/lib/qarax/images/vmlinux && \
     ls -la /var/lib/qarax/images/
 
-# Copy and build test initramfs
-COPY e2e/init-test.sh /tmp/init-test.sh
-RUN mkdir -p /tmp/initramfs/{bin,dev,proc,sys} && \
-    cp /usr/sbin/busybox /tmp/initramfs/bin/ && \
-    cd /tmp/initramfs/bin && \
-    for cmd in sh cat echo mount ls sleep poweroff; do ln -s busybox $cmd; done && \
-    cp /tmp/init-test.sh /tmp/initramfs/init && \
-    chmod +x /tmp/initramfs/init && \
+# Build test initramfs: qarax-init as PID 1, dropbear for SSH access
+# Network is configured statically by the kernel via ip= cmdline parameter.
+RUN mkdir -p /tmp/initramfs/{dev,proc,sys,sbin,etc/dropbear,var/run,lib64,root/.ssh} && \
+    cp /usr/local/bin/qarax-init /tmp/initramfs/init && \
+    echo '{"cmd":["/sbin/dropbear","-F","-E","-R"]}' > /tmp/initramfs/.qarax-config.json && \
+    mkdir -p /tmp/initramfs/bin && \
+    cp /usr/sbin/busybox /tmp/initramfs/bin/busybox && \
+    for cmd in sh ping ip; do ln -s busybox /tmp/initramfs/bin/$cmd; done && \
+    dnf install -y dropbear && \
+    cp /usr/sbin/dropbear /tmp/initramfs/sbin/ && \
+    cp /lib64/libtomcrypt.so.1 /tmp/initramfs/lib64/ && \
+    cp /lib64/libtommath.so.1 /tmp/initramfs/lib64/ && \
+    cp /lib64/libz.so.1 /tmp/initramfs/lib64/ && \
+    cp /lib64/libcrypt.so.2 /tmp/initramfs/lib64/ && \
+    cp /lib64/libc.so.6 /tmp/initramfs/lib64/ && \
+    cp /lib64/ld-linux-x86-64.so.2 /tmp/initramfs/lib64/ && \
+    echo "root:x:0:0:root:/root:/bin/sh" > /tmp/initramfs/etc/passwd && \
+    echo "root:wiAqZ3Z0Hh3Vw:19766:0:99999:7:::" > /tmp/initramfs/etc/shadow && \
+    dropbearkey -t rsa -f /root/.ssh/id_rsa && \
+    dropbearkey -y -f /root/.ssh/id_rsa | grep "^ssh-rsa " > /tmp/initramfs/root/.ssh/authorized_keys && \
+    chmod 600 /tmp/initramfs/root/.ssh/authorized_keys && \
+    chmod 700 /tmp/initramfs/root/.ssh /tmp/initramfs/root && \
     cd /tmp/initramfs && \
     find . | cpio -o -H newc | gzip > /var/lib/qarax/images/test-initramfs.gz && \
-    rm -rf /tmp/initramfs /tmp/init-test.sh && \
+    rm -rf /tmp/initramfs && \
     ls -la /var/lib/qarax/images/
 
 COPY e2e/entrypoint-qarax-node.sh /entrypoint.sh

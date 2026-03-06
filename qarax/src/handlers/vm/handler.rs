@@ -1096,7 +1096,8 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
                     net_config.mask = subnet_mask_from_cidr(&network.subnet);
                 }
 
-                if network.network_type.as_deref() == Some("bridge") {
+                let ty = network.network_type.as_deref();
+                if ty == Some("bridge") || ty == Some("isolated") {
                     let ip = net_config.ip.as_ref().unwrap();
                     let mask = net_config.mask.as_deref().unwrap_or("");
                     let gw = network.gateway.as_deref().unwrap_or("");
