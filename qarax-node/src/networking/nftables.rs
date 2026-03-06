@@ -3,6 +3,7 @@ use tracing::info;
 
 /// Set up NAT masquerade and forwarding rules for a bridge subnet.
 pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
+    super::validate_iface_name(bridge)?;
     info!("Setting up NAT for bridge {} subnet {}", bridge, subnet);
 
     // Enable IP forwarding via /proc (sysctl binary may not be present)
@@ -39,6 +40,7 @@ pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
 
 /// Remove NAT and forwarding rules for a bridge subnet.
 pub async fn teardown_nat(bridge: &str, subnet: &str) -> Result<()> {
+    super::validate_iface_name(bridge)?;
     info!("Tearing down NAT for bridge {} subnet {}", bridge, subnet);
 
     let _ = run_cmd(

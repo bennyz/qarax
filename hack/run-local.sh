@@ -97,7 +97,7 @@ fi
 # Use cross on macOS (system linker doesn't support musl cross-compile); cargo on Linux
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-node"
-QARAX_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
+QARAX_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-server"
 INIT_BINARY="${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax-init"
 if [[ -z "${SKIP_BUILD}" ]]; then
 	if [[ -n "${REBUILD}" ]] || [[ ! -f "${NODE_BINARY}" ]] || [[ ! -f "${QARAX_BINARY}" ]] || [[ ! -f "${INIT_BINARY}" ]]; then

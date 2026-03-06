@@ -86,10 +86,10 @@ RUN curl -fsSL \
     rm /tmp/aci.rpm
 
 # Copy qarax, qarax-node, and qarax-init binaries
-COPY target/x86_64-unknown-linux-musl/release/qarax /usr/local/bin/qarax
+COPY target/x86_64-unknown-linux-musl/release/qarax-server /usr/local/bin/qarax-server
 COPY target/x86_64-unknown-linux-musl/release/qarax-node /usr/local/bin/qarax-node
 COPY target/x86_64-unknown-linux-musl/release/qarax-init /usr/local/bin/qarax-init
-RUN chmod +x /usr/local/bin/qarax /usr/local/bin/qarax-node /usr/local/bin/qarax-init
+RUN chmod +x /usr/local/bin/qarax-server /usr/local/bin/qarax-node /usr/local/bin/qarax-init
 
 # Copy configuration
 COPY configuration/ /etc/qarax/configuration/
@@ -129,7 +129,7 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/qarax
+ExecStart=/usr/local/bin/qarax-server
 Restart=always
 RestartSec=3
 WorkingDirectory=/etc/qarax
