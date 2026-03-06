@@ -46,7 +46,7 @@ enum NetworkCommand {
         /// Network name or ID
         network: String,
     },
-    /// Attach a network to a host (creates bridge + dnsmasq + NAT on the host)
+    /// Attach a network to a host (creates bridge + DHCP + NAT on the host)
     AttachHost {
         /// Network name or ID
         #[arg(long)]
@@ -58,7 +58,7 @@ enum NetworkCommand {
         #[arg(long)]
         bridge_name: String,
         /// Parent NIC to bridge (e.g. eth0). If set, bridges the NIC instead of
-        /// creating an isolated bridge — skips dnsmasq and NAT. VMs get IPs from
+        /// creating an isolated bridge — skips NAT. VMs get IPs from
         /// the upstream network.
         #[arg(long)]
         parent_interface: Option<String>,

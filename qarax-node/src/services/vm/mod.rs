@@ -777,13 +777,13 @@ impl VmService for VmServiceImpl {
                 .map_err(|e| Status::internal(format!("Failed to set bridge IP: {}", e)))?;
         }
 
-        // Start dnsmasq for DHCP (both modes need DHCP for guest VMs)
+        // Start DHCP server (both modes need DHCP for guest VMs)
         let dns = if req.dns.is_empty() {
             &req.gateway
         } else {
             &req.dns
         };
-        crate::networking::dnsmasq::start_dnsmasq(
+        crate::networking::dhcp::start_dhcp_server(
             &req.bridge_name,
             &req.dhcp_range_start,
             &req.dhcp_range_end,
@@ -791,7 +791,7 @@ impl VmService for VmServiceImpl {
             dns,
         )
         .await
-        .map_err(|e| Status::internal(format!("Failed to start dnsmasq: {}", e)))?;
+        .map_err(|e| Status::internal(format!("Failed to start DHCP server: {}", e)))?;
 
         // NAT is only needed in isolated mode — bridged mode shares the upstream network
         if !bridged {
@@ -814,9 +814,9 @@ impl VmService for VmServiceImpl {
         let req = request.into_inner();
         info!("Detaching network bridge: {}", req.bridge_name);
 
-        // Stop dnsmasq (both modes run it for DHCP)
-        if let Err(e) = crate::networking::dnsmasq::stop_dnsmasq(&req.bridge_name).await {
-            warn!("Failed to stop dnsmasq for {}: {}", req.bridge_name, e);
+        // Stop DHCP server (both modes run it for DHCP)
+        if let Err(e) = crate::networking::dhcp::stop_dhcp_server(&req.bridge_name).await {
+            warn!("Failed to stop DHCP server for {}: {}", req.bridge_name, e);
         }
 
         if crate::networking::bridge::is_bridged_interface(&req.bridge_name).await {

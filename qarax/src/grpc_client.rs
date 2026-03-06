@@ -614,9 +614,9 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Attach a network (create bridge, start dnsmasq, setup NAT) on the node.
+    /// Attach a network (create bridge, start DHCP server, setup NAT) on the node.
     /// If `parent_interface` is non-empty, bridges that NIC instead of creating
-    /// an isolated bridge (skips dnsmasq and NAT).
+    /// an isolated bridge (skips NAT).
     #[instrument(skip(self))]
     #[allow(clippy::too_many_arguments)]
     pub async fn attach_network(
@@ -661,7 +661,7 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Detach a network (stop dnsmasq, teardown NAT, delete bridge) on the node.
+    /// Detach a network (stop DHCP server, teardown NAT, delete bridge) on the node.
     #[instrument(skip(self))]
     pub async fn detach_network(&self, bridge_name: &str) -> Result<()> {
         debug!(

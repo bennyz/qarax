@@ -342,7 +342,7 @@ service VmService {
   rpc AttachStoragePool(AttachStoragePoolRequest) returns (AttachStoragePoolResponse) {}
   rpc DetachStoragePool(DetachStoragePoolRequest) returns (google.protobuf.Empty) {}
 
-  // Network lifecycle (bridge + dnsmasq + NAT setup/teardown)
+  // Network lifecycle (bridge + DHCP + NAT setup/teardown)
   rpc AttachNetwork(AttachNetworkRequest) returns (AttachNetworkResponse) {}
   rpc DetachNetwork(DetachNetworkRequest) returns (DetachNetworkResponse) {}
 }

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
 use netlink_packet_route::{
-    address::AddressAttribute, link::LinkAttribute, route::RouteAttribute,
-    route::RouteAddress, AddressFamily,
+    AddressFamily, address::AddressAttribute, link::LinkAttribute, route::RouteAddress,
+    route::RouteAttribute,
 };
 use rtnetlink::{Handle, IpVersion};
 use std::net::{IpAddr, Ipv4Addr};
@@ -104,9 +104,10 @@ async fn del_ipv4_addr(handle: &Handle, link_idx: u32, ip: Ipv4Addr, prefix: u8)
         while let Some(msg) = stream.try_next().await? {
             if msg.header.family == AddressFamily::Inet
                 && msg.header.prefix_len == prefix
-                && msg.attributes.iter().any(|a| {
-                    matches!(a, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip)
-                })
+                && msg
+                    .attributes
+                    .iter()
+                    .any(|a| matches!(a, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip))
             {
                 v.push(msg);
             }
@@ -377,8 +378,7 @@ pub async fn unbridge_interface(bridge_name: &str) -> Result<()> {
     // Clean up networkd runtime configs if present
     let dir = "/run/systemd/network";
     let _ = tokio::fs::remove_file(format!("{dir}/05-{bridge_name}.netdev")).await;
-    let _ =
-        tokio::fs::remove_file(format!("{dir}/05-{parent_iface}-bridge-member.network")).await;
+    let _ = tokio::fs::remove_file(format!("{dir}/05-{parent_iface}-bridge-member.network")).await;
     let _ = tokio::fs::remove_file(format!("{dir}/05-{bridge_name}.network")).await;
 
     let bridge_idx = link_index(&handle, bridge_name).await?;
@@ -401,10 +401,19 @@ pub async fn unbridge_interface(bridge_name: &str) -> Result<()> {
             .ok()
             .and_then(|v| v.into_iter().next());
 
-        let default_gw = default_gateway_via(&handle, bridge_idx).await.ok().flatten();
+        let default_gw = default_gateway_via(&handle, bridge_idx)
+            .await
+            .ok()
+            .flatten();
 
         // Remove parent from bridge (IFLA_MASTER = 0 means no master)
-        handle.link().set(parent_idx).controller(0).execute().await.ok();
+        handle
+            .link()
+            .set(parent_idx)
+            .controller(0)
+            .execute()
+            .await
+            .ok();
 
         // Restore IP on parent
         if let Some((ip, prefix)) = ip_cidr {
@@ -468,18 +477,15 @@ async fn write_bridge_networkd_configs(
     let netdev = format!("[NetDev]\nName={bridge_name}\nKind=bridge\n");
     tokio::fs::write(format!("{dir}/05-{bridge_name}.netdev"), &netdev).await?;
 
-    let parent_net = format!(
-        "[Match]\nName={parent_iface}\n\n[Network]\nBridge={bridge_name}\n"
-    );
+    let parent_net = format!("[Match]\nName={parent_iface}\n\n[Network]\nBridge={bridge_name}\n");
     tokio::fs::write(
         format!("{dir}/05-{parent_iface}-bridge-member.network"),
         &parent_net,
     )
     .await?;
 
-    let mut bridge_net = format!(
-        "[Match]\nName={bridge_name}\n\n[Network]\nAddress={ip_cidr}\nDNS=8.8.8.8\n"
-    );
+    let mut bridge_net =
+        format!("[Match]\nName={bridge_name}\n\n[Network]\nAddress={ip_cidr}\nDNS=8.8.8.8\n");
     if let Some(gw) = gateway {
         bridge_net.push_str(&format!("Gateway={gw}\n"));
     }
