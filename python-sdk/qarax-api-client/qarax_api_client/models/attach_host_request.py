@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from attrs import define as _attrs_define
@@ -17,13 +17,12 @@ class AttachHostRequest:
     Attributes:
         bridge_name (str):
         host_id (UUID):
-        parent_interface (Union[None, Unset, str]): Parent NIC to bridge (e.g. eth0). If set, bridges the NIC instead
-            of creating an isolated bridge.
+        parent_interface (None | str | Unset):
     """
 
     bridge_name: str
     host_id: UUID
-    parent_interface: None | Unset | str = UNSET
+    parent_interface: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,7 +30,7 @@ class AttachHostRequest:
 
         host_id = str(self.host_id)
 
-        parent_interface: None | Unset | str
+        parent_interface: None | str | Unset
         if isinstance(self.parent_interface, Unset):
             parent_interface = UNSET
         else:
@@ -57,12 +56,12 @@ class AttachHostRequest:
 
         host_id = UUID(d.pop("host_id"))
 
-        def _parse_parent_interface(data: object) -> None | Unset | str:
+        def _parse_parent_interface(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return str(data)
+            return cast(None | str | Unset, data)
 
         parent_interface = _parse_parent_interface(d.pop("parent_interface", UNSET))
 

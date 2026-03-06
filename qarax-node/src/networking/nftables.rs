@@ -5,8 +5,10 @@ use tracing::info;
 pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
     info!("Setting up NAT for bridge {} subnet {}", bridge, subnet);
 
-    // Enable IP forwarding
-    run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]).await?;
+    // Enable IP forwarding via /proc (sysctl binary may not be present)
+    tokio::fs::write("/proc/sys/net/ipv4/ip_forward", b"1")
+        .await
+        .context("Failed to enable ip_forward")?;
 
     // Add masquerade rule for the subnet
     let _ = run_cmd(

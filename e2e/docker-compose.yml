@@ -2,7 +2,7 @@ services:
   registry:
     image: registry:2
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - registry_data:/var/lib/registry
     healthcheck:
@@ -37,9 +37,9 @@ services:
       APP_ENVIRONMENT: local
       QARAX_CONFIG_DIR: /app/configuration
       # VM defaults - can be overridden from environment
-      VM_KERNEL: ${VM_KERNEL:-}
-      VM_INITRAMFS: ${VM_INITRAMFS:-}
-      VM_CMDLINE: ${VM_CMDLINE:-}
+      VM_KERNEL: ${VM_KERNEL:-/var/lib/qarax/images/vmlinux}
+      VM_INITRAMFS: ${VM_INITRAMFS:-/var/lib/qarax/images/test-initramfs.gz}
+      VM_CMDLINE: ${VM_CMDLINE:-console=ttyS0 reboot=k panic=1}
       VM_ROOTFS: ${PRODUCTION_ROOTFS:-}
     ports:
       - "8000:8000"

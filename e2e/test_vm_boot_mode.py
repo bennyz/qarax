@@ -18,6 +18,7 @@ from qarax_api_client.api.storage_objects import (
     delete as delete_storage_object,
 )
 from qarax_api_client.api.storage_pools import (
+    attach_host as attach_pool_host,
     create as create_pool,
     delete as delete_pool,
 )
@@ -36,6 +37,7 @@ from qarax_api_client.models import (
     NewVm,
     StoragePoolType,
 )
+from qarax_api_client.models.attach_host_request import AttachHostRequest
 from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
@@ -76,7 +78,7 @@ async def test_create_vm_default_boot_mode(client):
         finally:
             from uuid import UUID
 
-            await delete_vm.asyncio(client=c, vm_id=UUID(vm_id_str))
+            await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vm_id_str))
 
 
 @pytest.mark.asyncio
@@ -106,7 +108,7 @@ async def test_create_vm_firmware_boot_mode(client):
         finally:
             from uuid import UUID
 
-            await delete_vm.asyncio(client=c, vm_id=UUID(vm_id_str))
+            await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vm_id_str))
 
 
 @pytest.mark.asyncio
@@ -144,7 +146,7 @@ async def test_list_vms_boot_mode(client):
             from uuid import UUID
 
             for vid in vm_ids:
-                await delete_vm.asyncio(client=c, vm_id=UUID(vid))
+                await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vid))
 
 
 # ── disk attachment with logical_name ────────────────────────────────────
@@ -162,11 +164,17 @@ async def storage_pool_and_objects(client):
         pool = NewStoragePool(
             name="e2e-disk-test-pool",
             pool_type=StoragePoolType.LOCAL,
-            host_id=str(host.id),
             config={"path": "/var/lib/qarax/e2e-disk-test"},
         )
         pool_id_raw = await create_pool.asyncio(client=c, body=pool)
         pool_id = str(pool_id_raw).strip('"')
+
+        from uuid import UUID
+        await attach_pool_host.asyncio_detailed(
+            client=c,
+            pool_id=UUID(pool_id),
+            body=AttachHostRequest(host_id=host.id, bridge_name="unused"),
+        )
 
         object_ids = []
         for i in range(3):
@@ -180,119 +188,116 @@ async def storage_pool_and_objects(client):
             obj_id_raw = await create_storage_object.asyncio(client=c, body=obj)
             object_ids.append(str(obj_id_raw).strip('"'))
 
-        yield pool_id, object_ids
+        yield c, pool_id, object_ids
 
         # Cleanup
         for oid in object_ids:
             try:
                 from uuid import UUID
 
-                await delete_storage_object.asyncio(client=c, object_id=oid)
+                await delete_storage_object.asyncio_detailed(client=c, object_id=oid)
             except Exception:
                 pass
         try:
-            await delete_pool.asyncio(client=c, pool_id=pool_id)
+            await delete_pool.asyncio_detailed(client=c, pool_id=pool_id)
         except Exception:
             pass
 
 
 @pytest.mark.asyncio
-async def test_attach_disk_auto_logical_name(client, storage_pool_and_objects):
+async def test_attach_disk_auto_logical_name(storage_pool_and_objects):
     """Attaching a disk without logical_name should auto-generate 'disk0'."""
-    _pool_id, object_ids = storage_pool_and_objects
-    async with client as c:
-        new_vm = NewVm(
-            name="e2e-disk-auto",
-            hypervisor=Hypervisor.CLOUD_HV,
-            boot_vcpus=1,
-            max_vcpus=1,
-            memory_size=268435456,
-            config={},
+    c, _pool_id, object_ids = storage_pool_and_objects
+    new_vm = NewVm(
+        name="e2e-disk-auto",
+        hypervisor=Hypervisor.CLOUD_HV,
+        boot_vcpus=1,
+        max_vcpus=1,
+        memory_size=268435456,
+        config={},
+    )
+    result = await create_vm.asyncio(client=c, body=new_vm)
+    vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
+
+    try:
+        from uuid import UUID
+
+        req = AttachDiskRequest(storage_object_id=UUID(object_ids[0]))
+        disk = await attach_disk_api.asyncio(
+            client=c, vm_id=UUID(vm_id_str), body=req
         )
-        result = await create_vm.asyncio(client=c, body=new_vm)
-        vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
+        assert disk is not None
+        assert disk.logical_name == "disk0"
+        assert disk.device_path == "/dev/disk0"
+    finally:
+        from uuid import UUID
 
-        try:
-            from uuid import UUID
-
-            req = AttachDiskRequest(storage_object_id=UUID(object_ids[0]))
-            disk = await attach_disk_api.asyncio(
-                client=c, vm_id=UUID(vm_id_str), body=req
-            )
-            assert disk is not None
-            assert disk.logical_name == "disk0"
-            assert disk.device_path == "/dev/disk0"
-        finally:
-            from uuid import UUID
-
-            await delete_vm.asyncio(client=c, vm_id=UUID(vm_id_str))
+        await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vm_id_str))
 
 
 @pytest.mark.asyncio
-async def test_attach_disk_explicit_logical_name(client, storage_pool_and_objects):
+async def test_attach_disk_explicit_logical_name(storage_pool_and_objects):
     """Attaching a disk with a logical_name should use the provided name."""
-    _pool_id, object_ids = storage_pool_and_objects
-    async with client as c:
-        new_vm = NewVm(
-            name="e2e-disk-explicit",
-            hypervisor=Hypervisor.CLOUD_HV,
-            boot_vcpus=1,
-            max_vcpus=1,
-            memory_size=268435456,
-            config={},
+    c, _pool_id, object_ids = storage_pool_and_objects
+    new_vm = NewVm(
+        name="e2e-disk-explicit",
+        hypervisor=Hypervisor.CLOUD_HV,
+        boot_vcpus=1,
+        max_vcpus=1,
+        memory_size=268435456,
+        config={},
+    )
+    result = await create_vm.asyncio(client=c, body=new_vm)
+    vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
+
+    try:
+        from uuid import UUID
+
+        req = AttachDiskRequest(
+            storage_object_id=UUID(object_ids[0]),
+            logical_name="rootfs",
         )
-        result = await create_vm.asyncio(client=c, body=new_vm)
-        vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
+        disk = await attach_disk_api.asyncio(
+            client=c, vm_id=UUID(vm_id_str), body=req
+        )
+        assert disk is not None
+        assert disk.logical_name == "rootfs"
+        assert disk.device_path == "/dev/rootfs"
+    finally:
+        from uuid import UUID
 
-        try:
-            from uuid import UUID
+        await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vm_id_str))
 
-            req = AttachDiskRequest(
-                storage_object_id=UUID(object_ids[0]),
-                logical_name="rootfs",
-            )
+
+@pytest.mark.asyncio
+async def test_attach_multiple_disks_auto_names(storage_pool_and_objects):
+    """Attaching multiple disks without names should generate disk0, disk1, disk2."""
+    c, _pool_id, object_ids = storage_pool_and_objects
+    new_vm = NewVm(
+        name="e2e-multi-disk",
+        hypervisor=Hypervisor.CLOUD_HV,
+        boot_vcpus=1,
+        max_vcpus=1,
+        memory_size=268435456,
+        config={},
+    )
+    result = await create_vm.asyncio(client=c, body=new_vm)
+    vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
+
+    try:
+        from uuid import UUID
+
+        names = []
+        for oid in object_ids:
+            req = AttachDiskRequest(storage_object_id=UUID(oid))
             disk = await attach_disk_api.asyncio(
                 client=c, vm_id=UUID(vm_id_str), body=req
             )
             assert disk is not None
-            assert disk.logical_name == "rootfs"
-            assert disk.device_path == "/dev/rootfs"
-        finally:
-            from uuid import UUID
+            names.append(disk.logical_name)
 
-            await delete_vm.asyncio(client=c, vm_id=UUID(vm_id_str))
+        assert names == ["disk0", "disk1", "disk2"]
+    finally:
+        from uuid import UUID
 
-
-@pytest.mark.asyncio
-async def test_attach_multiple_disks_auto_names(client, storage_pool_and_objects):
-    """Attaching multiple disks without names should generate disk0, disk1, disk2."""
-    _pool_id, object_ids = storage_pool_and_objects
-    async with client as c:
-        new_vm = NewVm(
-            name="e2e-multi-disk",
-            hypervisor=Hypervisor.CLOUD_HV,
-            boot_vcpus=1,
-            max_vcpus=1,
-            memory_size=268435456,
-            config={},
-        )
-        result = await create_vm.asyncio(client=c, body=new_vm)
-        vm_id_str = str(result if isinstance(result, str) else result.vm_id).strip('"')
-
-        try:
-            from uuid import UUID
-
-            names = []
-            for oid in object_ids:
-                req = AttachDiskRequest(storage_object_id=UUID(oid))
-                disk = await attach_disk_api.asyncio(
-                    client=c, vm_id=UUID(vm_id_str), body=req
-                )
-                assert disk is not None
-                names.append(disk.logical_name)
-
-            assert names == ["disk0", "disk1", "disk2"]
-        finally:
-            from uuid import UUID
-
-            await delete_vm.asyncio(client=c, vm_id=UUID(vm_id_str))
+        await delete_vm.asyncio_detailed(client=c, vm_id=UUID(vm_id_str))

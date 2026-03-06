@@ -124,7 +124,7 @@ uv sync --frozen
 
 # Run the tests
 echo -e "${YELLOW}Running E2E tests...${NC}"
-if uv run pytest test_vm_lifecycle.py -v "$@"; then
+if uv run pytest -v "$@"; then
     echo ""
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0
