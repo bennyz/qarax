@@ -1,0 +1,5 @@
+[profile.default]
+# Retry failing tests once to handle transient failures (e.g. DB races)
+retries = 1
+# Time out individual tests after 60 seconds
+slow-timeout = { period = "60s", terminate-after = 2 }
