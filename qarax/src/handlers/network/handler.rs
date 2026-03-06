@@ -133,7 +133,7 @@ pub async fn attach_host(
         .await?
         .ok_or(crate::errors::Error::NotFound)?;
 
-    // passt-backed networks don't require bridge/dnsmasq/NAT provisioning.
+    // passt-backed networks don't require bridge/DHCP/NAT provisioning.
     if network.network_type.as_deref() == Some("passt") {
         networks::attach_host(env.pool(), network_id, body.host_id, &body.bridge_name).await?;
         return Ok(StatusCode::NO_CONTENT);
@@ -141,7 +141,7 @@ pub async fn attach_host(
 
     let parent_interface = body.parent_interface.clone().unwrap_or_default();
 
-    // Both isolated and bridged modes need DHCP range (for dnsmasq to serve VMs).
+    // Both isolated and bridged modes need DHCP range (for the DHCP server to serve VMs).
     // Bridged mode skips NAT but still needs DHCP.
     let (dhcp_start, dhcp_end) = compute_dhcp_range(&network.subnet, network.gateway.as_deref());
 
@@ -272,7 +272,7 @@ fn default_gateway(subnet: &str) -> String {
 
 /// Compute DHCP range: start at the first usable host after the gateway, end at broadcast-1.
 /// The start must align with `next_available_ip` (which also starts at network_addr+1 and
-/// skips the gateway) so the API-allocated IP matches what dnsmasq actually hands out.
+/// skips the gateway) so the API-allocated IP matches what the DHCP server actually hands out.
 fn compute_dhcp_range(subnet: &str, gateway: Option<&str>) -> (String, String) {
     if let Some((base, prefix_str)) = subnet.split_once('/') {
         let octets: Vec<u8> = base.split('.').filter_map(|o| o.parse().ok()).collect();
