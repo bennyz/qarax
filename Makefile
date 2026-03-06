@@ -50,7 +50,7 @@ sdk: openapi
 test: test-deps
 	DATABASE_HOST=localhost DATABASE_PORT=5432 \
 	DATABASE_USERNAME=qarax DATABASE_PASSWORD=qarax DATABASE_NAME=qarax \
-	cargo test $(CARGO_TARGET)
+	cargo nextest run $(CARGO_TARGET)
 
 # Start Postgres in Docker for integration tests. Run before 'make test' if needed.
 # Skip with SKIP_DOCKER=1 if Postgres is already running (e.g. via Docker Compose).
