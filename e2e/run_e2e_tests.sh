@@ -45,9 +45,9 @@ MUSL_TARGET="x86_64-unknown-linux-musl"
 NODE_BINARY="../target/${MUSL_TARGET}/release/qarax-node"
 if [ -z "$SKIP_BUILD" ]; then
     INIT_BINARY="../target/${MUSL_TARGET}/release/qarax-init"
-    QARAX_BINARY="../target/${MUSL_TARGET}/release/qarax"
+    QARAX_BINARY="../target/${MUSL_TARGET}/release/qarax-server"
     if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ] || [ ! -f "$QARAX_BINARY" ]; then
-        echo -e "${YELLOW}Building qarax, qarax-node, and qarax-init binaries...${NC}"
+        echo -e "${YELLOW}Building qarax-server, qarax-node, and qarax-init binaries...${NC}"
         cd ..
         if [ "$(uname -s)" = "Darwin" ]; then
             if ! command -v cross &>/dev/null; then

@@ -1,5 +1,5 @@
 # Avoid sending 10GB+ target/ to Docker.
-# Keep only qarax and qarax-node binaries for e2e Dockerfiles to COPY.
+# Keep only qarax, qarax-server, qarax-node, and qarax-init binaries for e2e Dockerfiles to COPY.
 .git
 .gitignore
 *.md
@@ -9,5 +9,6 @@ target/x86_64-unknown-linux-musl/*
 !target/x86_64-unknown-linux-musl/release
 target/x86_64-unknown-linux-musl/release/*
 !target/x86_64-unknown-linux-musl/release/qarax
+!target/x86_64-unknown-linux-musl/release/qarax-server
 !target/x86_64-unknown-linux-musl/release/qarax-node
 !target/x86_64-unknown-linux-musl/release/qarax-init

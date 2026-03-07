@@ -148,6 +148,8 @@ async fn find_bridge_member(handle: &Handle, bridge_name: &str) -> Result<String
     anyhow::bail!("No physical member found for bridge {bridge_name}")
 }
 
+use super::validate_iface_name;
+
 fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u8)> {
     let (ip_str, prefix_str) = cidr
         .split_once('/')
@@ -247,6 +249,8 @@ pub async fn attach_to_bridge(tap_name: &str, bridge_name: &str) -> Result<()> {
 /// remain valid across the transition.  If systemd-networkd is running, runtime
 /// configs are written so networkd stays in sync.
 pub async fn bridge_interface(bridge_name: &str, parent_iface: &str) -> Result<()> {
+    validate_iface_name(bridge_name)?;
+    validate_iface_name(parent_iface)?;
     info!("Bridging interface {parent_iface} onto bridge {bridge_name}");
     let handle = netlink_handle().await?;
 
@@ -370,6 +374,7 @@ pub async fn bridge_interface(bridge_name: &str, parent_iface: &str) -> Result<(
 /// Undo bridge_interface: move IP back from bridge to parent NIC, remove
 /// parent from bridge, and delete the bridge.
 pub async fn unbridge_interface(bridge_name: &str) -> Result<()> {
+    validate_iface_name(bridge_name)?;
     info!("Unbridging {bridge_name}");
     let handle = netlink_handle().await?;
 
