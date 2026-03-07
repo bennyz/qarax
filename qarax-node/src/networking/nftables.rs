@@ -41,6 +41,7 @@ pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
 /// Remove NAT and forwarding rules for a bridge subnet.
 pub async fn teardown_nat(bridge: &str, subnet: &str) -> Result<()> {
     super::validate_iface_name(bridge)?;
+    super::validate_ipv4_cidr(subnet)?;
     info!("Tearing down NAT for bridge {} subnet {}", bridge, subnet);
 
     let _ = run_cmd(
