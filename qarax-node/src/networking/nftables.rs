@@ -4,6 +4,7 @@ use tracing::info;
 /// Set up NAT masquerade and forwarding rules for a bridge subnet.
 pub async fn setup_nat(bridge: &str, subnet: &str) -> Result<()> {
     super::validate_iface_name(bridge)?;
+    super::validate_ipv4_cidr(subnet)?;
     info!("Setting up NAT for bridge {} subnet {}", bridge, subnet);
 
     // Enable IP forwarding via /proc (sysctl binary may not be present)
