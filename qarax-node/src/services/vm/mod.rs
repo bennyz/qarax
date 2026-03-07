@@ -883,6 +883,30 @@ async fn attach_local_pool(pool_id: &str, config_json: &str) -> AnyhowResult<Str
 }
 
 /// Mount an NFS export for this pool.
+/// Validate an NFS URL of the form `host:/path`.
+///
+/// Rejects blank values, missing colon-slash separator, and shell-injectable
+/// characters that have no place in a hostname or export path.
+fn validate_nfs_url(url: &str) -> AnyhowResult<()> {
+    let (host, path) = url
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("Invalid NFS URL {url:?}: expected 'host:/path'"))?;
+
+    if host.is_empty() {
+        anyhow::bail!("Invalid NFS URL {url:?}: host is empty");
+    }
+    if !path.starts_with('/') {
+        anyhow::bail!("Invalid NFS URL {url:?}: path must start with '/'");
+    }
+
+    let bad = |c: char| matches!(c, '\0' | '\n' | '\r' | ';' | '&' | '|' | '`' | '$' | '\\');
+    if host.chars().any(bad) || path.chars().any(bad) {
+        anyhow::bail!("Invalid NFS URL {url:?}: contains illegal characters");
+    }
+
+    Ok(())
+}
+
 async fn attach_nfs_pool(pool_id: &str, config_json: &str) -> AnyhowResult<String> {
     let cfg: serde_json::Value = serde_json::from_str(config_json)
         .map_err(|e| anyhow::anyhow!("Invalid NFS pool config JSON: {}", e))?;
@@ -891,6 +915,8 @@ async fn attach_nfs_pool(pool_id: &str, config_json: &str) -> AnyhowResult<Strin
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("NFS pool config missing 'url' field"))?;
+
+    validate_nfs_url(url)?;
 
     let mount_point = format!("/var/lib/qarax/pools/{}", pool_id);
     tokio::fs::create_dir_all(&mount_point).await?;

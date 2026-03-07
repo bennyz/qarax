@@ -183,7 +183,6 @@ async def storage_pool_and_objects(client):
                 storage_pool_id=pool_id,
                 object_type=StorageObjectType.DISK,
                 size_bytes=1073741824,
-                config={"path": f"/var/lib/qarax/e2e-disk-test/disk-{i}"},
             )
             obj_id_raw = await create_storage_object.asyncio(client=c, body=obj)
             object_ids.append(str(obj_id_raw).strip('"'))

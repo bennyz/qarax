@@ -180,7 +180,6 @@ async def test_nfs_storage_object_create(client):
                 storage_pool_id=str(pool_id),
                 object_type=StorageObjectType.DISK,
                 size_bytes=1073741824,
-                config={"path": f"/var/lib/qarax/pools/{pool_id}/e2e-nfs-disk.img"},
             )
             obj_id_raw = await create_storage_object.asyncio(client=c, body=obj)
             assert obj_id_raw is not None
