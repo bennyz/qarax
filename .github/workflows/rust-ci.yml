@@ -229,7 +229,7 @@ jobs:
 
           # Install Python dependencies and run tests
           uv sync --frozen
-          uv run pytest test_vm_lifecycle.py -v
+          uv run pytest -v
 
       - name: Show logs on failure
         if: failure()
