@@ -48,6 +48,26 @@ PostgreSQL 16+ with SQLx (compile-time verified queries).
 - After modifying any SQL query: `cargo sqlx prepare --workspace`
 - Offline/CI builds: `SQLX_OFFLINE=true cargo build`
 
+## Deployment Topology
+
+Qarax supports two deployment modes — understand which one is in use before debugging:
+
+- **Docker Compose (e2e / local dev):** `qarax` (control plane), `qarax-node`, and `postgres` run as separate containers. `qarax-node` runs privileged with `/dev/kvm` passthrough for real VMs.
+- **Hyperconverged (libvirt demo):** A single Cloud Hypervisor VM hosts both the control plane and the node. `qarax-node` runs *inside* the VM alongside `qarax`. The VM itself runs on the developer's host via libvirt. `hack/run-local.sh --vm` and `hack/test-host-deploy-libvirt.sh` manage this mode.
+
+Always confirm the deployment mode before debugging. Many issues (networking, storage mount paths, device availability) differ between the two modes.
+
+## Debugging Protocol
+
+Follow this order before touching code:
+
+1. **Confirm the deployment mode** (container vs hyperconverged VM — see above).
+2. **Check that required services are running:** `qarax-node`, `cloud-hypervisor` process per VM, `postgres`. Most runtime failures are infrastructure, not code.
+3. **Read service logs** (`docker compose logs qarax-node`, `journalctl -u qarax-node`, etc.) before grep-ing source files.
+4. **Only after confirming infrastructure is healthy**, investigate code-level issues.
+
+Do not jump to code investigation when services may not be running or the wrong environment is assumed.
+
 ## Architecture
 
 ### Control Plane (qarax)
@@ -119,6 +139,15 @@ YAML files in `configuration/` (base.yaml, local.yaml, production.yaml), selecte
 ## CI
 
 GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) → unit tests → E2E tests. E2E tests run on push to master or PRs with `run-e2e` label. E2E uses pytest against a Docker Compose stack with KVM passthrough (`e2e/`).
+
+## Rules
+
+- **Never modify generated files directly.** The Python SDK (`python-sdk/`) is generated from `openapi.yaml` via `make sdk`. Fix the utoipa annotation in Rust, then regenerate.
+- **Never modify production config files for test purposes.** Fix the Dockerfile or compose file instead.
+- **Always run `make lint` after changes.** Zero clippy warnings are required. Check all workspace crates, not just the one you edited.
+- **After any SQL query change:** run `cargo sqlx prepare --workspace` to update the offline query cache.
+- **When renaming anything:** search `hack/`, `e2e/`, `.github/`, and all workspace crates for stale references before finishing.
+- **Plan before implementing on non-trivial changes.** List files to modify and describe the approach. Do not create or edit files until the plan is clear.
 
 ## Skills
 
