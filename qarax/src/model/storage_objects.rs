@@ -207,7 +207,8 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
 
     // For disk objects on LOCAL/NFS pools, derive the on-disk path from the
     // pool layout rather than requiring the caller to know the node's
-    // filesystem structure.
+    // filesystem structure. The object UUID is used as the filename so the
+    // path is always safe — no user-supplied name reaches the filesystem.
     let config = if new_object.object_type == StorageObjectType::Disk
         && new_object.config.get("path").is_none()
     {
@@ -217,11 +218,10 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
                     .config
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .map(|base| format!("{}/{}", base, new_object.name)),
-                storage_pools::StoragePoolType::Nfs => Some(format!(
-                    "/var/lib/qarax/pools/{}/{}",
-                    pool_id, new_object.name
-                )),
+                    .map(|base| format!("{}/{}", base, id)),
+                storage_pools::StoragePoolType::Nfs => {
+                    Some(format!("/var/lib/qarax/pools/{}/{}", pool_id, id))
+                }
                 _ => None,
             };
             if let Some(path) = derived_path {

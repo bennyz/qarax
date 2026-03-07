@@ -10,7 +10,12 @@ echo "${SHARED_DIR} *(rw,sync,no_subtree_check,no_root_squash)" > /etc/exports
 mount -t nfsd nfsd /proc/fs/nfsd 2>/dev/null || true
 
 rpcbind -w
-sleep 0.5
+
+# Wait for rpcbind to be ready before starting other RPC services
+until rpcinfo -p localhost > /dev/null 2>&1; do
+    sleep 0.5
+done
+
 rpc.nfsd 8
 rpc.mountd --no-udp
 exportfs -ra
