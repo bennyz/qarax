@@ -1,0 +1,6 @@
+FROM alpine:3.19
+RUN apk add --no-cache nfs-utils
+COPY e2e/nfs-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 2049 111 20048
+CMD ["/entrypoint.sh"]

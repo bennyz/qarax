@@ -109,7 +109,12 @@ if [[ -z "${SKIP_BUILD}" ]]; then
 			fi
 			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init
 		else
-			cargo build --release -p qarax -p qarax-node -p qarax-init
+			# If running under sudo, build as the original user so target/ stays user-owned.
+			if [[ -n "${SUDO_USER:-}" ]]; then
+				sudo -u "$SUDO_USER" cargo build --release -p qarax -p qarax-node -p qarax-init
+			else
+				cargo build --release -p qarax -p qarax-node -p qarax-init
+			fi
 		fi
 	else
 		echo -e "${GREEN}Using existing binaries${NC}"

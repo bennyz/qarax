@@ -205,6 +205,37 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
 
     let id = Uuid::new_v4();
 
+    // For disk objects on LOCAL/NFS pools, derive the on-disk path from the
+    // pool layout rather than requiring the caller to know the node's
+    // filesystem structure. The object UUID is used as the filename so the
+    // path is always safe — no user-supplied name reaches the filesystem.
+    let config = if new_object.object_type == StorageObjectType::Disk
+        && new_object.config.get("path").is_none()
+    {
+        if let Ok(storage_pool) = storage_pools::get(pool, pool_id).await {
+            let derived_path = match storage_pool.pool_type {
+                storage_pools::StoragePoolType::Local => storage_pool
+                    .config
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|base| format!("{}/{}", base, id)),
+                storage_pools::StoragePoolType::Nfs => {
+                    Some(format!("/var/lib/qarax/pools/{}/{}", pool_id, id))
+                }
+                _ => None,
+            };
+            if let Some(path) = derived_path {
+                serde_json::json!({ "path": path })
+            } else {
+                new_object.config
+            }
+        } else {
+            new_object.config
+        }
+    } else {
+        new_object.config
+    };
+
     sqlx::query(
         r#"
 INSERT INTO storage_objects (id, name, storage_pool_id, object_type, size_bytes, config, parent_id)
@@ -216,7 +247,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
     .bind(pool_id)
     .bind(new_object.object_type)
     .bind(new_object.size_bytes)
-    .bind(new_object.config)
+    .bind(config)
     .bind(new_object.parent_id)
     .execute(pool)
     .await?;

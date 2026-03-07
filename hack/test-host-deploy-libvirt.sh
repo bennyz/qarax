@@ -279,6 +279,9 @@ DOCKERFILE
 	sudo podman build \
 		--build-arg "CACHE_BUST=${node_hash}" \
 		-t "${TEST_HOST_TAG}" -f "${build_dir}/Containerfile" "${build_dir}"
+	# Re-tagging leaves the previous image dangling (untagged). Prune them now
+	# so they don't accumulate across repeated builds. Layer cache is preserved.
+	sudo podman image prune -f
 	echo "Pushing test host image to local registry ${LOCAL_REGISTRY}..."
 	sudo podman push "${TEST_HOST_TAG}" "${DEPLOY_IMAGE}" --tls-verify=false
 }

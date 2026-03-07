@@ -64,17 +64,25 @@ jobs:
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              # Version tag (v*): publish the version tag + latest
               image_tag="${GITHUB_REF_NAME}"
+              extra_tags="${REGISTRY}/${IMAGE_NAME}:latest"
             else
-              image_tag="master-${GITHUB_SHA::12}"
+              # Master branch: only update latest — no per-commit tags
+              image_tag="latest"
+              extra_tags=""
             fi
-            push_latest="true"
           else
+            # workflow_dispatch: one-off dev tag, no latest unless opted in
             image_tag="${{ inputs.image_tag }}"
             if [ -z "${image_tag}" ]; then
               image_tag="dev-${GITHUB_SHA::12}"
             fi
-            push_latest="${{ inputs.push_latest }}"
+            if [ "${{ inputs.push_latest }}" = "true" ]; then
+              extra_tags="${REGISTRY}/${IMAGE_NAME}:latest"
+            else
+              extra_tags=""
+            fi
           fi
 
           cloud_hv="${{ inputs.cloud_hypervisor_version }}"
@@ -83,7 +91,7 @@ jobs:
           fi
 
           echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
-          echo "push_latest=${push_latest}" >> "${GITHUB_OUTPUT}"
+          echo "extra_tags=${extra_tags}" >> "${GITHUB_OUTPUT}"
           echo "cloud_hv=${cloud_hv}" >> "${GITHUB_OUTPUT}"
 
       - name: Build release binaries
@@ -105,17 +113,10 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ steps.vars.outputs.extra_tags }}
           build-args: |
             CLOUD_HYPERVISOR_VERSION=${{ steps.vars.outputs.cloud_hv }}
             QARAX_VERSION=${{ steps.vars.outputs.image_tag }}
-
-      - name: Update latest tag
-        if: steps.vars.outputs.push_latest == 'true'
-        run: |
-          docker buildx imagetools create \
-            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
-            "${REGISTRY}/${IMAGE_NAME}:${{ steps.vars.outputs.image_tag }}"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.7.0
@@ -140,6 +141,6 @@ jobs:
           echo "## Appliance image published" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Image: \`${REGISTRY}/${IMAGE_NAME}:${{ steps.vars.outputs.image_tag }}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Digest: \`${{ steps.image.outputs.digest }}\`" >> "${GITHUB_STEP_SUMMARY}"
-          if [ "${{ steps.vars.outputs.push_latest }}" = "true" ]; then
-            echo "- Also tagged: \`${REGISTRY}/${IMAGE_NAME}:latest\`" >> "${GITHUB_STEP_SUMMARY}"
+          if [ -n "${{ steps.vars.outputs.extra_tags }}" ]; then
+            echo "- Also tagged: \`${{ steps.vars.outputs.extra_tags }}\`" >> "${GITHUB_STEP_SUMMARY}"
           fi
