@@ -23,3 +23,21 @@ pub(super) fn validate_iface_name(name: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Validate an IPv4 CIDR string (e.g. "192.168.1.0/24").
+/// Rejects malformed input before it reaches iptables arguments.
+pub(super) fn validate_ipv4_cidr(cidr: &str) -> anyhow::Result<()> {
+    let (ip_str, prefix_str) = cidr
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Invalid CIDR {cidr:?}: missing '/'"))?;
+    let _: std::net::Ipv4Addr = ip_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid CIDR {cidr:?}: bad IPv4 address"))?;
+    let prefix: u8 = prefix_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid CIDR {cidr:?}: bad prefix length"))?;
+    if prefix > 32 {
+        anyhow::bail!("Invalid CIDR {cidr:?}: prefix length must be 0–32");
+    }
+    Ok(())
+}
