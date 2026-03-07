@@ -146,11 +146,15 @@ impl ImageStoreManager {
         let reference = Reference::try_from(image_ref)
             .map_err(|e| ImageStoreError::InvalidRef(e.to_string()))?;
 
+        let mut insecure_hosts: Vec<String> =
+            vec!["localhost".to_string(), "127.0.0.1".to_string()];
+        if let Ok(val) = std::env::var("INSECURE_REGISTRIES") {
+            for host in val.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                insecure_hosts.push(host.to_string());
+            }
+        }
         let config = ClientConfig {
-            protocol: ClientProtocol::HttpsExcept(vec![
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-            ]),
+            protocol: ClientProtocol::HttpsExcept(insecure_hosts),
             ..Default::default()
         };
         let client = Client::new(config);

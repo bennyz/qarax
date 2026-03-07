@@ -56,7 +56,12 @@ if [ -z "$SKIP_BUILD" ]; then
             fi
             cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init
         else
-            cargo build --release -p qarax -p qarax-node -p qarax-init
+            # If running under sudo, build as the original user so target/ stays user-owned.
+            if [ -n "${SUDO_USER:-}" ]; then
+                sudo -u "$SUDO_USER" cargo build --release -p qarax -p qarax-node -p qarax-init
+            else
+                cargo build --release -p qarax -p qarax-node -p qarax-init
+            fi
         fi
         cd e2e
     else
@@ -79,7 +84,7 @@ elapsed=0
 while [ $elapsed -lt $timeout ]; do
     # Check if all services are healthy
     healthy_count=$(docker-compose ps 2>/dev/null | grep -c "(healthy)" || echo "0")
-    total_services=4  # registry, postgres, qarax, qarax-node
+    total_services=5  # nfs-server, registry, postgres, qarax, qarax-node
 
     if [ "$healthy_count" -ge "$total_services" ]; then
         echo ""

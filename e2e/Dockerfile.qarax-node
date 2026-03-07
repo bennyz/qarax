@@ -26,6 +26,7 @@ RUN dnf install -y \
     busybox \
     virtiofsd \
     e2fsprogs \
+    nfs-utils \
     && dnf clean all \
     && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
 

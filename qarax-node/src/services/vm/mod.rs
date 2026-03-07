@@ -896,7 +896,7 @@ async fn attach_nfs_pool(pool_id: &str, config_json: &str) -> AnyhowResult<Strin
     tokio::fs::create_dir_all(&mount_point).await?;
 
     let output = tokio::process::Command::new("mount")
-        .args(["-t", "nfs", url, &mount_point])
+        .args(["-t", "nfs", "-o", "nolock", url, &mount_point])
         .output()
         .await?;
 

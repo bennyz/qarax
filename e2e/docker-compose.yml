@@ -1,4 +1,19 @@
 services:
+  nfs-server:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.nfs-server
+    privileged: true
+    environment:
+      SHARED_DIRECTORY: /nfs-export
+    volumes:
+      - nfs_export:/nfs-export
+    healthcheck:
+      test: [ "CMD", "sh", "-c", "rpcinfo -p localhost > /dev/null 2>&1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   registry:
     image: registry:2
     ports:
@@ -76,10 +91,14 @@ services:
     environment:
       # Registry URL for OverlayBD image imports
       OVERLAYBD_REGISTRY_URL: http://registry:5000
+      # Allow HTTP pulls from the local test registry (oci-client defaults to HTTPS)
+      INSECURE_REGISTRIES: registry:5000
     ports:
       - "50051:50051"
     depends_on:
       registry:
+        condition: service_healthy
+      nfs-server:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "nc", "-z", "localhost", "50051" ]
@@ -92,3 +111,4 @@ volumes:
   registry_data:
   qarax_vms:
   qarax_overlaybd:
+  nfs_export:
