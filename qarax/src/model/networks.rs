@@ -259,6 +259,8 @@ pub async fn allocate_ip(
         r#"
 INSERT INTO ip_allocations (network_id, ip_address, vm_id)
 VALUES ($1, $2::inet, $3)
+ON CONFLICT (network_id, ip_address) DO UPDATE
+    SET vm_id = EXCLUDED.vm_id, allocated_at = now()
 RETURNING id, network_id, ip_address::text, vm_id, allocated_at
         "#,
     )
