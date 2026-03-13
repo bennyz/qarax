@@ -149,6 +149,10 @@ pub async fn create(
 
     tx.commit().await?;
 
+    // For any explicit networks with a static IP + network_id, register in IPAM so
+    // the IP is tracked and won't be re-allocated to another VM.
+    register_static_ips(env.pool(), id, vm.networks.as_deref()).await?;
+
     // Pick a host and record it
     let host = pick_host(&env, vm.memory_size).await?;
     let _ = vms::update_host_id(env.pool(), id, host.id).await;
@@ -277,6 +281,9 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
 
     tx.commit().await?;
 
+    // For any explicit networks with a static IP + network_id, register in IPAM.
+    register_static_ips(env.pool(), vm_id, vm.networks.as_deref()).await?;
+
     // If network_id is provided, allocate an IP and create a default interface.
     // This mirrors the synchronous create path so async image-based VMs get managed networking.
     if let Some(network_id) = vm.network_id {
@@ -373,6 +380,22 @@ async fn create_with_image(env: App, vm: NewVm) -> Result<axum::response::Respon
         code: StatusCode::ACCEPTED,
     }
     .into_response())
+}
+
+/// Helper to register explicitly provided static IPs in IPAM during VM creation.
+async fn register_static_ips(
+    pool: &sqlx::PgPool,
+    vm_id: Uuid,
+    networks: Option<&[crate::model::vms::NewVmNetwork]>,
+) -> Result<()> {
+    for net in networks.unwrap_or(&[]) {
+        if let (Some(net_id), Some(ip)) = (net.network_id, &net.ip) {
+            networks::allocate_ip(pool, net_id, ip, Some(vm_id))
+                .await
+                .map_err(crate::errors::Error::Sqlx)?;
+        }
+    }
+    Ok(())
 }
 
 /// Background task for the virtiofs (Nydus) OCI image boot path.
@@ -885,7 +908,17 @@ pub async fn console_log(
     })?;
 
     if !response.available {
-        return Err(crate::errors::Error::NotFound);
+        // VMs that boot directly from a block device (overlaybd) use a PTY for their
+        // serial console; there is no persistent log file.  Tell the user to use
+        // `vm attach` for interactive access instead.
+        return Ok(axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(axum::body::Body::from(
+                "(No console log file available — this VM uses a PTY serial console.\n\
+                 Use `vm attach` for interactive access.)\n",
+            ))
+            .unwrap());
     }
 
     Ok(axum::response::Response::builder()
@@ -1242,7 +1275,11 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
         (
             vec![],
-            Some(format!("console=ttyS0 root=/dev/vda rw{}", ip_params)),
+            // net.ifnames=0: keep eth0 naming (prevents udev renaming to ens*/enp*)
+            Some(format!(
+                "console=ttyS0 root=/dev/vda rw net.ifnames=0 biosdevname=0{}",
+                ip_params
+            )),
             false,
         )
     } else if !filesystems.is_empty() {
@@ -1270,6 +1307,10 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         let c = default_cmdline.map(|s| format!("{}{}", s, ip_params));
         (vec![], c, vm.memory_shared)
     };
+
+    // For overlaybd boot, don't pass an initramfs — the kernel mounts /dev/vda (ext4)
+    // directly. The test initramfs contains /.qarax-config.json which prevents switch_root.
+    let initramfs = if has_overlaybd_boot { None } else { initramfs };
 
     Ok(CreateVmRequest {
         vm_id,

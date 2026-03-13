@@ -20,6 +20,15 @@ pub struct Vm {
 }
 
 #[derive(Debug, Serialize)]
+pub struct NewVmNetwork {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct NewVm {
     pub name: String,
     pub hypervisor: String,
@@ -36,6 +45,8 @@ pub struct NewVm {
     pub image_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub networks: Option<Vec<NewVmNetwork>>,
     pub config: serde_json::Value,
 }
 

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     api::{
         self,
-        models::{AttachDiskRequest, CreateVmResult, NewVm},
+        models::{AttachDiskRequest, CreateVmResult, NewVm, NewVmNetwork},
     },
     client::Client,
     console,
@@ -61,6 +61,9 @@ enum VmCommand {
         /// Network name or ID to attach the VM to (allocates an IP automatically)
         #[arg(long)]
         network: Option<String>,
+        /// Static IP address to assign to the VM (requires --network)
+        #[arg(long, requires = "network")]
+        ip: Option<String>,
     },
     /// Delete a VM
     Delete {
@@ -198,19 +201,34 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
             image_ref,
             boot_mode,
             network,
+            ip,
         } => {
             let boot_source_id = match boot_source {
                 Some(ref s) => Some(resolve_boot_source_id(client, s).await?),
-                None => None,
-            };
-            let network_id = match network {
-                Some(ref s) => Some(resolve_network_id(client, s).await?),
                 None => None,
             };
             let boot_mode_opt = if boot_mode == "kernel" {
                 None
             } else {
                 Some(boot_mode)
+            };
+            // When --ip is given we pass an explicit networks entry so the server
+            // uses that IP instead of auto-allocating one.
+            let (network_id, networks) = match network {
+                None => (None, None),
+                Some(ref s) => {
+                    let nid = resolve_network_id(client, s).await?;
+                    if let Some(addr) = ip {
+                        let iface = NewVmNetwork {
+                            id: "net0".to_string(),
+                            network_id: Some(nid),
+                            ip: Some(addr),
+                        };
+                        (None, Some(vec![iface]))
+                    } else {
+                        (Some(nid), None)
+                    }
+                }
             };
             let new_vm = NewVm {
                 name,
@@ -223,6 +241,7 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                 description,
                 image_ref: image_ref.clone(),
                 network_id,
+                networks,
                 config: serde_json::json!({}),
             };
 
