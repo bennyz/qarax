@@ -11,17 +11,31 @@ cargo build -p cli --release
 
 ## Configuration
 
-The server URL defaults to `http://localhost:8000`. Override it with `--server` or the `QARAX_SERVER` environment variable:
+Run `qarax configure` once to save the server URL to `~/.config/qarax/config.toml`:
 
 ```bash
-export QARAX_SERVER=http://192.168.1.10:8000
+qarax configure
+# Server URL [http://localhost:8000]: http://192.168.1.10:8000
+# Saved to /home/user/.config/qarax/config.toml
 ```
+
+Or pass `--server` non-interactively:
+
+```bash
+qarax configure --server http://192.168.1.10:8000
+```
+
+Server URL resolution order (highest to lowest priority):
+
+1. `--server` flag or `QARAX_SERVER` environment variable
+2. Value saved in `~/.config/qarax/config.toml`
+3. Default: `http://localhost:8000`
 
 ## Global flags
 
 | Flag | Description |
 |------|-------------|
-| `--server <URL>` | qarax API base URL (default: `http://localhost:8000`) |
+| `--server <URL>` | qarax API base URL (overrides config file) |
 | `--json` | Print raw JSON instead of formatted tables |
 
 ## Resources accept names or IDs
@@ -204,7 +218,7 @@ qarax job get <job-uuid>
 ## End-to-end example
 
 ```bash
-export QARAX_SERVER=http://localhost:8000
+qarax configure --server http://localhost:8000
 
 # 1. Add and initialize a hypervisor host
 qarax host add --name node-01 --address 192.168.1.10 --user root --password secret
