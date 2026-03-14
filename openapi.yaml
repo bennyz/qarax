@@ -934,6 +934,38 @@ paths:
           description: VM not found
         '500':
           description: Internal server error
+  /vms/{vm_id}/restore:
+    post:
+      tags:
+      - vms
+      operationId: restore
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRequest'
+        required: true
+      responses:
+        '200':
+          description: VM restored from snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vm'
+        '404':
+          description: VM or snapshot not found
+        '422':
+          description: VM not in a restoreable state or snapshot not ready
+        '500':
+          description: Internal server error
   /vms/{vm_id}/resume:
     post:
       tags:
@@ -950,6 +982,55 @@ paths:
       responses:
         '200':
           description: VM resumed successfully
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
+  /vms/{vm_id}/snapshots:
+    get:
+      tags:
+      - vms
+      operationId: list_snapshots
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: List snapshots for a VM
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Snapshot'
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
+    post:
+      tags:
+      - vms
+      operationId: create_snapshot
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
         '404':
           description: VM not found
         '500':
@@ -1803,6 +1884,42 @@ components:
           oneOf:
           - type: 'null'
           - $ref: '#/components/schemas/TokenBucket'
+    RestoreRequest:
+      type: object
+      required:
+      - snapshot_id
+      properties:
+        snapshot_id:
+          type: string
+          format: uuid
+    Snapshot:
+      type: object
+      required:
+      - id
+      - vm_id
+      - status
+      - snapshot_url
+      - created_at
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        snapshot_url:
+          type: string
+        status:
+          $ref: '#/components/schemas/SnapshotStatus'
+        vm_id:
+          type: string
+          format: uuid
+    SnapshotStatus:
+      type: string
+      enum:
+      - creating
+      - ready
+      - failed
     StorageObject:
       type: object
       required:

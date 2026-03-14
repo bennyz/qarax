@@ -43,6 +43,9 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
         vm::handler::stop,
         vm::handler::pause,
         vm::handler::resume,
+        vm::handler::list_snapshots,
+        vm::handler::create_snapshot,
+        vm::handler::restore,
         vm::handler::delete,
         vm::handler::metrics,
         vm::handler::console_log,
@@ -113,9 +116,12 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::jobs::Job,
             crate::model::jobs::JobStatus,
             crate::model::jobs::JobType,
+            crate::model::snapshots::Snapshot,
+            crate::model::snapshots::SnapshotStatus,
             crate::handlers::vm::handler::CreateVmResponse,
             crate::handlers::vm::handler::VmStartResponse,
             crate::handlers::vm::handler::AttachDiskRequest,
+            crate::handlers::vm::handler::RestoreRequest,
             crate::handlers::storage_pool::handler::ImportToPoolRequest,
             crate::handlers::storage_pool::handler::ImportToPoolResponse,
             crate::model::networks::Network,
@@ -206,6 +212,11 @@ fn vms() -> Router {
             get(vm::handler::console_attach),
         )
         .route("/vms/{vm_id}/disks", post(vm::handler::attach_disk))
+        .route(
+            "/vms/{vm_id}/snapshots",
+            get(vm::handler::list_snapshots).post(vm::handler::create_snapshot),
+        )
+        .route("/vms/{vm_id}/restore", post(vm::handler::restore))
 }
 
 fn storage_objects() -> Router {

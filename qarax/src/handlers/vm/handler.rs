@@ -19,7 +19,9 @@ use crate::{
         boot_sources, hosts,
         hosts::Host,
         jobs::{self, JobType, NewJob},
-        network_interfaces, networks, storage_objects, storage_pools,
+        network_interfaces, networks, snapshots,
+        snapshots::{NewSnapshot, Snapshot, SnapshotStatus},
+        storage_objects, storage_pools,
         storage_pools::OverlayBdPoolConfig,
         vm_disks::{self, NewVmDisk},
         vm_filesystems::{self, NewVmFilesystem},
@@ -699,10 +701,21 @@ pub async fn stop(
 ) -> Result<ApiResponse<()>> {
     let host = host_for_vm(&env, vm_id).await?;
     let node_client = NodeClient::new(&host.address, host.port as u16);
-    node_client.stop_vm(vm_id).await.map_err(|e| {
-        tracing::error!("Failed to stop VM on qarax-node: {}", e);
-        crate::errors::Error::InternalServerError
-    })?;
+    match node_client.stop_vm(vm_id).await {
+        Ok(()) => {}
+        Err(e)
+            if e.downcast_ref::<crate::errors::Error>()
+                .map(|e| matches!(e, crate::errors::Error::NotFound))
+                .unwrap_or(false) =>
+        {
+            // VM process already gone on the node — treat as already stopped
+            tracing::warn!(vm_id = %vm_id, "VM not found on node during stop, treating as already stopped");
+        }
+        Err(e) => {
+            tracing::error!("Failed to stop VM on qarax-node: {}", e);
+            return Err(crate::errors::Error::InternalServerError);
+        }
+    }
 
     vms::update_status(env.pool(), vm_id, VmStatus::Shutdown).await?;
 
@@ -774,6 +787,196 @@ pub async fn resume(
 
     Ok(ApiResponse {
         data: (),
+        code: StatusCode::OK,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/vms/{vm_id}/snapshots",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 200, description = "List snapshots for a VM", body = Vec<Snapshot>),
+        (status = 404, description = "VM not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn list_snapshots(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<ApiResponse<Vec<Snapshot>>> {
+    // Verify VM exists
+    vms::get(env.pool(), vm_id).await?;
+
+    let list = snapshots::list_for_vm(env.pool(), vm_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?;
+
+    Ok(ApiResponse {
+        data: list,
+        code: StatusCode::OK,
+    })
+}
+
+#[utoipa::path(
+    post,
+    path = "/vms/{vm_id}/snapshots",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 201, description = "Snapshot created", body = Snapshot),
+        (status = 404, description = "VM not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn create_snapshot(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<ApiResponse<Snapshot>> {
+    let host = host_for_vm(&env, vm_id).await?;
+
+    let snapshot_id = Uuid::new_v4();
+    let snapshot_url = format!("file://{}/{}/{}", env.snapshot_dir(), vm_id, snapshot_id);
+
+    let id = snapshots::create(
+        env.pool(),
+        &NewSnapshot {
+            vm_id,
+            snapshot_url: snapshot_url.clone(),
+        },
+    )
+    .await
+    .map_err(crate::errors::Error::Sqlx)?;
+
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    // Pause the VM before snapshotting
+    if let Err(e) = node_client.pause_vm(vm_id).await {
+        error!("Failed to pause VM before snapshot: {}", e);
+        let _ = snapshots::update_status(env.pool(), id, SnapshotStatus::Failed).await;
+        return Err(crate::errors::Error::InternalServerError);
+    }
+
+    // Take the snapshot
+    let snap_result = node_client.snapshot_vm(vm_id, &snapshot_url).await;
+
+    // Always attempt to resume, but capture the result — a failed resume means
+    // the VM is stuck Paused and the client must be informed even if the
+    // snapshot data itself is valid.
+    let resume_result = node_client.resume_vm(vm_id).await;
+    if let Err(e) = &resume_result {
+        error!("Failed to resume VM after snapshot: {}", e);
+    }
+
+    match snap_result {
+        Ok(()) => {
+            snapshots::update_status(env.pool(), id, SnapshotStatus::Ready)
+                .await
+                .map_err(crate::errors::Error::Sqlx)?;
+
+            // Snapshot succeeded but VM is stuck Paused — return an error so
+            // the client knows manual intervention is needed.
+            if resume_result.is_err() {
+                return Err(crate::errors::Error::InternalServerError);
+            }
+        }
+        Err(e) => {
+            error!("Failed to snapshot VM: {}", e);
+            let _ = snapshots::update_status(env.pool(), id, SnapshotStatus::Failed).await;
+            return Err(crate::errors::Error::InternalServerError);
+        }
+    }
+
+    let snapshot = snapshots::get(env.pool(), id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?;
+
+    Ok(ApiResponse {
+        data: snapshot,
+        code: StatusCode::CREATED,
+    })
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RestoreRequest {
+    pub snapshot_id: Uuid,
+}
+
+#[utoipa::path(
+    post,
+    path = "/vms/{vm_id}/restore",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    request_body = RestoreRequest,
+    responses(
+        (status = 200, description = "VM restored from snapshot", body = Vm),
+        (status = 404, description = "VM or snapshot not found"),
+        (status = 422, description = "VM not in a restoreable state or snapshot not ready"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn restore(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+    Json(body): Json<RestoreRequest>,
+) -> Result<ApiResponse<Vm>> {
+    let vm = vms::get(env.pool(), vm_id).await?;
+
+    match vm.status {
+        VmStatus::Running | VmStatus::Paused | VmStatus::Pending => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "VM must be stopped before restoring".into(),
+            ));
+        }
+        VmStatus::Shutdown | VmStatus::Created | VmStatus::Unknown => {}
+    }
+
+    let snapshot = snapshots::get(env.pool(), body.snapshot_id)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => crate::errors::Error::NotFound,
+            _ => crate::errors::Error::Sqlx(e),
+        })?;
+
+    if snapshot.vm_id != vm_id {
+        return Err(crate::errors::Error::NotFound);
+    }
+
+    if snapshot.status != SnapshotStatus::Ready {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "snapshot is not in ready state".into(),
+        ));
+    }
+
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    vms::update_status(env.pool(), vm_id, VmStatus::Pending).await?;
+
+    // The node handles the full restore flow: kills any existing CH process,
+    // spawns a fresh one, and calls vm.restore directly (no vm.create needed).
+    if let Err(e) = node_client.restore_vm(vm_id, &snapshot.snapshot_url).await {
+        let msg = format!("restore_vm failed: {:#}", e);
+        tracing::error!(vm_id = %vm_id, error = %msg);
+        let _ = vms::update_status(env.pool(), vm_id, VmStatus::Unknown).await;
+        return Err(crate::errors::Error::InternalServerError);
+    }
+
+    vms::update_status(env.pool(), vm_id, VmStatus::Running).await?;
+
+    let updated_vm = vms::get(env.pool(), vm_id).await?;
+    Ok(ApiResponse {
+        data: updated_vm,
         code: StatusCode::OK,
     })
 }
@@ -1276,8 +1479,9 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         (
             vec![],
             // net.ifnames=0: keep eth0 naming (prevents udev renaming to ens*/enp*)
+            // init=/.qarax-init: use our injected init binary instead of the OCI image's /sbin/init
             Some(format!(
-                "console=ttyS0 root=/dev/vda rw net.ifnames=0 biosdevname=0{}",
+                "console=ttyS0 root=/dev/vda rw net.ifnames=0 biosdevname=0 init=/.qarax-init{}",
                 ip_params
             )),
             false,
@@ -1402,6 +1606,16 @@ pub async fn attach_disk(
     }
 
     let existing = vm_disks::list_by_vm(env.pool(), vm_id).await?;
+    if existing
+        .iter()
+        .any(|d| d.storage_object_id == Some(req.storage_object_id))
+    {
+        return Err(crate::errors::Error::Conflict(format!(
+            "Storage object {} is already attached to this VM",
+            req.storage_object_id
+        )));
+    }
+
     let logical_name = match req.logical_name.clone() {
         Some(name) => name,
         None => next_disk_id(&existing),

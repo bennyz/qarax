@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
-use tracing::{debug, instrument};
+use tokio::time::{Duration, sleep};
+use tracing::{debug, instrument, warn};
 use uuid::Uuid;
 
 use crate::model::network_interfaces::{
@@ -20,8 +21,9 @@ use node::{
     ConsoleLogResponse, CopyFileRequest, CpusConfig, DetachNetworkRequest,
     DetachStoragePoolRequest, DiskConfig, DownloadFileRequest, FsConfig, ImportOverlayBdRequest,
     ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, OciImageRequest, OciImageResponse,
-    PayloadConfig, StoragePoolKind, VmConfig, VmCounters, VmId, VmState,
-    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
+    PayloadConfig, RestoreVmRequest, SnapshotVmRequest, StoragePoolKind, VmConfig, VmCounters,
+    VmId, VmState, file_transfer_service_client::FileTransferServiceClient,
+    vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -154,6 +156,46 @@ impl NodeClient {
         }
     }
 
+    async fn connect_vm_service(&self) -> Result<VmServiceClient<tonic::transport::Channel>> {
+        VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")
+    }
+
+    async fn connect_vm_service_with_retry(
+        &self,
+        attempts: usize,
+        delay: Duration,
+    ) -> Result<VmServiceClient<tonic::transport::Channel>> {
+        let mut last_error = None;
+
+        for attempt in 1..=attempts {
+            match self.connect_vm_service().await {
+                Ok(client) => return Ok(client),
+                Err(error) => {
+                    let is_refused = error
+                        .chain()
+                        .any(|cause| cause.to_string().contains("Connection refused"));
+                    if !is_refused || attempt == attempts {
+                        return Err(error);
+                    }
+
+                    warn!(
+                        address = %self.address,
+                        attempt,
+                        attempts,
+                        error = %error,
+                        "qarax-node connection refused, retrying"
+                    );
+                    last_error = Some(error);
+                    sleep(delay).await;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to connect to qarax-node")))
+    }
+
     /// Create a VM on the qarax-node
     #[instrument(skip(self))]
     pub async fn create_vm(&self, req: CreateVmRequest) -> Result<()> {
@@ -173,9 +215,7 @@ impl NodeClient {
         } = req;
         debug!("Creating VM {} on node {}", vm_id, self.address);
 
-        let mut client = VmServiceClient::connect(self.address.clone())
-            .await
-            .context("Failed to connect to qarax-node")?;
+        let mut client = self.connect_vm_service().await?;
 
         // Check if a production rootfs is configured via environment variable
         let mut disks = vec![];
@@ -258,9 +298,9 @@ impl NodeClient {
     pub async fn start_vm(&self, vm_id: Uuid) -> Result<()> {
         debug!("Starting VM {} on node {}", vm_id, self.address);
 
-        let mut client = VmServiceClient::connect(self.address.clone())
-            .await
-            .context("Failed to connect to qarax-node")?;
+        let mut client = self
+            .connect_vm_service_with_retry(8, Duration::from_secs(1))
+            .await?;
 
         client
             .start_vm(VmId {
@@ -278,16 +318,27 @@ impl NodeClient {
     pub async fn stop_vm(&self, vm_id: Uuid) -> Result<()> {
         debug!("Stopping VM {} on node {}", vm_id, self.address);
 
-        let mut client = VmServiceClient::connect(self.address.clone())
-            .await
-            .context("Failed to connect to qarax-node")?;
+        let mut client = match VmServiceClient::connect(self.address.clone()).await {
+            Ok(c) => c,
+            Err(_) => {
+                // Node is unreachable — treat as already stopped
+                return Err(crate::errors::Error::NotFound.into());
+            }
+        };
 
         client
             .stop_vm(VmId {
                 id: vm_id.to_string(),
             })
             .await
-            .context("Failed to stop VM on qarax-node")?;
+            .map_err(|s| match s.code() {
+                // VM or CH process gone — treat as already stopped
+                tonic::Code::NotFound
+                | tonic::Code::Unknown
+                | tonic::Code::Unavailable
+                | tonic::Code::Internal => crate::errors::Error::NotFound.into(),
+                _ => anyhow::anyhow!("Failed to stop VM on qarax-node: {}", s),
+            })?;
 
         debug!("VM {} stopped successfully", vm_id);
         Ok(())
@@ -330,6 +381,38 @@ impl NodeClient {
             .context("Failed to resume VM on qarax-node")?;
 
         debug!("VM {} resumed successfully", vm_id);
+        Ok(())
+    }
+
+    /// Snapshot a VM on the qarax-node
+    #[instrument(skip(self))]
+    pub async fn snapshot_vm(&self, vm_id: Uuid, snapshot_url: &str) -> Result<()> {
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+        client
+            .snapshot_vm(SnapshotVmRequest {
+                vm_id: vm_id.to_string(),
+                snapshot_url: snapshot_url.to_string(),
+            })
+            .await
+            .context("Failed to snapshot VM on qarax-node")?;
+        Ok(())
+    }
+
+    /// Restore a VM on the qarax-node from a snapshot
+    #[instrument(skip(self))]
+    pub async fn restore_vm(&self, vm_id: Uuid, source_url: &str) -> Result<()> {
+        let mut client = VmServiceClient::connect(self.address.clone())
+            .await
+            .context("Failed to connect to qarax-node")?;
+        client
+            .restore_vm(RestoreVmRequest {
+                vm_id: vm_id.to_string(),
+                source_url: source_url.to_string(),
+            })
+            .await
+            .context("Failed to restore VM on qarax-node")?;
         Ok(())
     }
 
