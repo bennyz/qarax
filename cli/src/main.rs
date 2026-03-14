@@ -4,19 +4,55 @@ use clap::{Parser, Subcommand};
 mod api;
 mod client;
 mod commands;
+mod config;
 mod console;
+
+const DEFAULT_SERVER: &str = "http://localhost:8000";
+
+pub fn resolve_server(flag: Option<String>, cfg: &config::Config) -> String {
+    flag.or_else(|| cfg.server.clone())
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::Config;
+
+    fn cfg(server: Option<&str>) -> Config {
+        Config {
+            server: server.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn flag_beats_config_and_default() {
+        let server = resolve_server(
+            Some("http://flag:8000".to_string()),
+            &cfg(Some("http://config:8000")),
+        );
+        assert_eq!(server, "http://flag:8000");
+    }
+
+    #[test]
+    fn config_beats_default() {
+        let server = resolve_server(None, &cfg(Some("http://config:8000")));
+        assert_eq!(server, "http://config:8000");
+    }
+
+    #[test]
+    fn falls_back_to_default() {
+        let server = resolve_server(None, &cfg(None));
+        assert_eq!(server, DEFAULT_SERVER);
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "qarax", about = "CLI for the qarax VM management API", version)]
 pub struct Cli {
-    /// Server base URL
-    #[arg(
-        long,
-        env = "QARAX_SERVER",
-        default_value = "http://localhost:8000",
-        global = true
-    )]
-    pub server: String,
+    /// Server base URL (overrides config file and QARAX_SERVER env var)
+    #[arg(long, env = "QARAX_SERVER", global = true)]
+    pub server: Option<String>,
 
     /// Print raw JSON instead of a formatted table
     #[arg(long, global = true)]
@@ -44,12 +80,22 @@ pub enum Commands {
     Network(commands::network::NetworkArgs),
     /// Async job operations
     Job(commands::job::JobArgs),
+    /// Configure the CLI (server URL, etc.)
+    Configure(commands::configure::ConfigureArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = client::Client::new(&cli.server);
+
+    if let Commands::Configure(args) = cli.command {
+        return commands::configure::run(args).await;
+    }
+
+    let cfg = config::load();
+    let server = resolve_server(cli.server, &cfg);
+
+    let client = client::Client::new(&server);
 
     match cli.command {
         Commands::Vm(args) => commands::vm::run(args, &client, cli.json).await,
@@ -62,5 +108,6 @@ async fn main() -> Result<()> {
         Commands::Transfer(args) => commands::transfer::run(args, &client, cli.json).await,
         Commands::BootSource(args) => commands::boot_source::run(args, &client, cli.json).await,
         Commands::Job(args) => commands::job::run(args, &client, cli.json).await,
+        Commands::Configure(_) => unreachable!(),
     }
 }

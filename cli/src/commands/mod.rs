@@ -1,4 +1,5 @@
 pub mod boot_source;
+pub mod configure;
 pub mod host;
 pub mod job;
 pub mod network;
