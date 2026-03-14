@@ -25,18 +25,22 @@ make openapi        # Regenerate openapi.yaml
 make sdk            # Regenerate Python SDK from OpenAPI
 make run-local      # Start full Docker stack (qarax + qarax-node + Postgres)
 make run-local VM=1 # Same, but run qarax-node in a libvirt VM
-make stop-local     # Stop and remove the local Docker stack
+make stop-local      # Stop and remove the local Docker stack
+make appliance-build # Build bootc container image for qarax-node (hypervisor host)
+make appliance-push  # Push appliance image to registry
+make ruff-check      # Lint the Python SDK (run after make sdk)
+SKIP_DOCKER=1 make test  # Run tests skipping Postgres startup (if already running)
 ```
 
 To verify changes, run: `make fmt lint sdk build openapi test`.
 
-Build/test a single crate: `cargo build -p qarax-node` or `cargo test -p qarax -- test_name`
+Build/test a single crate: `cargo build -p qarax-node` or `cargo nextest run -p qarax -E 'test(test_name)'`
 
 **macOS note:** The default build target is `x86_64-unknown-linux-musl` (in `.cargo/config.toml`), but the Makefile auto-detects macOS and overrides to the host target. To build manually on macOS, pass `--target` explicitly or use `make build`.
 
 **CI uses nightly for fmt:** `cargo +nightly fmt --all -- --check`
 
-**Build dependencies:** `protobuf-compiler` (protoc) is required for gRPC code generation.
+**Build dependencies:** `protobuf-compiler` (protoc) is required for gRPC code generation. `shfmt` is required by `make fmt` for shell script formatting.
 
 ## Database
 
