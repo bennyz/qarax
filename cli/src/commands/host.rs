@@ -9,7 +9,7 @@ use crate::{
     client::Client,
 };
 
-use super::{print_json, resolve_host_id};
+use super::{OutputFormat, print_output, resolve_host_id};
 
 #[derive(Args)]
 pub struct HostArgs {
@@ -96,12 +96,12 @@ struct HostRow {
     load: String,
 }
 
-pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(args: HostArgs, client: &Client, output: OutputFormat) -> anyhow::Result<()> {
     match args.command {
         HostCommand::List => {
             let hosts = api::hosts::list(client).await?;
-            if json {
-                print_json(&hosts)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&hosts, output)?;
             } else {
                 let rows: Vec<HostRow> = hosts
                     .iter()
@@ -149,8 +149,8 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
                 password,
             };
             let id = api::hosts::add(client, &new_host).await?;
-            if json {
-                print_json(&serde_json::json!({ "host_id": id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&serde_json::json!({ "host_id": id }), output)?;
             } else {
                 println!("Added host: {}", new_host.name);
             }
@@ -183,8 +183,8 @@ pub async fn run(args: HostArgs, client: &Client, json: bool) -> anyhow::Result<
         HostCommand::Init { host } => {
             let id = resolve_host_id(client, &host).await?;
             let host = api::hosts::init(client, id).await?;
-            if json {
-                print_json(&host)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&host, output)?;
             } else {
                 println!("Initialized host: {} ({})", host.name, host.status);
                 if let Some(ch) = &host.cloud_hypervisor_version {

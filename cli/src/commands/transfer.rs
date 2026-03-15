@@ -7,7 +7,7 @@ use crate::{
     client::Client,
 };
 
-use super::{format_bytes, print_json, resolve_pool_id};
+use super::{OutputFormat, format_bytes, print_output, resolve_pool_id};
 
 #[derive(Args)]
 pub struct TransferArgs {
@@ -64,13 +64,13 @@ struct TransferRow {
     transferred: String,
 }
 
-pub async fn run(args: TransferArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(args: TransferArgs, client: &Client, output: OutputFormat) -> anyhow::Result<()> {
     match args.command {
         TransferCommand::List { pool } => {
             let pool_id = resolve_pool_id(client, &pool).await?;
             let transfers = api::transfers::list(client, pool_id).await?;
-            if json {
-                print_json(&transfers)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&transfers, output)?;
             } else {
                 let rows: Vec<TransferRow> = transfers
                     .iter()
@@ -90,8 +90,8 @@ pub async fn run(args: TransferArgs, client: &Client, json: bool) -> anyhow::Res
         TransferCommand::Get { pool, id } => {
             let pool_id = resolve_pool_id(client, &pool).await?;
             let transfer = api::transfers::get(client, pool_id, id).await?;
-            if json {
-                print_json(&transfer)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&transfer, output)?;
             } else {
                 println!("ID:          {}", transfer.id);
                 println!("Name:        {}", transfer.name);
@@ -122,8 +122,8 @@ pub async fn run(args: TransferArgs, client: &Client, json: bool) -> anyhow::Res
                 object_type,
             };
             let transfer = api::transfers::create(client, pool_id, &new_transfer).await?;
-            if json {
-                print_json(&transfer)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&transfer, output)?;
             } else {
                 println!("Transfer started: {}", transfer.id);
                 println!("Status: {}", transfer.status);
