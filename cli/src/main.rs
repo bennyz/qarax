@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::OutputFormat;
 
 mod api;
 mod client;
@@ -54,9 +55,15 @@ pub struct Cli {
     #[arg(long, env = "QARAX_SERVER", global = true)]
     pub server: Option<String>,
 
-    /// Print raw JSON instead of a formatted table
-    #[arg(long, global = true)]
-    pub json: bool,
+    /// Output format (table, json, yaml)
+    #[arg(
+        short = 'o',
+        long = "output",
+        global = true,
+        default_value = "table",
+        value_name = "FORMAT"
+    )]
+    pub output: OutputFormat,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -98,16 +105,16 @@ async fn main() -> Result<()> {
     let client = client::Client::new(&server);
 
     match cli.command {
-        Commands::Vm(args) => commands::vm::run(args, &client, cli.json).await,
-        Commands::Host(args) => commands::host::run(args, &client, cli.json).await,
-        Commands::StoragePool(args) => commands::storage::run_pool(args, &client, cli.json).await,
+        Commands::Vm(args) => commands::vm::run(args, &client, cli.output).await,
+        Commands::Host(args) => commands::host::run(args, &client, cli.output).await,
+        Commands::StoragePool(args) => commands::storage::run_pool(args, &client, cli.output).await,
         Commands::StorageObject(args) => {
-            commands::storage::run_object(args, &client, cli.json).await
+            commands::storage::run_object(args, &client, cli.output).await
         }
-        Commands::Network(args) => commands::network::run(args, &client, cli.json).await,
-        Commands::Transfer(args) => commands::transfer::run(args, &client, cli.json).await,
-        Commands::BootSource(args) => commands::boot_source::run(args, &client, cli.json).await,
-        Commands::Job(args) => commands::job::run(args, &client, cli.json).await,
+        Commands::Network(args) => commands::network::run(args, &client, cli.output).await,
+        Commands::Transfer(args) => commands::transfer::run(args, &client, cli.output).await,
+        Commands::BootSource(args) => commands::boot_source::run(args, &client, cli.output).await,
+        Commands::Job(args) => commands::job::run(args, &client, cli.output).await,
         Commands::Configure(_) => unreachable!(),
     }
 }

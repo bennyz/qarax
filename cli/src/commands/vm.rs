@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    format_bytes, print_json, resolve_boot_source_id, resolve_network_id, resolve_object_id,
-    resolve_vm_id,
+    OutputFormat, format_bytes, print_output, resolve_boot_source_id, resolve_network_id,
+    resolve_object_id, resolve_vm_id,
 };
 
 #[derive(Args)]
@@ -179,12 +179,12 @@ struct VmRow {
     image_ref: String,
 }
 
-pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow::Result<()> {
     match args.command {
         VmCommand::List => {
             let vms = api::vms::list(client).await?;
-            if json {
-                print_json(&vms)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&vms, output)?;
             } else {
                 let rows: Vec<VmRow> = vms
                     .iter()
@@ -208,8 +208,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
         VmCommand::Get { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             let vm = api::vms::get(client, id).await?;
-            if json {
-                print_json(&vm)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&vm, output)?;
             } else {
                 println!("ID:          {}", vm.id);
                 println!("Name:        {}", vm.name);
@@ -293,15 +293,18 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
             let result = api::vms::create(client, &new_vm).await?;
             match result {
                 CreateVmResult::Created(vm_id) => {
-                    if json {
-                        print_json(&serde_json::json!({ "vm_id": vm_id }))?;
+                    if !matches!(output, OutputFormat::Table) {
+                        print_output(&serde_json::json!({ "vm_id": vm_id }), output)?;
                     } else {
                         println!("Created VM: {}", new_vm.name);
                     }
                 }
                 CreateVmResult::Accepted { vm_id, job_id } => {
-                    if json {
-                        print_json(&serde_json::json!({ "vm_id": vm_id, "job_id": job_id }))?;
+                    if !matches!(output, OutputFormat::Table) {
+                        print_output(
+                            &serde_json::json!({ "vm_id": vm_id, "job_id": job_id }),
+                            output,
+                        )?;
                     } else {
                         println!("Creating VM: {}", new_vm.name);
                         println!("Job:         {job_id}");
@@ -320,8 +323,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
         VmCommand::Start { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             let resp = api::vms::start(client, id).await?;
-            if json {
-                print_json(&resp)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&resp, output)?;
             } else {
                 println!("Starting VM: {vm}");
                 println!("Job:         {}", resp.job_id);
@@ -372,8 +375,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                 boot_order,
             };
             let disk = api::vms::attach_disk(client, vm_id, &req).await?;
-            if json {
-                print_json(&disk)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&disk, output)?;
             } else {
                 println!(
                     "Attached disk {} (object={}, name={}) to VM {}",
@@ -387,8 +390,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                 let id = resolve_vm_id(client, &vm).await?;
                 let req = CreateSnapshotRequest { name };
                 let snapshot = api::vms::create_snapshot(client, id, &req).await?;
-                if json {
-                    print_json(&snapshot)?;
+                if !matches!(output, OutputFormat::Table) {
+                    print_output(&snapshot, output)?;
                 } else {
                     println!("Snapshot: {}", snapshot.id);
                     println!("Name:     {}", snapshot.name);
@@ -400,8 +403,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
             SnapshotCommand::List { vm } => {
                 let id = resolve_vm_id(client, &vm).await?;
                 let snapshots = api::vms::list_snapshots(client, id).await?;
-                if json {
-                    print_json(&snapshots)?;
+                if !matches!(output, OutputFormat::Table) {
+                    print_output(&snapshots, output)?;
                 } else {
                     let rows: Vec<SnapshotRow> = snapshots
                         .iter()
@@ -422,8 +425,8 @@ pub async fn run(args: VmArgs, client: &Client, json: bool) -> anyhow::Result<()
                     snapshot_id: snapshot,
                 };
                 let restored = api::vms::restore(client, id, &req).await?;
-                if json {
-                    print_json(&restored)?;
+                if !matches!(output, OutputFormat::Table) {
+                    print_output(&restored, output)?;
                 } else {
                     println!("Restored VM: {}", restored.name);
                     println!("Status:      {}", restored.status);

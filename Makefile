@@ -69,10 +69,10 @@ clean:
 	cargo clean
 
 # Linting and formatting
-lint:
+lint: ruff-check
 	cargo clippy --workspace -- -D warnings
 
-fmt: shfmt
+fmt: ruff-fmt shfmt
 	cargo fmt
 
 shfmt:

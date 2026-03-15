@@ -9,6 +9,14 @@ pub mod vm;
 
 use uuid::Uuid;
 
+#[derive(clap::ValueEnum, Clone, Copy, Default, Debug)]
+pub enum OutputFormat {
+    #[default]
+    Table,
+    Json,
+    Yaml,
+}
+
 use crate::{api, client::Client};
 
 /// Resolve a VM name or UUID string to a UUID.
@@ -105,8 +113,14 @@ pub fn format_bytes(bytes: i64) -> String {
     }
 }
 
-/// Print raw JSON output (pretty-printed).
-pub fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+/// Print output in the requested format (JSON or YAML). Falls back to JSON for Table.
+pub fn print_output<T: serde::Serialize>(value: &T, format: OutputFormat) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(value)?),
+        OutputFormat::Json | OutputFormat::Table => {
+            println!("{}", serde_json::to_string_pretty(value)?)
+        }
+    }
+
     Ok(())
 }

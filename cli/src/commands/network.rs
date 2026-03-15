@@ -6,7 +6,7 @@ use crate::{
     client::Client,
 };
 
-use super::{print_json, resolve_host_id, resolve_network_id};
+use super::{OutputFormat, print_output, resolve_host_id, resolve_network_id};
 
 #[derive(Args)]
 pub struct NetworkArgs {
@@ -105,12 +105,12 @@ struct IpRow {
     allocated_at: String,
 }
 
-pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(args: NetworkArgs, client: &Client, output: OutputFormat) -> anyhow::Result<()> {
     match args.command {
         NetworkCommand::List => {
             let networks = api::networks::list(client).await?;
-            if json {
-                print_json(&networks)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&networks, output)?;
             } else {
                 let rows: Vec<NetworkRow> = networks
                     .iter()
@@ -130,8 +130,8 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
         NetworkCommand::Get { network } => {
             let id = resolve_network_id(client, &network).await?;
             let net = api::networks::get(client, id).await?;
-            if json {
-                print_json(&net)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&net, output)?;
             } else {
                 println!("ID:      {}", net.id);
                 println!("Name:    {}", net.name);
@@ -164,8 +164,8 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
                 network_type: Some(network_type),
             };
             let id = api::networks::create(client, &new_net).await?;
-            if json {
-                print_json(&serde_json::json!({ "network_id": id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&serde_json::json!({ "network_id": id }), output)?;
             } else {
                 println!("Created network: {id}");
             }
@@ -193,8 +193,11 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
                 parent_interface.as_deref(),
             )
             .await?;
-            if json {
-                print_json(&serde_json::json!({ "network_id": network_id, "host_id": host_id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(
+                    &serde_json::json!({ "network_id": network_id, "host_id": host_id }),
+                    output,
+                )?;
             } else {
                 println!("Attached host {host} to network {network} (bridge: {bridge_name})");
             }
@@ -204,8 +207,11 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
             let network_id = resolve_network_id(client, &network).await?;
             let host_id = resolve_host_id(client, &host).await?;
             api::networks::detach_host(client, network_id, host_id).await?;
-            if json {
-                print_json(&serde_json::json!({ "network_id": network_id, "host_id": host_id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(
+                    &serde_json::json!({ "network_id": network_id, "host_id": host_id }),
+                    output,
+                )?;
             } else {
                 println!("Detached host {host} from network {network}");
             }
@@ -214,8 +220,8 @@ pub async fn run(args: NetworkArgs, client: &Client, json: bool) -> anyhow::Resu
         NetworkCommand::ListIps { network } => {
             let id = resolve_network_id(client, &network).await?;
             let ips = api::networks::list_ips(client, id).await?;
-            if json {
-                print_json(&ips)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&ips, output)?;
             } else {
                 let rows: Vec<IpRow> = ips
                     .iter()

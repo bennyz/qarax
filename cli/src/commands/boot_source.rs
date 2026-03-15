@@ -6,7 +6,7 @@ use crate::{
     client::Client,
 };
 
-use super::{print_json, resolve_boot_source_id, resolve_object_id};
+use super::{OutputFormat, print_output, resolve_boot_source_id, resolve_object_id};
 
 #[derive(Args)]
 pub struct BootSourceArgs {
@@ -62,12 +62,16 @@ struct BootSourceRow {
     initrd_id: String,
 }
 
-pub async fn run(args: BootSourceArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(
+    args: BootSourceArgs,
+    client: &Client,
+    output: OutputFormat,
+) -> anyhow::Result<()> {
     match args.command {
         BootSourceCommand::List => {
             let sources = api::boot_sources::list(client).await?;
-            if json {
-                print_json(&sources)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&sources, output)?;
             } else {
                 let rows: Vec<BootSourceRow> = sources
                     .iter()
@@ -89,8 +93,8 @@ pub async fn run(args: BootSourceArgs, client: &Client, json: bool) -> anyhow::R
         BootSourceCommand::Get { boot_source } => {
             let id = resolve_boot_source_id(client, &boot_source).await?;
             let bs = api::boot_sources::get(client, id).await?;
-            if json {
-                print_json(&bs)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&bs, output)?;
             } else {
                 println!("ID:          {}", bs.id);
                 println!("Name:        {}", bs.name);
@@ -127,8 +131,8 @@ pub async fn run(args: BootSourceArgs, client: &Client, json: bool) -> anyhow::R
                 initrd_image_id,
             };
             let id = api::boot_sources::create(client, &new_bs).await?;
-            if json {
-                print_json(&serde_json::json!({ "boot_source_id": id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&serde_json::json!({ "boot_source_id": id }), output)?;
             } else {
                 println!("Created boot source: {id}");
             }

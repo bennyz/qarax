@@ -10,7 +10,9 @@ use crate::{
     client::Client,
 };
 
-use super::{format_bytes, print_json, resolve_host_id, resolve_object_id, resolve_pool_id};
+use super::{
+    OutputFormat, format_bytes, print_output, resolve_host_id, resolve_object_id, resolve_pool_id,
+};
 
 // ─── Storage pools ────────────────────────────────────────────────────────────
 
@@ -93,12 +95,16 @@ struct PoolRow {
     allocated: String,
 }
 
-pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run_pool(
+    args: StoragePoolArgs,
+    client: &Client,
+    output: OutputFormat,
+) -> anyhow::Result<()> {
     match args.command {
         StoragePoolCommand::List => {
             let pools = api::storage::list_pools(client).await?;
-            if json {
-                print_json(&pools)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&pools, output)?;
             } else {
                 let rows: Vec<PoolRow> = pools
                     .iter()
@@ -124,8 +130,8 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
         StoragePoolCommand::Get { pool } => {
             let id = resolve_pool_id(client, &pool).await?;
             let pool = api::storage::get_pool(client, id).await?;
-            if json {
-                print_json(&pool)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&pool, output)?;
             } else {
                 println!("ID:       {}", pool.id);
                 println!("Name:     {}", pool.name);
@@ -164,8 +170,8 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
                 capacity_bytes: capacity,
             };
             let id = api::storage::create_pool(client, &new_pool).await?;
-            if json {
-                print_json(&serde_json::json!({ "pool_id": id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&serde_json::json!({ "pool_id": id }), output)?;
             } else {
                 println!("Created storage pool: {id}");
             }
@@ -181,8 +187,11 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
             let pool_id = resolve_pool_id(client, &pool).await?;
             let host_id = resolve_host_id(client, &host).await?;
             api::storage::attach_host_to_pool(client, pool_id, host_id).await?;
-            if json {
-                print_json(&serde_json::json!({ "pool_id": pool_id, "host_id": host_id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(
+                    &serde_json::json!({ "pool_id": pool_id, "host_id": host_id }),
+                    output,
+                )?;
             } else {
                 println!("Attached host {host} to pool {pool}");
             }
@@ -192,8 +201,11 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
             let pool_id = resolve_pool_id(client, &pool).await?;
             let host_id = resolve_host_id(client, &host).await?;
             api::storage::detach_host_from_pool(client, pool_id, host_id).await?;
-            if json {
-                print_json(&serde_json::json!({ "pool_id": pool_id, "host_id": host_id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(
+                    &serde_json::json!({ "pool_id": pool_id, "host_id": host_id }),
+                    output,
+                )?;
             } else {
                 println!("Detached host {host} from pool {pool}");
             }
@@ -207,8 +219,8 @@ pub async fn run_pool(args: StoragePoolArgs, client: &Client, json: bool) -> any
             let pool_id = resolve_pool_id(client, &pool).await?;
             let req = ImportToPoolRequest { name, image_ref };
             let resp = api::storage::import_to_pool(client, pool_id, &req).await?;
-            if json {
-                print_json(&resp)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&resp, output)?;
             } else {
                 println!("Import job: {}", resp.job_id);
                 println!("Storage object: {}", resp.storage_object_id);
@@ -302,13 +314,13 @@ struct ObjectRow {
 pub async fn run_object(
     args: StorageObjectArgs,
     client: &Client,
-    json: bool,
+    output: OutputFormat,
 ) -> anyhow::Result<()> {
     match args.command {
         StorageObjectCommand::List => {
             let objects = api::storage::list_objects(client).await?;
-            if json {
-                print_json(&objects)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&objects, output)?;
             } else {
                 let rows: Vec<ObjectRow> = objects
                     .iter()
@@ -327,8 +339,8 @@ pub async fn run_object(
         StorageObjectCommand::Get { object } => {
             let id = resolve_object_id(client, &object).await?;
             let obj = api::storage::get_object(client, id).await?;
-            if json {
-                print_json(&obj)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&obj, output)?;
             } else {
                 println!("ID:   {}", obj.id);
                 println!("Name: {}", obj.name);
@@ -361,8 +373,8 @@ pub async fn run_object(
                 parent_id: parent,
             };
             let id = api::storage::create_object(client, &new_obj).await?;
-            if json {
-                print_json(&serde_json::json!({ "object_id": id }))?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&serde_json::json!({ "object_id": id }), output)?;
             } else {
                 println!("Created storage object: {id}");
             }

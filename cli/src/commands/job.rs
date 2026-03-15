@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{api, client::Client};
 
-use super::print_json;
+use super::{OutputFormat, print_output};
 
 #[derive(Args)]
 pub struct JobArgs {
@@ -20,12 +20,12 @@ enum JobCommand {
     },
 }
 
-pub async fn run(args: JobArgs, client: &Client, json: bool) -> anyhow::Result<()> {
+pub async fn run(args: JobArgs, client: &Client, output: OutputFormat) -> anyhow::Result<()> {
     match args.command {
         JobCommand::Get { id } => {
             let job = api::jobs::get(client, id).await?;
-            if json {
-                print_json(&job)?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&job, output)?;
             } else {
                 println!("ID:          {}", job.id);
                 println!("Type:        {}", job.job_type);
