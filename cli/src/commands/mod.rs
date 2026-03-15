@@ -117,7 +117,9 @@ pub fn format_bytes(bytes: i64) -> String {
 pub fn print_output<T: serde::Serialize>(value: &T, format: OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(value)?),
-        OutputFormat::Json | OutputFormat::Table => println!("{}", serde_json::to_string_pretty(value)?),
+        OutputFormat::Json | OutputFormat::Table => {
+            println!("{}", serde_json::to_string_pretty(value)?)
+        }
     }
 
     Ok(())
