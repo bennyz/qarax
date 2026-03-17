@@ -98,7 +98,7 @@ pub type Result<T, E = Error> = ::std::result::Result<T, E>;
             crate::model::storage_pools::NewStoragePool,
             crate::model::storage_pools::StoragePoolType,
             crate::model::storage_pools::StoragePoolStatus,
-            crate::handlers::storage_pool::handler::AttachHostRequest,
+            crate::handlers::storage_pool::handler::AttachPoolHostRequest,
             crate::model::boot_sources::BootSource,
             crate::model::boot_sources::NewBootSource,
             crate::model::network_interfaces::NetworkInterface,

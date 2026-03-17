@@ -26,7 +26,8 @@
                 "RUNNING",
                 "PAUSED",
                 "SHUTDOWN",
-                "PENDING"
+                "PENDING",
+                "MIGRATING"
               ]
             }
           }

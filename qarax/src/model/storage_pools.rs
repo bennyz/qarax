@@ -176,6 +176,32 @@ pub async fn delete(pool: &PgPool, pool_id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Return any active non-OverlayBD pool. If `prefer_pool_id` is given and it
+/// is active and not OverlayBD, it is returned directly; otherwise a random
+/// qualifying pool is chosen.
+pub async fn pick_active_non_overlaybd(
+    pool: &PgPool,
+    prefer_pool_id: Option<Uuid>,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    if let Some(id) = prefer_pool_id {
+        let row = sqlx::query_as::<_, (Uuid,)>(
+            "SELECT id FROM storage_pools WHERE id = $1 AND status = 'ACTIVE' AND pool_type != 'OVERLAYBD'",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((found_id,)) = row {
+            return Ok(Some(found_id));
+        }
+    }
+    let row = sqlx::query_as::<_, (Uuid,)>(
+        "SELECT id FROM storage_pools WHERE status = 'ACTIVE' AND pool_type != 'OVERLAYBD' ORDER BY RANDOM() LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 /// Return a random active storage pool ID (used when none is specified for disk creation).
 pub async fn pick_active(pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
     let row = sqlx::query_as::<_, (Uuid,)>(

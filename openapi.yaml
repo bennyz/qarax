@@ -569,7 +569,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AttachHostRequest'
+              $ref: '#/components/schemas/AttachPoolHostRequest'
         required: true
       responses:
         '204':
@@ -1156,6 +1156,14 @@ components:
           type:
           - string
           - 'null'
+    AttachPoolHostRequest:
+      type: object
+      required:
+      - host_id
+      properties:
+        host_id:
+          type: string
+          format: uuid
     BootMode:
       type: string
       enum:
@@ -1197,6 +1205,14 @@ components:
           - string
           - 'null'
           description: Human-readable name for the snapshot (auto-generated if omitted).
+        storage_pool_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: |-
+            Storage pool to place the snapshot in. Defaults to the pool of the
+            VM's primary disk, or any active non-OverlayBD pool.
     CreateVmResponse:
       type: object
       required:
@@ -1944,9 +1960,9 @@ components:
       required:
       - id
       - vm_id
+      - storage_object_id
       - name
       - status
-      - snapshot_url
       - created_at
       properties:
         created_at:
@@ -1957,10 +1973,11 @@ components:
           format: uuid
         name:
           type: string
-        snapshot_url:
-          type: string
         status:
           $ref: '#/components/schemas/SnapshotStatus'
+        storage_object_id:
+          type: string
+          format: uuid
         vm_id:
           type: string
           format: uuid

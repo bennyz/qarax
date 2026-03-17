@@ -314,9 +314,9 @@ pub struct VmDisk {
 pub struct Snapshot {
     pub id: Uuid,
     pub vm_id: Uuid,
+    pub storage_object_id: Uuid,
     pub name: String,
     pub status: String,
-    pub snapshot_url: String,
     pub created_at: String,
 }
 
@@ -324,6 +324,8 @@ pub struct Snapshot {
 pub struct CreateSnapshotRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_pool_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]

@@ -209,7 +209,8 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
     // pool layout rather than requiring the caller to know the node's
     // filesystem structure. The object UUID is used as the filename so the
     // path is always safe — no user-supplied name reaches the filesystem.
-    let config = if new_object.object_type == StorageObjectType::Disk
+    let config = if (new_object.object_type == StorageObjectType::Disk
+        || new_object.object_type == StorageObjectType::Snapshot)
         && new_object.config.get("path").is_none()
     {
         if let Ok(storage_pool) = storage_pools::get(pool, pool_id).await {

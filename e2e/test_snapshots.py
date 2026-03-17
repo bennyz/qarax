@@ -14,6 +14,10 @@ import uuid
 
 import pytest
 from qarax_api_client import Client
+from qarax_api_client.api.hosts import list_ as list_hosts
+from qarax_api_client.api.storage_pools import attach_host as attach_pool_host
+from qarax_api_client.api.storage_pools import create as create_pool
+from qarax_api_client.api.storage_pools import delete as delete_pool
 from qarax_api_client.api.vms import (
     create as create_vm,
 )
@@ -34,10 +38,11 @@ from qarax_api_client.api.vms import (
 from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
-from qarax_api_client.models import Hypervisor, NewVm, VmStatus
+from qarax_api_client.models import Hypervisor, NewStoragePool, NewVm, StoragePoolType, VmStatus
+from qarax_api_client.models.attach_pool_host_request import AttachPoolHostRequest
+from qarax_api_client.models.create_snapshot_request import CreateSnapshotRequest
 from qarax_api_client.models.restore_request import RestoreRequest
 from qarax_api_client.models.snapshot_status import SnapshotStatus
-from qarax_api_client.models.create_snapshot_request import CreateSnapshotRequest
 
 QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 VM_OPERATION_TIMEOUT = 60
@@ -46,6 +51,36 @@ VM_OPERATION_TIMEOUT = 60
 @pytest.fixture
 def client():
     return Client(base_url=QARAX_URL)
+
+
+@pytest.fixture(scope="module")
+def snapshot_storage_pool():
+    """Create a local storage pool for snapshot tests and attach it to the host."""
+    with Client(base_url=QARAX_URL) as c:
+        hosts = list_hosts.sync(client=c)
+        assert hosts and len(hosts) > 0, "No hosts registered"
+        host_id = hosts[0].id
+
+        pool_id_raw = create_pool.sync(
+            client=c,
+            body=NewStoragePool(
+                name="e2e-snapshot-pool",
+                pool_type=StoragePoolType.LOCAL,
+                config={"path": "/var/lib/qarax/snapshots"},
+            ),
+        )
+        assert pool_id_raw is not None, "Failed to create snapshot storage pool"
+        pool_id = uuid.UUID(str(pool_id_raw).strip('"'))
+
+        attach_pool_host.sync_detailed(
+            client=c,
+            pool_id=pool_id,
+            body=AttachPoolHostRequest(host_id=host_id),
+        )
+
+        yield pool_id
+
+        delete_pool.sync_detailed(client=c, pool_id=pool_id)
 
 
 async def wait_for_status(
@@ -108,7 +143,7 @@ async def test_create_snapshot_unknown_vm_returns_404(client):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_full_lifecycle(client):
+async def test_snapshot_full_lifecycle(client, snapshot_storage_pool):
     """
     Full snapshot lifecycle with a real running VM:
     create VM → start → create snapshot → verify ready → list → stop → delete.
@@ -134,7 +169,7 @@ async def test_snapshot_full_lifecycle(client):
             assert snapshot is not None, "Expected snapshot object, got None"
             assert snapshot.vm_id == vm_id
             assert snapshot.status == SnapshotStatus.READY
-            assert snapshot.snapshot_url.startswith("file://")
+            assert snapshot.storage_object_id is not None
 
             # List snapshots — should show the one we just created
             snapshots = await list_snapshots.asyncio(client=c, vm_id=vm_id)
@@ -157,7 +192,7 @@ async def test_snapshot_full_lifecycle(client):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_restore(client):
+async def test_snapshot_restore(client, snapshot_storage_pool):
     """
     Restore a VM from a snapshot:
     create VM → start → snapshot → stop → restore → verify RUNNING → stop → delete.

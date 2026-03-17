@@ -21,8 +21,8 @@ use crate::{
         jobs::{self, JobType, NewJob},
         network_interfaces, networks, snapshots,
         snapshots::{NewSnapshot, Snapshot, SnapshotStatus},
-        storage_objects, storage_pools,
-        storage_pools::OverlayBdPoolConfig,
+        storage_objects::{self, NewStorageObject, StorageObjectType},
+        storage_pools::{self, OverlayBdPoolConfig},
         vm_disks::{self, NewVmDisk},
         vm_filesystems::{self, NewVmFilesystem},
         vms::{self, BootMode, NewVm, Vm, VmStatus},
@@ -831,6 +831,9 @@ pub async fn list_snapshots(
 pub struct CreateSnapshotRequest {
     /// Human-readable name for the snapshot (auto-generated if omitted).
     pub name: Option<String>,
+    /// Storage pool to place the snapshot in. Defaults to the pool of the
+    /// VM's primary disk, or any active non-OverlayBD pool.
+    pub storage_pool_id: Option<Uuid>,
 }
 
 #[utoipa::path(
@@ -855,18 +858,73 @@ pub async fn create_snapshot(
 ) -> Result<ApiResponse<Snapshot>> {
     let host = host_for_vm(&env, vm_id).await?;
 
-    let snapshot_id = Uuid::new_v4();
-    let snapshot_url = format!("file://{}/{}/{}", env.snapshot_dir(), vm_id, snapshot_id);
+    // Resolve the storage pool: explicit → VM's primary disk's pool → any active non-OverlayBD.
+    let preferred_pool_id = if body.storage_pool_id.is_some() {
+        body.storage_pool_id
+    } else {
+        let disks = vm_disks::list_by_vm(env.pool(), vm_id)
+            .await
+            .map_err(crate::errors::Error::Sqlx)?;
+        let mut found = None;
+        for disk in &disks {
+            if let Some(so_id) = disk.storage_object_id
+                && let Ok(so) = storage_objects::get(env.pool(), so_id).await
+            {
+                let pool_row = storage_pools::get(env.pool(), so.storage_pool_id).await;
+                if let Ok(sp) = pool_row
+                    && sp.pool_type != storage_pools::StoragePoolType::OverlayBd
+                {
+                    found = Some(sp.id);
+                    break;
+                }
+            }
+        }
+        found
+    };
+
+    let pool_id = storage_pools::pick_active_non_overlaybd(env.pool(), preferred_pool_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "no suitable storage pool available for snapshot".into(),
+            )
+        })?;
+
     let name = body
         .name
-        .unwrap_or_else(|| format!("snapshot-{}", &snapshot_id.to_string()[..8]));
+        .clone()
+        .unwrap_or_else(|| format!("snapshot-{}", &Uuid::new_v4().to_string()[..8]));
+
+    // Create the storage object — path is derived from the pool config.
+    let so_id = storage_objects::create(
+        env.pool(),
+        NewStorageObject {
+            name: name.clone(),
+            storage_pool_id: Some(pool_id),
+            object_type: StorageObjectType::Snapshot,
+            size_bytes: 0,
+            config: serde_json::Value::Null,
+            parent_id: None,
+        },
+    )
+    .await
+    .map_err(crate::errors::Error::Sqlx)?;
+
+    let so = storage_objects::get(env.pool(), so_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?;
+
+    let dir_path = storage_objects::get_path_from_config(&so.config)
+        .ok_or(crate::errors::Error::InternalServerError)?;
+    let snapshot_url = format!("file://{}", dir_path);
 
     let id = snapshots::create(
         env.pool(),
         &NewSnapshot {
             vm_id,
+            storage_object_id: so_id,
             name,
-            snapshot_url: snapshot_url.clone(),
         },
     )
     .await
@@ -980,9 +1038,16 @@ pub async fn restore(
 
     vms::update_status(env.pool(), vm_id, VmStatus::Pending).await?;
 
+    let so = storage_objects::get(env.pool(), snapshot.storage_object_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?;
+    let dir_path = storage_objects::get_path_from_config(&so.config)
+        .ok_or(crate::errors::Error::InternalServerError)?;
+    let snapshot_url = format!("file://{}", dir_path);
+
     // The node handles the full restore flow: kills any existing CH process,
     // spawns a fresh one, and calls vm.restore directly (no vm.create needed).
-    if let Err(e) = node_client.restore_vm(vm_id, &snapshot.snapshot_url).await {
+    if let Err(e) = node_client.restore_vm(vm_id, &snapshot_url).await {
         let msg = format!("restore_vm failed: {:#}", e);
         tracing::error!(vm_id = %vm_id, error = %msg);
         let _ = vms::update_status(env.pool(), vm_id, VmStatus::Unknown).await;

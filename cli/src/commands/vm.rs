@@ -141,6 +141,9 @@ enum SnapshotCommand {
         /// Optional name for the snapshot (auto-generated if omitted)
         #[arg(long)]
         name: Option<String>,
+        /// Storage pool ID to store the snapshot in (auto-selected if omitted)
+        #[arg(long)]
+        pool: Option<Uuid>,
     },
     /// List snapshots for a VM
     List {
@@ -410,9 +413,12 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
         }
 
         VmCommand::Snapshot { command } => match command {
-            SnapshotCommand::Create { vm, name } => {
+            SnapshotCommand::Create { vm, name, pool } => {
                 let id = resolve_vm_id(client, &vm).await?;
-                let req = CreateSnapshotRequest { name };
+                let req = CreateSnapshotRequest {
+                    name,
+                    storage_pool_id: pool,
+                };
                 let snapshot = api::vms::create_snapshot(client, id, &req).await?;
                 if !matches!(output, OutputFormat::Table) {
                     print_output(&snapshot, output)?;
