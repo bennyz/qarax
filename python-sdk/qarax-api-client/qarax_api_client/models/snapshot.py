@@ -20,16 +20,16 @@ class Snapshot:
         created_at (datetime.datetime):
         id (UUID):
         name (str):
-        snapshot_url (str):
         status (SnapshotStatus):
+        storage_object_id (UUID):
         vm_id (UUID):
     """
 
     created_at: datetime.datetime
     id: UUID
     name: str
-    snapshot_url: str
     status: SnapshotStatus
+    storage_object_id: UUID
     vm_id: UUID
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -40,9 +40,9 @@ class Snapshot:
 
         name = self.name
 
-        snapshot_url = self.snapshot_url
-
         status = self.status.value
+
+        storage_object_id = str(self.storage_object_id)
 
         vm_id = str(self.vm_id)
 
@@ -53,8 +53,8 @@ class Snapshot:
                 "created_at": created_at,
                 "id": id,
                 "name": name,
-                "snapshot_url": snapshot_url,
                 "status": status,
+                "storage_object_id": storage_object_id,
                 "vm_id": vm_id,
             }
         )
@@ -70,9 +70,9 @@ class Snapshot:
 
         name = d.pop("name")
 
-        snapshot_url = d.pop("snapshot_url")
-
         status = SnapshotStatus(d.pop("status"))
+
+        storage_object_id = UUID(d.pop("storage_object_id"))
 
         vm_id = UUID(d.pop("vm_id"))
 
@@ -80,8 +80,8 @@ class Snapshot:
             created_at=created_at,
             id=id,
             name=name,
-            snapshot_url=snapshot_url,
             status=status,
+            storage_object_id=storage_object_id,
             vm_id=vm_id,
         )
 

@@ -2,6 +2,7 @@
 
 from .attach_disk_request import AttachDiskRequest
 from .attach_host_request import AttachHostRequest
+from .attach_pool_host_request import AttachPoolHostRequest
 from .boot_mode import BootMode
 from .boot_source import BootSource
 from .create_snapshot_request import CreateSnapshotRequest
@@ -58,6 +59,7 @@ from .vm_status import VmStatus
 __all__ = (
     "AttachDiskRequest",
     "AttachHostRequest",
+    "AttachPoolHostRequest",
     "BootMode",
     "BootSource",
     "CreateSnapshotRequest",

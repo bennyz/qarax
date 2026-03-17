@@ -126,6 +126,26 @@ async fn ensure_host_up(client: &reqwest::Client, address: &str) -> String {
     host_id
 }
 
+/// Create a local storage pool and return its UUID string.
+async fn ensure_storage_pool(client: &reqwest::Client, address: &str) -> String {
+    let res = client
+        .post(format!("{}/storage-pools", address))
+        .json(&json!({
+            "name": "test-pool",
+            "pool_type": "local",
+            "config": { "path": "/tmp/test-pool" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::CREATED,
+        "Storage pool creation failed"
+    );
+    res.text().await.unwrap()
+}
+
 /// Create a VM via the API, returns the VM UUID string.
 async fn create_vm(client: &reqwest::Client, address: &str, body: serde_json::Value) -> String {
     let res = client
@@ -214,6 +234,7 @@ async fn test_create_snapshot_with_unavailable_node_creates_failed_record() {
     let app = spawn_app().await;
     let client = reqwest::Client::new();
     ensure_host_up(&client, &app.address).await;
+    ensure_storage_pool(&client, &app.address).await;
 
     let vm_id = create_vm(
         &client,

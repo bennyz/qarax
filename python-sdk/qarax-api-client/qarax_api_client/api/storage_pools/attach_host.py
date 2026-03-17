@@ -7,14 +7,14 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.attach_host_request import AttachHostRequest
+from ...models.attach_pool_host_request import AttachPoolHostRequest
 from ...types import Response
 
 
 def _get_kwargs(
     pool_id: UUID,
     *,
-    body: AttachHostRequest,
+    body: AttachPoolHostRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -62,12 +62,12 @@ def sync_detailed(
     pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: AttachHostRequest,
+    body: AttachPoolHostRequest,
 ) -> Response[Any]:
     """
     Args:
         pool_id (UUID):
-        body (AttachHostRequest):
+        body (AttachPoolHostRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -93,12 +93,12 @@ async def asyncio_detailed(
     pool_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: AttachHostRequest,
+    body: AttachPoolHostRequest,
 ) -> Response[Any]:
     """
     Args:
         pool_id (UUID):
-        body (AttachHostRequest):
+        body (AttachPoolHostRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -137,7 +137,7 @@ pub async fn delete(
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct AttachHostRequest {
+pub struct AttachPoolHostRequest {
     pub host_id: Uuid,
 }
 
@@ -147,7 +147,7 @@ pub struct AttachHostRequest {
     params(
         ("pool_id" = uuid::Uuid, Path, description = "Storage pool unique identifier")
     ),
-    request_body = AttachHostRequest,
+    request_body = AttachPoolHostRequest,
     responses(
         (status = 204, description = "Host attached to storage pool"),
         (status = 404, description = "Storage pool or host not found"),
@@ -159,7 +159,7 @@ pub struct AttachHostRequest {
 pub async fn attach_host(
     Extension(env): Extension<App>,
     Path(pool_id): Path<Uuid>,
-    Json(body): Json<AttachHostRequest>,
+    Json(body): Json<AttachPoolHostRequest>,
 ) -> Result<StatusCode> {
     let pool = storage_pools::get(env.pool(), pool_id).await?;
     let host = hosts::get_by_id(env.pool(), body.host_id)

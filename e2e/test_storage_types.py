@@ -32,7 +32,7 @@ from qarax_api_client.api.vms import (
     get as get_vm,
 )
 from qarax_api_client.models import Hypervisor, NewStoragePool, NewVm, StoragePoolType
-from qarax_api_client.models.attach_host_request import AttachHostRequest
+from qarax_api_client.models.attach_pool_host_request import AttachPoolHostRequest
 from qarax_api_client.models.create_vm_response import CreateVmResponse
 from qarax_api_client.models.job_status import JobStatus
 from qarax_api_client.models.new_storage_object import NewStorageObject
@@ -137,7 +137,7 @@ async def test_nfs_storage_pool_attach(client):
             resp = await attach_pool_host.asyncio_detailed(
                 client=c,
                 pool_id=pool_id,
-                body=AttachHostRequest(host_id=host.id, bridge_name="unused"),
+                body=AttachPoolHostRequest(host_id=host.id),
             )
             assert resp.status_code in (200, 201, 204), (
                 f"Attach host failed: HTTP {resp.status_code} — {resp.content}"
@@ -169,7 +169,7 @@ async def test_nfs_storage_object_create(client):
             attach_resp = await attach_pool_host.asyncio_detailed(
                 client=c,
                 pool_id=pool_id,
-                body=AttachHostRequest(host_id=host.id, bridge_name="unused"),
+                body=AttachPoolHostRequest(host_id=host.id),
             )
             assert attach_resp.status_code in (200, 201, 204), (
                 f"Attach host failed: HTTP {attach_resp.status_code}"
