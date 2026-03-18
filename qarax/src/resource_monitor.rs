@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use sqlx::PgPool;
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, Instant, interval_at};
 use tracing::warn;
 
 use crate::grpc_client::{NodeClient, node::NodeInfo};
@@ -48,7 +48,8 @@ async fn handle_probe_result(pool: &PgPool, host: &Host, node_info: Result<NodeI
 }
 
 pub async fn start_resource_monitor(pool: Arc<PgPool>) {
-    let mut ticker = interval(Duration::from_secs(10));
+    let period = Duration::from_secs(30);
+    let mut ticker = interval_at(Instant::now() + period, period);
 
     loop {
         ticker.tick().await;
