@@ -66,8 +66,11 @@ Always confirm the deployment mode before debugging. Many issues (networking, st
 Follow this order before touching code:
 
 1. **Confirm the deployment mode** (container vs hyperconverged VM — see above).
-2. **Check that required services are running:** `qarax-node`, `cloud-hypervisor` process per VM, `postgres`. Most runtime failures are infrastructure, not code.
-3. **Read service logs** (`docker compose logs qarax-node`, `journalctl -u qarax-node`, etc.) before grep-ing source files.
+2. **Check that required services are running** before looking at code:
+   - Docker Compose mode: `docker compose ps` and `docker compose logs qarax-node`
+   - Hyperconverged mode: `systemctl status qarax-node`, `ps aux | grep cloud-hypervisor`
+   - Verify Postgres: `docker compose ps postgres` or `pg_isready -h 127.0.0.1 -p 5432`
+3. **Read service logs** before grep-ing source files. Most runtime failures are infrastructure, not code.
 4. **Only after confirming infrastructure is healthy**, investigate code-level issues.
 
 Do not jump to code investigation when services may not be running or the wrong environment is assumed.
@@ -146,13 +149,15 @@ GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) 
 
 ## Rules
 
-- **Never modify generated files directly.** The Python SDK (`python-sdk/`) is generated from `openapi.yaml` via `make sdk`. Fix the utoipa annotation in Rust, then regenerate.
+- **Never modify generated files directly.** Generated files: `python-sdk/` (from `openapi.yaml` via `make sdk`) and `openapi.yaml` (from utoipa annotations via `make openapi`). Fix the source, then regenerate.
 - **Never modify production config files for test purposes.** Fix the Dockerfile or compose file instead.
 - **Always run `make lint` after changes.** Zero clippy warnings are required. Check all workspace crates, not just the one you edited.
+- **Verify changes work before reporting done.** After any Rust code change: `make lint` to confirm zero warnings, then `cargo nextest run -p <crate>` (or `make test`) to confirm tests pass. Do not present a change as complete without verifying it compiles and tests pass.
 - **After any SQL query change:** run `cargo sqlx prepare --workspace` to update the offline query cache.
 - **When renaming anything:** search `hack/`, `e2e/`, `.github/`, and all workspace crates for stale references before finishing.
 - **Plan before implementing on non-trivial changes.** List files to modify and describe the approach. Do not create or edit files until the plan is clear.
 - **Never embed credentials, secrets, or personal data in source code.** Use environment variables or config files excluded from version control.
+- **When the user redirects or interrupts, stop immediately.** Do not continue the previous approach. Ask a clarifying question if the new direction is unclear.
 
 ## Skills
 
