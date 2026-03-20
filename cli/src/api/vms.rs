@@ -59,6 +59,10 @@ pub async fn stop(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
     client.post_empty(&format!("/vms/{vm_id}/stop")).await
 }
 
+pub async fn force_stop(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
+    client.post_empty(&format!("/vms/{vm_id}/force-stop")).await
+}
+
 pub async fn pause(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
     client.post_empty(&format!("/vms/{vm_id}/pause")).await
 }

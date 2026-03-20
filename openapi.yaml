@@ -1192,6 +1192,26 @@ paths:
           description: VM not in Created or Running state
         '500':
           description: Internal server error
+  /vms/{vm_id}/force-stop:
+    post:
+      tags:
+      - vms
+      operationId: force_stop
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: VM force stopped successfully
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
   /vms/{vm_id}/metrics:
     get:
       tags:

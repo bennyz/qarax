@@ -807,6 +807,54 @@ pub async fn stop(
 
 #[utoipa::path(
     post,
+    path = "/vms/{vm_id}/force-stop",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 200, description = "VM force stopped successfully"),
+        (status = 404, description = "VM not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn force_stop(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<ApiResponse<()>> {
+    let host = host_for_vm(&env, vm_id).await?;
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+    match node_client.force_stop_vm(vm_id).await {
+        Ok(()) => {}
+        Err(e)
+            if e.downcast_ref::<crate::errors::Error>()
+                .map(|e| matches!(e, crate::errors::Error::NotFound))
+                .unwrap_or(false) =>
+        {
+            tracing::warn!(vm_id = %vm_id, "VM not found on node during force stop, treating as already stopped");
+        }
+        Err(e) => {
+            tracing::error!("Failed to force stop VM on qarax-node: {}", e);
+            return Err(crate::errors::Error::InternalServerError);
+        }
+    }
+
+    vms::update_status(env.pool(), vm_id, VmStatus::Shutdown).await?;
+
+    // Release any allocated GPUs
+    if let Err(e) = host_gpus::deallocate_by_vm(env.pool(), vm_id).await {
+        warn!("Failed to deallocate GPUs for VM {}: {}", vm_id, e);
+    }
+
+    Ok(ApiResponse {
+        data: (),
+        code: StatusCode::OK,
+    })
+}
+
+#[utoipa::path(
+    post,
     path = "/vms/{vm_id}/pause",
     params(
         ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")

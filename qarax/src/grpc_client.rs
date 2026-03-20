@@ -369,6 +369,36 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Force stop (hard power-off) a VM on the qarax-node
+    #[instrument(skip(self))]
+    pub async fn force_stop_vm(&self, vm_id: Uuid) -> Result<()> {
+        debug!("Force stopping VM {} on node {}", vm_id, self.address);
+
+        let mut client = match VmServiceClient::connect(self.address.clone()).await {
+            Ok(c) => c,
+            Err(_) => {
+                // Node is unreachable — treat as already stopped
+                return Err(crate::errors::Error::NotFound.into());
+            }
+        };
+
+        client
+            .force_stop_vm(VmId {
+                id: vm_id.to_string(),
+            })
+            .await
+            .map_err(|s| match s.code() {
+                tonic::Code::NotFound
+                | tonic::Code::Unknown
+                | tonic::Code::Unavailable
+                | tonic::Code::Internal => crate::errors::Error::NotFound.into(),
+                _ => anyhow::anyhow!("Failed to force stop VM on qarax-node: {}", s),
+            })?;
+
+        debug!("VM {} force stopped successfully", vm_id);
+        Ok(())
+    }
+
     /// Pause a VM on the qarax-node
     #[instrument(skip(self))]
     pub async fn pause_vm(&self, vm_id: Uuid) -> Result<()> {
