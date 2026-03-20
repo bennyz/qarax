@@ -17,6 +17,7 @@ class VmResizeRequest:
     At least one of `desired_vcpus` or `desired_ram` must be provided.
     - `desired_vcpus` must be in the range `[boot_vcpus, max_vcpus]`.
     - `desired_ram` must be in the range `[memory_size, memory_size + memory_hotplug_size]`.
+    - On x86_64, Cloud Hypervisor ACPI memory hotplug only supports 128 MiB increments.
 
         Attributes:
             desired_ram (int | None | Unset): Target memory size in bytes

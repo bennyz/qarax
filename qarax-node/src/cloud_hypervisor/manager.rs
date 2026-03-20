@@ -858,6 +858,31 @@ impl VmManager {
         Ok(())
     }
 
+    /// Force stop (hard power-off) a VM by killing the Cloud Hypervisor process.
+    ///
+    /// Unlike `stop_vm` (graceful shutdown), this immediately kills the CH process.
+    /// Unlike `delete_vm`, this preserves all VM resources (TAP devices, sockets,
+    /// configs) so the VM can be deleted or recreated later.
+    pub async fn force_stop_vm(&self, vm_id: &str) -> Result<(), VmManagerError> {
+        info!("Force stopping VM: {}", vm_id);
+
+        let mut vms = self.vms.lock().await;
+        let instance = vms
+            .get_mut(vm_id)
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        if let Some(mut process) = instance.process.take()
+            && let Err(e) = process.kill().await
+        {
+            warn!("Failed to kill CH process for VM {}: {}", vm_id, e);
+        }
+
+        instance.status = VmStatus::Shutdown;
+
+        info!("VM {} force stopped successfully", vm_id);
+        Ok(())
+    }
+
     /// Pause a VM
     pub async fn pause_vm(&self, vm_id: &str) -> Result<(), VmManagerError> {
         info!("Pausing VM: {}", vm_id);

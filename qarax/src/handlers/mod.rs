@@ -55,6 +55,7 @@ pub struct NameQuery {
         vm::handler::create_template_from_vm,
         vm::handler::start,
         vm::handler::stop,
+        vm::handler::force_stop,
         vm::handler::pause,
         vm::handler::resume,
         vm::handler::list_snapshots,
@@ -245,6 +246,7 @@ fn vms() -> Router {
             post(vm::handler::create_template_from_vm),
         )
         .route("/vms/{vm_id}/stop", post(vm::handler::stop))
+        .route("/vms/{vm_id}/force-stop", post(vm::handler::force_stop))
         .route("/vms/{vm_id}/pause", post(vm::handler::pause))
         .route("/vms/{vm_id}/resume", post(vm::handler::resume))
         .route("/vms/{vm_id}/metrics", get(vm::handler::metrics))

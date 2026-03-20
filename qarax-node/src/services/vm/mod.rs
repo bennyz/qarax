@@ -104,6 +104,14 @@ impl VmService for VmServiceImpl {
             .await
     }
 
+    async fn force_stop_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
+        let vm_id = request.into_inner().id;
+        self.run_vm_op("ForceStop", vm_id.clone(), || {
+            self.manager.force_stop_vm(&vm_id)
+        })
+        .await
+    }
+
     async fn pause_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
         self.run_vm_op("Pause", vm_id.clone(), || self.manager.pause_vm(&vm_id))

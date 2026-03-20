@@ -22,6 +22,7 @@ from qarax_api_client.api.vms import (
     get as get_vm,
     start as start_vm,
     stop as stop_vm,
+    force_stop as force_stop_vm,
     pause as pause_vm,
     resume as resume_vm,
     delete as delete_vm,
@@ -258,6 +259,36 @@ async def test_vm_start_stop_cycle(client):
                 assert vm.status == VmStatus.SHUTDOWN, (
                     f"Cycle {i}: Expected SHUTDOWN after stop"
                 )
+
+        finally:
+            await call_api(delete_vm, client=c, vm_id=vm_id_str)
+
+
+@pytest.mark.asyncio
+async def test_vm_force_stop(client):
+    """Test force stopping (hard power-off) a running VM."""
+    async with client as c:
+        # Create VM
+        new_vm = NewVm(
+            name="test-vm-e2e-force-stop",
+            hypervisor=Hypervisor.CLOUD_HV,
+            boot_vcpus=1,
+            max_vcpus=1,
+            memory_size=256 * 1024 * 1024,
+        )
+
+        vm_id = await call_api(create_vm, client=c, body=new_vm)
+        vm_id_str = str(vm_id)
+
+        try:
+            # Start VM and wait for it to be running
+            await call_api(start_vm, client=c, vm_id=vm_id_str)
+            await wait_for_status(c, vm_id_str, VmStatus.RUNNING)
+
+            # Force stop the VM
+            await call_api(force_stop_vm, client=c, vm_id=vm_id_str)
+            vm = await call_api(get_vm, client=c, vm_id=vm_id_str)
+            assert vm.status == VmStatus.SHUTDOWN
 
         finally:
             await call_api(delete_vm, client=c, vm_id=vm_id_str)

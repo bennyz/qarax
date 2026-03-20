@@ -81,6 +81,7 @@ def sync_detailed(
             At least one of `desired_vcpus` or `desired_ram` must be provided.
             - `desired_vcpus` must be in the range `[boot_vcpus, max_vcpus]`.
             - `desired_ram` must be in the range `[memory_size, memory_size + memory_hotplug_size]`.
+            - On x86_64, Cloud Hypervisor ACPI memory hotplug only supports 128 MiB increments.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -116,6 +117,7 @@ def sync(
             At least one of `desired_vcpus` or `desired_ram` must be provided.
             - `desired_vcpus` must be in the range `[boot_vcpus, max_vcpus]`.
             - `desired_ram` must be in the range `[memory_size, memory_size + memory_hotplug_size]`.
+            - On x86_64, Cloud Hypervisor ACPI memory hotplug only supports 128 MiB increments.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -146,6 +148,7 @@ async def asyncio_detailed(
             At least one of `desired_vcpus` or `desired_ram` must be provided.
             - `desired_vcpus` must be in the range `[boot_vcpus, max_vcpus]`.
             - `desired_ram` must be in the range `[memory_size, memory_size + memory_hotplug_size]`.
+            - On x86_64, Cloud Hypervisor ACPI memory hotplug only supports 128 MiB increments.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -179,6 +182,7 @@ async def asyncio(
             At least one of `desired_vcpus` or `desired_ram` must be provided.
             - `desired_vcpus` must be in the range `[boot_vcpus, max_vcpus]`.
             - `desired_ram` must be in the range `[memory_size, memory_size + memory_hotplug_size]`.
+            - On x86_64, Cloud Hypervisor ACPI memory hotplug only supports 128 MiB increments.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

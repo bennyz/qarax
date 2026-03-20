@@ -375,6 +375,7 @@ service VmService {
   rpc CreateVM(VmConfig) returns (VmState) {}
   rpc StartVM(VmID) returns (google.protobuf.Empty) {}
   rpc StopVM(VmID) returns (google.protobuf.Empty) {}
+  rpc ForceStopVM(VmID) returns (google.protobuf.Empty) {}
   rpc PauseVM(VmID) returns (google.protobuf.Empty) {}
   rpc ResumeVM(VmID) returns (google.protobuf.Empty) {}
   rpc SnapshotVM(SnapshotVmRequest) returns (google.protobuf.Empty) {}

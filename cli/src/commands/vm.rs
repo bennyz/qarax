@@ -118,6 +118,11 @@ enum VmCommand {
         /// VM name or ID
         vm: String,
     },
+    /// Force stop (hard power-off) a VM
+    ForceStop {
+        /// VM name or ID
+        vm: String,
+    },
     /// Pause a VM
     Pause {
         /// VM name or ID
@@ -490,6 +495,12 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
             let id = resolve_vm_id(client, &vm).await?;
             api::vms::stop(client, id).await?;
             println!("Stopped VM: {vm}");
+        }
+
+        VmCommand::ForceStop { vm } => {
+            let id = resolve_vm_id(client, &vm).await?;
+            api::vms::force_stop(client, id).await?;
+            println!("Force stopped VM: {vm}");
         }
 
         VmCommand::Pause { vm } => {
