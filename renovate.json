@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "cargo": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchPackageNames": ["cloud-hypervisor-sdk"],
+      "groupName": "cloud-hypervisor-sdk",
+      "automerge": false
+    }
+  ]
+}

@@ -136,6 +136,40 @@ jobs:
           min-versions-to-keep: 1
           delete-only-untagged-versions: true
 
+      - name: Clean up old cosign signature versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          package_versions=$(
+            gh api --paginate \
+              -H "Accept: application/vnd.github+json" \
+              "/orgs/${{ github.repository_owner }}/packages/container/qarax-vmm-host/versions?per_page=100"
+          )
+
+          signature_version_ids=$(
+            jq -rs '
+              add
+              | map(select(any(.metadata.container.tags[]?; test("^sha256-.*\\.sig$"))))
+              | sort_by(.created_at)
+              | .[0:-1]
+              | .[].id
+            ' <<<"${package_versions}"
+          )
+
+          if [ -z "${signature_version_ids}" ]; then
+            echo "No old cosign signature versions to delete"
+            exit 0
+          fi
+
+          while IFS= read -r version_id; do
+            [ -n "${version_id}" ] || continue
+            gh api \
+              --method DELETE \
+              -H "Accept: application/vnd.github+json" \
+              "/orgs/${{ github.repository_owner }}/packages/container/qarax-vmm-host/versions/${version_id}"
+            echo "Deleted old cosign signature version ${version_id}"
+          done <<<"${signature_version_ids}"
+
       - name: Publish summary
         run: |
           echo "## Appliance image published" >> "${GITHUB_STEP_SUMMARY}"
