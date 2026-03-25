@@ -29,6 +29,7 @@ make stop-local      # Stop and remove the local Docker stack
 make appliance-build # Build bootc container image for qarax-node (hypervisor host)
 make appliance-push  # Push appliance image to registry
 make ruff-check      # Lint the Python SDK (run after make sdk)
+make ruff-fmt        # Auto-format Python SDK with ruff
 SKIP_DOCKER=1 make test  # Run tests skipping Postgres startup (if already running)
 ```
 
@@ -48,7 +49,7 @@ PostgreSQL 16+ with SQLx (compile-time verified queries).
 
 - Migrations in `migrations/`, run automatically on startup
 - Start DB: `make test-deps` or `./scripts/start_db.sh`
-- Default connection: `qarax:qarax@127.0.0.1:5432/qarax`
+- Default connection (local): `qarax:qarax@127.0.0.1:5432/qarax`; CI uses `postgres:password@localhost:5432/qarax`
 - After modifying any SQL query: `cargo sqlx prepare --workspace`
 - Offline/CI builds: `SQLX_OFFLINE=true cargo build`
 
@@ -79,11 +80,12 @@ Do not jump to code investigation when services may not be running or the wrong 
 
 ### Control Plane (qarax)
 
-- `qarax/src/handlers/` — Axum HTTP handlers by resource (hosts, vms, storage_pools, storage_objects, boot_sources, transfers, jobs)
+- `qarax/src/handlers/` — Axum HTTP handlers by resource (hosts, vms, instance_types, vm_templates, storage_pools, storage_objects, boot_sources, networks, transfers, lifecycle_hooks, jobs)
 - `qarax/src/model/` — Database models with inline SQLx queries
 - `qarax/src/grpc_client.rs` — Tonic client for communicating with qarax-node instances
 - `qarax/src/vm_monitor.rs` — Background task that periodically reconciles VM status with nodes
 - `qarax/src/resource_monitor.rs` — Background task polling host resource metrics
+- `qarax/src/hook_executor.rs` — Background task managing lifecycle hook executions
 - `qarax/src/transfer_executor.rs` — Async file transfer handling
 - `qarax/src/host_deployer.rs` — Host deployment via SSH + bootc
 - `qarax/src/configuration.rs` — YAML config with env var overrides
@@ -95,6 +97,7 @@ Do not jump to code investigation when services may not be running or the wrong 
 - `qarax-node/src/cloud_hypervisor/manager.rs` — Cloud Hypervisor process management
 - `qarax-node/src/image_store/manager.rs` — OCI image handling via virtiofsd
 - `qarax-node/src/overlaybd/manager.rs` — OverlayBD TCMU block device management
+- `qarax-node/src/networking/` — Network management (bridge creation, DHCP allocation, nftables rules)
 
 ### OpenAPI
 
@@ -124,7 +127,7 @@ Database enums use `#[sqlx(type_name = "vm_status")]` with `#[serde(rename_all =
 ### Error Handling
 
 Custom `Error` enum in `qarax/src/errors.rs` using `thiserror`:
-- `Sqlx(sqlx::Error)` → 500, `InvalidEntity(ValidationErrors)` → 422, `Conflict(String)` → 409, `NotFound` → 404
+- `Sqlx(sqlx::Error)` → 500, `InvalidEntity(ValidationErrors)` and `UnprocessableEntity(String)` → 422, `Conflict(String)` → 409, `NotFound` → 404
 - Smart extraction of unique constraint violations into user-friendly messages
 - `Result<T, E = Error>` type alias used throughout the control plane
 
@@ -137,7 +140,7 @@ gRPC services in `qarax-node/src/services/` implement generated tonic traits:
 
 ### App Startup
 
-`qarax/src/startup.rs` wires the app: load config → run migrations → create pool → build `App` (wraps `Arc<PgPool>` + VM defaults) → spawn background tasks (`vm_monitor`, `resource_monitor`) → start Axum with middleware (request ID, tracing).
+`qarax/src/startup.rs` wires the app: load config → run migrations → create pool → build `App` (wraps `Arc<PgPool>` + VM defaults) → spawn background tasks (`vm_monitor`, `resource_monitor`, `hook_executor`) → start Axum with middleware (request ID, tracing).
 
 ## Configuration
 
@@ -145,7 +148,16 @@ YAML files in `configuration/` (base.yaml, local.yaml, production.yaml), selecte
 
 ## CI
 
-GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) → unit tests → E2E tests. E2E tests run on push to master or PRs with `run-e2e` label. E2E uses pytest against a Docker Compose stack with KVM passthrough (`e2e/`).
+GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) → unit tests → E2E tests. E2E tests run on push to master or PRs with `run-e2e` label. E2E uses pytest against a Docker Compose stack with KVM passthrough (`e2e/`). E2E tests cover: cloud-init, hotplug, network, storage types, GPU scheduling, and lifecycle hooks.
+
+## Versioning
+
+Key component versions are pinned in `Makefile` (`CLOUD_HYPERVISOR_VERSION`) and `deployments/Containerfile.qarax-vmm` (Cloud Hypervisor, OverlayBD). Cloud Hypervisor SDK version is pinned via git tag in `qarax-node/Cargo.toml`.
+
+## Additional Directories
+
+- `demos/` — Working demo setups (k8s-cluster, gpu-passthrough, hooks, hyperconverged, oci, boot-source, etcd-cluster)
+- `docs/` — Additional development documentation (`DEVELOPMENT.md`)
 
 ## Rules
 
