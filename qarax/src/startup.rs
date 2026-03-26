@@ -11,6 +11,8 @@ pub async fn run(
     vm_defaults: VmDefaultsSettings,
 ) -> Result<impl IntoFuture<Output = std::io::Result<()>> + Send, Box<dyn std::error::Error + Send>>
 {
+    crate::model::events::init_event_bus();
+
     let a = App::new(db_pool, vm_defaults);
 
     // Spawn background task to reconcile VM status with the live node state

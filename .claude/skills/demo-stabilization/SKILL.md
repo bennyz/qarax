@@ -1,5 +1,5 @@
 ---
-name: Demo Stabilization
+name: demo-stabilization
 description: Debug and stabilize Qarax demos or bring-up workflows by isolating the failing layer before changing code.
 ---
 

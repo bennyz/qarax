@@ -47,6 +47,7 @@ prost = "0.12.3"
 russh = "0.57.0"
 async-stream = "0.3"
 futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 once_cell = "1.18.0"

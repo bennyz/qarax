@@ -782,12 +782,22 @@ pub async fn update_status(
         .execute(pool)
         .await?;
 
-    // Enqueue lifecycle hooks (best-effort — don't fail the status update)
+    // Enqueue lifecycle hooks and emit SSE event (best-effort — don't fail the status update)
     if let Some(vm) = vm
         && vm.status != status
     {
         let new_status_str = status.to_string();
         let prev_status_str = vm.status.to_string();
+
+        super::events::emit(
+            vm.id,
+            &vm.name,
+            &prev_status_str,
+            &new_status_str,
+            vm.host_id,
+            &vm.tags,
+        );
+
         if let Err(e) =
             super::lifecycle_hooks::enqueue_matching(pool, &vm, &prev_status_str, &new_status_str)
                 .await

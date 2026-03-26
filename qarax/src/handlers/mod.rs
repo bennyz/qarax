@@ -18,6 +18,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use validator::ValidationErrors;
 
 mod boot_source;
+mod events;
 mod host;
 mod instance_type;
 mod job;
@@ -215,6 +216,7 @@ pub fn app(env: App) -> Router {
         .merge(jobs())
         .merge(networks())
         .merge(hooks())
+        .merge(event_stream())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(
             ServiceBuilder::new()
@@ -425,6 +427,10 @@ fn boot_sources() -> Router {
             "/boot-sources/{boot_source_id}",
             get(boot_source::handler::get).delete(boot_source::handler::delete),
         )
+}
+
+fn event_stream() -> Router {
+    Router::new().route("/events", get(events::handler::stream))
 }
 
 pub struct ApiResponse<T> {
