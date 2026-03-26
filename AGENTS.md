@@ -174,4 +174,5 @@ Key component versions are pinned in `Makefile` (`CLOUD_HYPERVISOR_VERSION`) and
 
 ## Skills
 
-- Use `.github/skills/cloud-hypervisor/SKILL.md` when you need Cloud Hypervisor capabilities or implementation details.
+- Use `.claude/skills/cloud-hypervisor/SKILL.md` when you need Cloud Hypervisor capabilities or implementation details.
+- Use `.claude/skills/demo-stabilization/SKILL.md` when a demo or bring-up workflow is failing and you need a structured debug path before editing code.
