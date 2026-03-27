@@ -152,7 +152,13 @@ GitHub Actions (`rust-ci.yml`): fmt check (nightly) → clippy → build (musl) 
 
 ## Versioning
 
-Key component versions are pinned in `Makefile` (`CLOUD_HYPERVISOR_VERSION`) and `deployments/Containerfile.qarax-vmm` (Cloud Hypervisor, OverlayBD). Cloud Hypervisor SDK version is pinned via git tag in `qarax-node/Cargo.toml`.
+Key component versions are pinned in `Makefile` (`CLOUD_HYPERVISOR_VERSION`) and `deployments/Containerfile.qarax-vmm` (Cloud Hypervisor, OverlayBD). Cloud Hypervisor SDK version is pinned via git tag in `qarax-node/Cargo.toml`. After bumping the SDK tag, always run `cargo build -p qarax-node` — minor releases can rename/move types (e.g., `DiskImageType` → `disk_config::ImageType` in v51.1).
+
+## E2E Test Patterns
+
+- **Async fixture clients**: Pytest async fixtures that use `async with Client(...) as c:` must create their own `Client(base_url=QARAX_URL)` — never share the test's `client` fixture. httpx clients cannot be opened as a context manager more than once per instance.
+- **`docker compose` commands**: Must be run from `e2e/` (the compose file lives there). `make run-local` handles this via `cd e2e` internally.
+- **Port 5432 conflict**: A standalone postgres container may hold port 5432. Stop it before `docker compose up`: `docker stop <name>`.
 
 ## Additional Directories
 
