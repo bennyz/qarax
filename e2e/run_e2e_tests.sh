@@ -17,6 +17,7 @@ cd "$(dirname "$0")"
 #   REBUILD=1       - Force rebuild of all images
 #   KEEP=1          - Keep services running after tests (for debugging)
 #   SKIP_BUILD=1    - Skip building qarax-node binary
+#   ENABLE_OTEL=1   - Build with `otel` features and point services at a host OTLP receiver
 
 default_webhook_host() {
 	if [ "$(uname -s)" != "Linux" ]; then
@@ -31,6 +32,31 @@ default_webhook_host() {
 			python3 -c "import json,sys; cfg=json.load(sys.stdin)[0]['IPAM']['Config']; print(cfg[0]['Gateway'])" 2>/dev/null) ||
 		gw="172.17.0.1"
 	echo "$gw"
+}
+
+is_truthy() {
+	case "${1:-}" in
+	1 | true | TRUE | yes | YES | on | ON) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+docker_build_image() {
+	local scope="$1"
+	shift
+
+	if is_truthy "${DOCKER_BUILDX:-}" || [ -n "${DOCKER_BUILD_CACHE_FROM:-}" ] || [ -n "${DOCKER_BUILD_CACHE_TO:-}" ]; then
+		local cmd=(docker buildx build --load)
+		if [ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]; then
+			cmd+=(--cache-from "${DOCKER_BUILD_CACHE_FROM},scope=${scope}")
+		fi
+		if [ -n "${DOCKER_BUILD_CACHE_TO:-}" ]; then
+			cmd+=(--cache-to "${DOCKER_BUILD_CACHE_TO},scope=${scope}")
+		fi
+		"${cmd[@]}" "$@"
+	else
+		docker build "$@"
+	fi
 }
 
 cleanup() {
@@ -60,11 +86,24 @@ trap cleanup EXIT
 MUSL_TARGET="x86_64-unknown-linux-musl"
 BOOTC_OVERLAY_DISK="${PWD}/bootc-vm-overlay.qcow2"
 NODE_BINARY="../target/${MUSL_TARGET}/release/qarax-node"
+
+CARGO_FEATURE_ARGS=()
+if is_truthy "${ENABLE_OTEL:-}"; then
+	OTEL_TEST_PORT="${OTEL_TEST_PORT:-14318}"
+	OTEL_GATEWAY_HOST="${OTEL_GATEWAY_HOST:-$(default_webhook_host)}"
+	export OTEL_ENABLED=true
+	export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://${OTEL_GATEWAY_HOST}:${OTEL_TEST_PORT}}"
+	export OTEL_BSP_SCHEDULE_DELAY="${OTEL_BSP_SCHEDULE_DELAY:-500}"
+	export OTEL_METRIC_EXPORT_INTERVAL="${OTEL_METRIC_EXPORT_INTERVAL:-1000}"
+	CARGO_FEATURE_ARGS=(--features "qarax/otel,qarax-node/otel")
+	echo -e "${YELLOW}Telemetry e2e enabled:${NC} ${OTEL_EXPORTER_OTLP_ENDPOINT}"
+fi
+
 if [ -z "$SKIP_BUILD" ]; then
 	INIT_BINARY="../target/${MUSL_TARGET}/release/qarax-init"
 	QARAX_BINARY="../target/${MUSL_TARGET}/release/qarax-server"
 	CLI_BINARY="../target/${MUSL_TARGET}/release/qarax"
-	if [ -n "$REBUILD" ] || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ] || [ ! -f "$QARAX_BINARY" ] || [ ! -f "$CLI_BINARY" ]; then
+	if [ -n "$REBUILD" ] || is_truthy "${ENABLE_OTEL:-}" || [ ! -f "$NODE_BINARY" ] || [ ! -f "$INIT_BINARY" ] || [ ! -f "$QARAX_BINARY" ] || [ ! -f "$CLI_BINARY" ]; then
 		echo -e "${YELLOW}Building qarax-server, qarax-node, qarax-init, and qarax CLI binaries...${NC}"
 		cd ..
 		if [ "$(uname -s)" = "Darwin" ]; then
@@ -72,15 +111,15 @@ if [ -z "$SKIP_BUILD" ]; then
 				echo -e "${RED}Cross-compilation from macOS requires 'cross'. Install with: cargo install cross${NC}"
 				exit 1
 			fi
-			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init
+			cross build --target "${MUSL_TARGET}" --release -p qarax -p qarax-node -p qarax-init "${CARGO_FEATURE_ARGS[@]}"
 			cross build --target "${MUSL_TARGET}" --release -p cli
 		else
 			# If running under sudo, build as the original user so target/ stays user-owned.
 			if [ -n "${SUDO_USER:-}" ]; then
-				sudo -u "$SUDO_USER" cargo build --release -p qarax -p qarax-node -p qarax-init
+				sudo -u "$SUDO_USER" cargo build --release -p qarax -p qarax-node -p qarax-init "${CARGO_FEATURE_ARGS[@]}"
 				sudo -u "$SUDO_USER" cargo build --release -p cli
 			else
-				cargo build --release -p qarax -p qarax-node -p qarax-init
+				cargo build --release -p qarax -p qarax-node -p qarax-init "${CARGO_FEATURE_ARGS[@]}"
 				cargo build --release -p cli
 			fi
 		fi
@@ -89,6 +128,8 @@ if [ -z "$SKIP_BUILD" ]; then
 		echo -e "${GREEN}Using existing binaries${NC}"
 		echo -e "${YELLOW}To rebuild, run: REBUILD=1 ./run_e2e_tests.sh${NC}"
 	fi
+elif is_truthy "${ENABLE_OTEL:-}"; then
+	echo -e "${YELLOW}SKIP_BUILD=1 set; make sure existing binaries were built with ENABLE_OTEL=1${NC}"
 fi
 
 # ── Bootc VM disk (real bootc upgrade e2e tests) ─────────────────────────────
@@ -126,7 +167,7 @@ build_bootc_vm() {
 	echo -e "${YELLOW}Building bootc node image...${NC}"
 	local node_hash
 	node_hash=$(sha256sum "${NODE_BIN}" | cut -d' ' -f1)
-	docker build \
+	docker_build_image "e2e-bootc-node-base" \
 		--build-arg "CACHE_BUST=${node_hash}" \
 		-f Containerfile.bootc-node \
 		-t localhost:5001/qarax-node-bootc:base \
@@ -135,13 +176,13 @@ build_bootc_vm() {
 
 	# Push thin versioned images for bootc switch version tracking
 	echo -e "${YELLOW}Pushing versioned bootc node images...${NC}"
-	docker build -t localhost:5001/qarax-node-test:0.1.0 - <<'VEOF'
+	DOCKER_BUILDKIT=0 docker build -t localhost:5001/qarax-node-test:0.1.0 - <<'VEOF'
 FROM localhost:5001/qarax-node-bootc:base
 RUN mkdir -p /etc/qarax-node && printf 'QARAX_NODE_VERSION=0.1.0\n' > /etc/qarax-node/version.env
 VEOF
 	docker push localhost:5001/qarax-node-test:0.1.0
 
-	docker build -t localhost:5001/qarax-node-test:0.2.0-test - <<'VEOF'
+	DOCKER_BUILDKIT=0 docker build -t localhost:5001/qarax-node-test:0.2.0-test - <<'VEOF'
 FROM localhost:5001/qarax-node-bootc:base
 RUN mkdir -p /etc/qarax-node && printf 'QARAX_NODE_VERSION=0.2.0-test\n' > /etc/qarax-node/version.env
 VEOF
