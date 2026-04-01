@@ -8,47 +8,38 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  actions: write
 
 jobs:
-  label:
-    name: Label PR For E2E
+  dispatch:
+    name: Dispatch E2E
     runs-on: ubuntu-latest
     if: github.event.issue.pull_request && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '/run-e2e')
     steps:
-      - name: Add E2E label to PR
+      - name: Dispatch E2E workflow on PR branch
         uses: actions/github-script@v8
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.issue.number;
-            const label = 'run-e2e';
 
-            const { data: existingLabels } = await github.rest.issues.listLabelsOnIssue({
+            const { data: pr } = await github.rest.pulls.get({
               owner,
               repo,
-              issue_number,
+              pull_number: issue_number,
             });
 
-            if (existingLabels.some(existing => existing.name === label)) {
-              await github.rest.issues.removeLabel({
-                owner,
-                repo,
-                issue_number,
-                name: label,
-              });
-            }
-
-            await github.rest.issues.addLabels({
+            await github.rest.actions.createWorkflowDispatch({
               owner,
               repo,
-              issue_number,
-              labels: [label],
+              workflow_id: 'rust-ci.yml',
+              ref: pr.head.ref,
             });
 
             await github.rest.issues.createComment({
               owner,
               repo,
               issue_number,
-              body: 'Queued E2E on this PR by adding the `run-e2e` label. Watch the PR checks for a new `Rust CI` run with `E2E Tests`.',
+              body: `Dispatching E2E tests for branch \`${pr.head.ref}\` (${pr.head.sha.substring(0, 7)}). Watch the [Actions tab](https://github.com/${owner}/${repo}/actions/workflows/rust-ci.yml) for the new run.`,
             });
