@@ -3,19 +3,6 @@
 Qarax can boot VMs directly from OCI container images using OverlayBD, a lazy-loading
 block device format. This document explains how it works end-to-end.
 
-## Two OCI Boot Paths
-
-Qarax has two mechanisms for using OCI images:
-
-| Path | Transport | Block device? | Use case |
-|------|-----------|---------------|----------|
-| **OverlayBD** | TCMU block device | Yes (`/dev/vda`) | Full VMs with persistent or ephemeral disks |
-| **ImageStore** | virtiofsd (virtio-fs) | No (filesystem mount) | Container-like workloads |
-
-This document covers the OverlayBD path. It is the primary path for disk-based VMs.
-
----
-
 ## Architecture Overview
 
 The key idea is **copy-on-write layering**:

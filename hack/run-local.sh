@@ -803,7 +803,7 @@ if [[ $WITH_VM -eq 0 ]]; then
 		"cargo run -p cli vm list" \
 		"cargo run -p cli host list"
 	print_overlaybd_workflow
-	echo "Legacy: create VM directly from OCI image ref (virtiofs or overlaybd auto-detected):"
+	echo "Create VM from OCI image ref (OverlayBD):"
 	echo '  cargo run -p cli vm create --name alpine-vm --vcpus 1 --memory 268435456 \'
 	echo '    --image-ref public.ecr.aws/docker/library/alpine:latest'
 	echo '  cargo run -p cli vm start my-vm'

@@ -36,16 +36,13 @@ RUN dnf install -y \
     e2fsprogs \
     # OverlayBD / TCMU RPM extraction
     cpio \
-    # VirtioFS daemon for OCI image booting
-    virtiofsd \
     # Monitoring and debugging
     strace \
     tcpdump \
     # System utilities
     vim-minimal \
     curl \
-    && dnf clean all \
-    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
+    && dnf clean all
 
 # Install Cloud Hypervisor
 RUN curl -fsSL \

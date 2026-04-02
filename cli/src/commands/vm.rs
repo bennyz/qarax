@@ -7,9 +7,9 @@ use crate::{
     api::{
         self,
         models::{
-            AttachDiskRequest, CreateSnapshotRequest, CreateVmResult, DiskResizeRequest,
-            HotplugNicRequest, NewVm, NewVmNetwork, RestoreRequest, VmImagePreflightRequest,
-            VmMigrateRequest, VmResizeRequest,
+            AttachDiskRequest, CommitVmRequest, CreateSnapshotRequest, CreateVmResult,
+            DiskResizeRequest, HotplugNicRequest, NewVm, NewVmNetwork, RestoreRequest,
+            VmImagePreflightRequest, VmMigrateRequest, VmResizeRequest,
         },
     },
     client::Client,
@@ -290,6 +290,17 @@ enum VmCommand {
         /// Destination host name or ID
         #[arg(long)]
         host: String,
+    },
+    /// Convert an OCI image VM to a standalone raw disk (like docker commit)
+    Commit {
+        /// VM name or ID
+        vm: String,
+        /// Storage pool name or ID for the committed raw disk (Local or NFS)
+        #[arg(long)]
+        storage_pool: String,
+        /// Size of the committed disk in bytes
+        #[arg(long)]
+        size: i64,
     },
     /// Manage VM snapshots
     Snapshot {
@@ -628,7 +639,6 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
             } else {
                 println!("Bootable:   {}", response.bootable);
                 println!("Host:       {} ({})", response.host_name, response.host_id);
-                println!("Backend:    {}", response.backend);
                 println!("Resolved:   {}", response.resolved_image_ref);
                 println!("Arch:       {}", response.architecture);
                 println!();
@@ -813,6 +823,27 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
             } else {
                 println!("Migrating VM: {vm}");
                 println!("Job:          {}", resp.job_id);
+                poll_job(client, resp.job_id).await?;
+            }
+        }
+
+        VmCommand::Commit {
+            vm,
+            storage_pool,
+            size,
+        } => {
+            let vm_id = resolve_vm_id(client, &vm).await?;
+            let pool_id = resolve_pool_id(client, &storage_pool).await?;
+            let req = CommitVmRequest {
+                storage_pool_id: pool_id,
+                size_bytes: size,
+            };
+            let resp = api::vms::commit(client, vm_id, &req).await?;
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&resp, output)?;
+            } else {
+                println!("Committing VM: {vm}");
+                println!("Job:           {}", resp.job_id);
                 poll_job(client, resp.job_id).await?;
             }
         }

@@ -26,12 +26,10 @@ RUN dnf install -y \
     cpio \
     gzip \
     busybox \
-    virtiofsd \
     e2fsprogs \
     nfs-utils \
     guestfs-tools \
-    && dnf clean all \
-    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
+    && dnf clean all
 
 # Install Cloud Hypervisor (static binary)
 RUN curl ${CURL_RETRY_ARGS} \

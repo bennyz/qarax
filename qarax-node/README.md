@@ -5,7 +5,7 @@ Data plane gRPC service for the qarax VM management platform. Runs on hypervisor
 ## What it does
 
 - Manages Cloud Hypervisor processes (create, start, stop, pause, resume, delete, snapshot, migrate)
-- Handles OCI image pulling and OverlayBD lazy-pull block devices
+- Handles OverlayBD lazy-pull block devices for OCI images
 - Creates and manages Linux bridges, TAP devices, in-process DHCP, and NAT rules
 - Serves file transfers (HTTP download and local copy) into storage pools
 - Reports host info (CPU, memory, disk, GPUs, NUMA topology) to the control plane
@@ -26,9 +26,7 @@ All flags can also be set as env vars.
 | `-p, --port` | `50051` | gRPC listen port |
 | `--runtime-dir` | `/var/lib/qarax/vms` | VM sockets, logs, persisted config |
 | `--cloud-hypervisor-binary` | `/usr/local/bin/cloud-hypervisor` | Path to CH binary |
-| `--virtiofsd-binary` | `/usr/local/bin/virtiofsd` | Path to virtiofsd (OCI boot disabled if absent) |
 | `--qarax-init-binary` | `/usr/local/bin/qarax-init` | PID 1 init for OCI VMs (disabled if absent) |
-| `--image-cache-dir` | `/var/lib/qarax/images` | OCI image layer cache |
 | `--convertor-binary` | `/opt/overlaybd/snapshotter/convertor` | OverlayBD converter (disabled if absent) |
 | `--overlaybd-cache-dir` | `/var/lib/qarax/overlaybd` | OverlayBD per-VM configs and upper layers |
 
@@ -40,7 +38,6 @@ Env vars: `RUST_LOG` (tracing filter), `INSECURE_REGISTRIES` (comma-separated ho
 |---|---|---|
 | `cloud-hypervisor` | Yes | VMM binary (one process per VM) |
 | `/dev/kvm` | Yes | Hardware virtualization |
-| `virtiofsd` | No | VirtioFS for OCI image boot |
 | `qarax-init` | No | PID 1 init injected into OCI VMs |
 | `overlaybd-tcmu` | No | TCMU daemon for lazy block-level image loading |
 | `convertor` | No | OCI to OverlayBD format conversion |
@@ -65,7 +62,7 @@ Three pool types, each implementing attach/detach/map/unmap:
 
 ## Deployment
 
-qarax-node is packaged as a bootc container image (see `deployments/Containerfile.qarax-vmm`). The image includes Cloud Hypervisor, virtiofsd, OverlayBD, and all dependencies. Deploy to a host with:
+qarax-node is packaged as a bootc container image (see `deployments/Containerfile.qarax-vmm`). The image includes Cloud Hypervisor, OverlayBD, and all dependencies. Deploy to a host with:
 
 ```bash
 make appliance-build

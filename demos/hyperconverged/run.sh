@@ -5,7 +5,7 @@
 # Runs the qarax control plane AND qarax-node inside a single Cloud Hypervisor
 # VM on bare metal. The host only provides a bootstrap qarax-node to launch the
 # CP VM; once the VM is up, its internal qarax-node (with Cloud Hypervisor,
-# overlaybd, virtiofsd, etc.) handles all workload VMs via nested KVM.
+# overlaybd, etc.) handles all workload VMs via nested KVM.
 #
 # Network topology:
 #   Host (bare metal)

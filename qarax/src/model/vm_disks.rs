@@ -301,6 +301,67 @@ pub async fn delete(pool: &PgPool, disk_id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Replace the storage object and upper layer references on a disk record.
+/// Used by vm commit to swap the OCI image disk for a raw disk.
+pub async fn update_storage_object(
+    pool: &PgPool,
+    disk_id: Uuid,
+    storage_object_id: Uuid,
+    upper_storage_object_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE vm_disks SET storage_object_id = $1, upper_storage_object_id = $2 WHERE id = $3",
+    )
+    .bind(storage_object_id)
+    .bind(upper_storage_object_id)
+    .bind(disk_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Row type for the OCI disk join query (find_oci_disk_for_vm).
+#[derive(sqlx::FromRow)]
+pub struct OciDiskRow {
+    pub disk_id: Uuid,
+    pub oci_storage_object_id: Uuid,
+    pub oci_config: sqlx::types::Json<serde_json::Value>,
+    pub upper_storage_object_id: Option<Uuid>,
+    pub upper_config: Option<sqlx::types::Json<serde_json::Value>>,
+}
+
+/// Find the OCI image disk on a VM in a single SQL join.
+/// Joins vm_disks → storage_objects → storage_pools, filtering for
+/// OCI_IMAGE objects on OVERLAYBD pools. Also left-joins the upper
+/// storage object to get its config in the same query.
+pub async fn find_oci_disk_for_vm(
+    pool: &PgPool,
+    vm_id: Uuid,
+) -> Result<Option<OciDiskRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, OciDiskRow>(
+        r#"
+        SELECT
+            vd.id                       AS disk_id,
+            so.id                       AS oci_storage_object_id,
+            so.config                   AS oci_config,
+            vd.upper_storage_object_id,
+            upper_so.config             AS upper_config
+        FROM vm_disks vd
+        JOIN storage_objects so ON vd.storage_object_id = so.id
+        JOIN storage_pools sp ON so.storage_pool_id = sp.id
+        LEFT JOIN storage_objects upper_so ON vd.upper_storage_object_id = upper_so.id
+        WHERE vd.vm_id = $1
+          AND so.object_type = 'OCI_IMAGE'
+          AND sp.pool_type = 'OVERLAYBD'
+        LIMIT 1
+        "#,
+    )
+    .bind(vm_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 pub async fn get_by_logical_name(
     pool: &PgPool,
     vm_id: Uuid,

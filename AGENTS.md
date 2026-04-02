@@ -95,7 +95,6 @@ Do not jump to code investigation when services may not be running or the wrong 
 - `qarax-node/src/services/vm/` — VM lifecycle gRPC service (create, start, stop, pause, resume, delete)
 - `qarax-node/src/services/file_transfer/` — File download/copy gRPC service
 - `qarax-node/src/cloud_hypervisor/manager.rs` — Cloud Hypervisor process management
-- `qarax-node/src/image_store/manager.rs` — OCI image handling via virtiofsd
 - `qarax-node/src/overlaybd/manager.rs` — OverlayBD TCMU block device management
 - `qarax-node/src/networking/` — Network management (bridge creation, DHCP allocation, nftables rules)
 

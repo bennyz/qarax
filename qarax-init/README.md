@@ -48,8 +48,7 @@ All fields are optional. Defaults to `/bin/sh` if both entrypoint and cmd are em
 
 qarax-node injects qarax-init into each OCI-booted VM's filesystem before boot:
 
-- **virtiofs path:** copies the binary to `/.qarax-init` in the overlayfs upper layer
-- **OverlayBD path:** temporarily mounts the block device, copies the binary, unmounts
+- Temporarily mounts the OverlayBD block device, copies the binary to `/.qarax-init`, unmounts
 
 The control plane sets `init=/.qarax-init` on the kernel command line so the kernel runs it as PID 1.
 

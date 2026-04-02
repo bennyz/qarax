@@ -78,14 +78,14 @@ type FileTransferClient =
 
 use node::{
     AddDiskDeviceRequest, AddNetworkDeviceRequest, AttachNetworkRequest, AttachStoragePoolRequest,
-    CloudInitConfig, ConsoleConfig, ConsoleInput, ConsoleLogResponse, CopyFileRequest, CpusConfig,
-    CreateDiskRequest, DetachNetworkRequest, DetachStoragePoolRequest, DiskConfig,
-    DownloadFileRequest, ExecVmRequest, ExecVmResponse, FsConfig, ImportOverlayBdRequest,
-    ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, NumaPlacement, OciImageRequest,
-    OciImageResponse, PayloadConfig, PreflightImageRequest, PreflightImageResponse,
-    ReceiveMigrationRequest, RemoveDeviceRequest, ResizeDiskRequest, ResizeVmRequest,
-    RestoreVmRequest, SendMigrationRequest, SnapshotVmRequest, StoragePoolKind, VfioDeviceConfig,
-    VmConfig, VmCounters, VmId, VmState, VsockConfig,
+    BlankDiskSource, CloudInitConfig, ConsoleConfig, ConsoleInput, ConsoleLogResponse,
+    CopyFileRequest, CpusConfig, CreateDiskRequest, DetachNetworkRequest, DetachStoragePoolRequest,
+    DiskConfig, DownloadFileRequest, ExecVmRequest, ExecVmResponse, ImportOverlayBdRequest,
+    ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, NumaPlacement, OverlayBdDiskSource,
+    PayloadConfig, PreflightImageRequest, PreflightImageResponse, ReceiveMigrationRequest,
+    RemoveDeviceRequest, ResizeDiskRequest, ResizeVmRequest, RestoreVmRequest,
+    SendMigrationRequest, SnapshotVmRequest, StoragePoolKind, TransferResponse, UrlDiskSource,
+    VfioDeviceConfig, VmConfig, VmCounters, VmId, VmState, VsockConfig,
     file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
 };
 
@@ -106,8 +106,6 @@ pub struct CreateVmRequest {
     pub firmware: Option<String>,
     pub initramfs: Option<String>,
     pub cmdline: Option<String>,
-    /// Filesystem (virtiofs) devices for OCI image boot
-    pub fs_configs: Vec<FsConfig>,
     /// Whether to enable shared memory (required for vhost-user-fs)
     pub memory_shared: bool,
     /// Maximum hotplug memory in bytes (enables memory hotplug when > 0)
@@ -322,7 +320,6 @@ impl NodeClient {
             firmware,
             initramfs,
             cmdline,
-            fs_configs,
             memory_shared,
             memory_hotplug_size,
             memory_hugepages,
@@ -404,7 +401,6 @@ impl NodeClient {
             }),
             console: None,
             rate_limit_groups: vec![],
-            fs: fs_configs,
             cloud_init: cloud_init_user_data.map(|user_data| CloudInitConfig {
                 user_data,
                 meta_data: cloud_init_meta_data.unwrap_or_default(),
@@ -693,30 +689,81 @@ impl NodeClient {
             self.address
         );
 
-        let mut client = self.connect_file_transfer_service().await?;
+        let source = match source_url {
+            Some(url) => Some(node::create_disk_request::Source::Url(UrlDiskSource {
+                url: url.to_string(),
+            })),
+            None => Some(node::create_disk_request::Source::Blank(BlankDiskSource {
+                preallocate,
+            })),
+        };
 
-        let response = client
-            .create_disk(CreateDiskRequest {
-                path: path.to_string(),
-                size_bytes,
-                source_url: source_url.map(str::to_string),
-                preallocate: Some(preallocate),
-            })
+        let mut stream = self
+            .send_create_disk_request(
+                CreateDiskRequest {
+                    path: path.to_string(),
+                    size_bytes,
+                    source,
+                },
+                "create_disk",
+            )
+            .await?;
+
+        consume_create_disk_stream(&mut stream, "create_disk", |_| async {}).await
+    }
+
+    /// Create a disk from an OverlayBD TCMU block device.
+    /// Mounts the OverlayBD device on the node, copies its contents to a raw file, unmounts.
+    /// Calls `on_progress(bytes_written)` for each intermediate progress update from the node.
+    /// The returned future from `on_progress` is awaited inline, so DB updates are serialized.
+    #[instrument(skip(self, on_progress))]
+    pub async fn create_disk_from_overlaybd<F, Fut>(
+        &self,
+        path: &str,
+        size_bytes: i64,
+        source: OverlayBdDiskSource,
+        mut on_progress: F,
+    ) -> Result<i64>
+    where
+        F: FnMut(i64) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        debug!(
+            "Creating disk from OverlayBD on node {}: path={path} image_ref={}",
+            self.address, source.image_ref
+        );
+
+        let mut stream = self
+            .send_create_disk_request(
+                CreateDiskRequest {
+                    path: path.to_string(),
+                    size_bytes,
+                    source: Some(node::create_disk_request::Source::Overlaybd(source)),
+                },
+                "create_disk (overlaybd)",
+            )
+            .await?;
+
+        consume_create_disk_stream(&mut stream, "create_disk (overlaybd)", &mut on_progress).await
+    }
+
+    async fn send_create_disk_request(
+        &self,
+        request: CreateDiskRequest,
+        label: &str,
+    ) -> Result<tonic::Streaming<TransferResponse>> {
+        let mut client = self.connect_file_transfer_service().await?;
+        Ok(client
+            .create_disk(request)
             .await
             .map_err(|s| {
                 anyhow::anyhow!(
-                    "gRPC create_disk failed: code={:?} message={}",
+                    "gRPC {label} failed: code={:?} message={}",
                     s.code(),
                     s.message()
                 )
             })?
-            .into_inner();
-
-        if response.success {
-            Ok(response.bytes_written)
-        } else {
-            anyhow::bail!("Disk creation failed: {}", response.error)
-        }
+            .into_inner())
     }
 
     /// Import (convert + push) an OCI image for OverlayBD lazy loading
@@ -750,43 +797,21 @@ impl NodeClient {
         Ok(response.into_inner())
     }
 
-    /// Pull an OCI image on the qarax-node via Nydus
-    #[instrument(skip(self))]
-    pub async fn pull_image(&self, image_ref: &str) -> Result<OciImageResponse> {
-        debug!("Pulling image {} on node {}", image_ref, self.address);
-
-        let mut client = self.connect_vm_service().await?;
-
-        let response = client
-            .pull_image(OciImageRequest {
-                image_ref: image_ref.to_string(),
-            })
-            .await
-            .map_err(|s| anyhow::anyhow!("Failed to pull image on qarax-node: {}", s.message()))?;
-
-        Ok(response.into_inner())
-    }
-
     #[instrument(skip(self))]
     pub async fn preflight_image(
         &self,
         image_ref: &str,
-        backend: &str,
         registry_url: Option<&str>,
         architecture: &str,
         boot_mode: &str,
     ) -> Result<PreflightImageResponse> {
-        debug!(
-            "Preflighting image {} with backend {} on node {}",
-            image_ref, backend, self.address
-        );
+        debug!("Preflighting image {} on node {}", image_ref, self.address);
 
         let mut client = self.connect_vm_service().await?;
 
         let response = client
             .preflight_image(PreflightImageRequest {
                 image_ref: image_ref.to_string(),
-                backend: backend.to_string(),
                 registry_url: registry_url.unwrap_or_default().to_string(),
                 architecture: architecture.to_string(),
                 boot_mode: boot_mode.to_string(),
@@ -1275,6 +1300,40 @@ impl NodeClient {
             .context("send_migration RPC failed")?;
 
         Ok(())
+    }
+}
+
+/// Consume a streaming CreateDisk response, calling `on_progress` for each
+/// intermediate update (awaited inline to avoid fire-and-forget races).
+/// Returns the final `bytes_written` or an error.
+async fn consume_create_disk_stream<F, Fut>(
+    stream: &mut tonic::Streaming<TransferResponse>,
+    label: &str,
+    mut on_progress: F,
+) -> Result<i64>
+where
+    F: FnMut(i64) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let mut final_response: Option<TransferResponse> = None;
+    while let Some(msg) = stream.message().await.map_err(|s| {
+        anyhow::anyhow!(
+            "gRPC {label} stream error: code={:?} message={}",
+            s.code(),
+            s.message()
+        )
+    })? {
+        if msg.is_final {
+            final_response = Some(msg);
+            break;
+        }
+        on_progress(msg.bytes_written).await;
+    }
+
+    match final_response {
+        Some(r) if r.success => Ok(r.bytes_written),
+        Some(r) => anyhow::bail!("{label} failed: {}", r.error),
+        None => anyhow::bail!("gRPC {label} stream ended without final response"),
     }
 }
 

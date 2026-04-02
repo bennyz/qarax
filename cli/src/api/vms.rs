@@ -5,10 +5,10 @@ use uuid::Uuid;
 use crate::client::Client;
 
 use super::models::{
-    AttachDiskRequest, CreateSnapshotRequest, CreateVmResponse, CreateVmResult, DiskResizeRequest,
-    HotplugNicRequest, NetworkInterface, NewVm, RestoreRequest, Snapshot, StorageObject, Vm,
-    VmDisk, VmImagePreflightRequest, VmImagePreflightResponse, VmMigrateRequest, VmMigrateResponse,
-    VmResizeRequest, VmStartResponse,
+    AttachDiskRequest, CommitVmRequest, CommitVmResponse, CreateSnapshotRequest, CreateVmResponse,
+    CreateVmResult, DiskResizeRequest, HotplugNicRequest, NetworkInterface, NewVm, RestoreRequest,
+    Snapshot, StorageObject, Vm, VmDisk, VmImagePreflightRequest, VmImagePreflightResponse,
+    VmMigrateRequest, VmMigrateResponse, VmResizeRequest, VmStartResponse,
 };
 
 pub async fn list(client: &Client, name: Option<&str>, tags: &[String]) -> anyhow::Result<Vec<Vm>> {
@@ -164,4 +164,12 @@ pub async fn resize_disk(
     client
         .put(&format!("/vms/{vm_id}/disks/{disk_id}/resize"), req)
         .await
+}
+
+pub async fn commit(
+    client: &Client,
+    vm_id: Uuid,
+    req: &CommitVmRequest,
+) -> anyhow::Result<CommitVmResponse> {
+    client.post(&format!("/vms/{vm_id}/commit"), req).await
 }

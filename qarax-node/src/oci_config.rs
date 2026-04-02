@@ -1,7 +1,7 @@
 /// Shared OCI image configuration parsing structures.
 ///
-/// Used by both `image_store/manager.rs` and `overlaybd/manager.rs` to deserialize
-/// the OCI image config blob fetched from a registry.
+/// Used by `overlaybd/manager.rs` to deserialize the OCI image config blob
+/// fetched from a registry.
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]

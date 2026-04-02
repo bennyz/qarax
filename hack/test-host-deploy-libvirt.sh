@@ -187,10 +187,8 @@ RUN dnf install -y \
     qemu-guest-agent \
     e2fsprogs \
     cpio \
-    virtiofsd \
     curl \
-    && dnf clean all \
-    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
+    && dnf clean all
 
 RUN useradd -m -G wheel -s /bin/bash ${SSH_USER} && \
     echo '${SSH_USER}:${SSH_PASSWORD}' | chpasswd && \

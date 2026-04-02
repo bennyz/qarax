@@ -19,9 +19,7 @@ use crate::{
     App,
     grpc_client::{
         CreateVmRequest, NodeClient, net_configs_from_db,
-        node::{
-            CpuPinning, DiskConfig, FsConfig, NetConfig, NumaPlacement, VhostMode, VsockConfig,
-        },
+        node::{CpuPinning, DiskConfig, NetConfig, NumaPlacement, VhostMode, VsockConfig},
     },
     model::{
         boot_sources, host_gpus, host_numa, hosts,
@@ -33,10 +31,9 @@ use crate::{
         sandboxes::{self, SandboxStatus},
         snapshots,
         snapshots::{NewSnapshot, Snapshot, SnapshotStatus},
-        storage_objects::{self, NewStorageObject, StorageObjectType},
+        storage_objects::{self, NewStorageObject, StorageObject, StorageObjectType},
         storage_pools::{self, OverlayBdPoolConfig},
         vm_disks::{self, NewVmDisk},
-        vm_filesystems::{self, NewVmFilesystem},
         vm_templates::{self, CreateVmTemplateFromVmRequest},
         vms::{self, BootMode, NewVm, NewVmNetwork, ResolvedNewVm, Vm, VmStatus},
     },
@@ -83,7 +80,6 @@ pub struct VmImagePreflightResponse {
     pub bootable: bool,
     pub host_id: Uuid,
     pub host_name: String,
-    pub backend: String,
     pub resolved_image_ref: String,
     pub architecture: String,
     pub checks: Vec<VmImagePreflightCheck>,
@@ -300,17 +296,6 @@ async fn allocate_vm_gpus(
     Ok(())
 }
 
-/// Derive the rootfs path for an OCI image the same way the image store does:
-/// replace '/', ':', '@' with '_' and place under /var/lib/qarax/images/<safe>\/rootfs.
-/// Must stay in sync with `qarax-node/src/image_store/manager.rs::safe_name()`.
-fn image_ref_to_rootfs_path(image_ref: &str) -> String {
-    let safe: String = image_ref
-        .chars()
-        .map(|c| if matches!(c, '/' | ':' | '@') { '_' } else { c })
-        .collect();
-    format!("/var/lib/qarax/images/{}/rootfs", safe)
-}
-
 async fn create_root_disk_record(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     vm_id: Uuid,
@@ -424,24 +409,24 @@ pub async fn preflight_image(
             crate::errors::Error::InternalServerError
         })?;
 
-    let (backend, registry_url) = match overlaybd_pool {
-        Some(pool) => (
-            "overlaybd",
-            Some(
-                OverlayBdPoolConfig::from_value(&pool.config)
-                    .ok_or(crate::errors::Error::InternalServerError)?
-                    .url,
-            ),
-        ),
-        None => ("virtiofs", None),
+    let registry_url = match overlaybd_pool {
+        Some(pool) => {
+            OverlayBdPoolConfig::from_value(&pool.config)
+                .ok_or(crate::errors::Error::InternalServerError)?
+                .url
+        }
+        None => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "no OverlayBD storage pool attached to the selected host".into(),
+            ));
+        }
     };
 
     let node_client = NodeClient::new(&host.address, host.port as u16);
     let response = node_client
         .preflight_image(
             &body.image_ref,
-            backend,
-            registry_url.as_deref(),
+            Some(&registry_url),
             &architecture,
             &boot_mode.to_string(),
         )
@@ -461,7 +446,6 @@ pub async fn preflight_image(
             bootable: response.bootable,
             host_id: host.id,
             host_name: host.name,
-            backend: response.backend,
             resolved_image_ref: response.resolved_image_ref,
             architecture: response.architecture,
             checks: response
@@ -650,12 +634,17 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
         .await?;
     }
 
-    // Check if the selected host has an OverlayBD storage pool; if so, use that path.
+    // The selected host must have an OverlayBD storage pool for OCI image boot.
     let overlaybd_pool = storage_pools::find_overlaybd_for_host(env.pool(), host.id)
         .await
         .map_err(|e| {
             tracing::error!("Failed to query OverlayBD pool for host {}: {}", host.id, e);
             crate::errors::Error::InternalServerError
+        })?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "no OverlayBD storage pool attached to the selected host".into(),
+            )
         })?;
 
     // Resolve boot info based on boot_mode (stored for use at start time)
@@ -789,7 +778,7 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
             job_type: JobType::ImagePull,
             description: Some(format!("Pulling image {}", image_ref)),
             resource_id: Some(vm_id),
-            resource_type: Some("vm".to_string()),
+            resource_type: Some(jobs::resource_types::VM.to_string()),
         },
     )
     .await?;
@@ -808,23 +797,17 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
 
         let node_client = NodeClient::new(&host.address, host.port as u16);
 
-        if let Some(pool) = overlaybd_pool {
-            // OverlayBD path: import image to local registry, then boot via virtio-blk
-            run_overlaybd_create(
-                &node_client,
-                &db_pool,
-                vm_id,
-                job_id,
-                &image_ref,
-                &pool.config,
-                pool.id,
-                persistent_upper_pool_id,
-            )
-            .await;
-        } else {
-            // Virtiofs path: pull image via Nydus, serve rootfs via virtiofs
-            run_virtiofs_create(&node_client, &db_pool, vm_id, job_id, &image_ref).await;
-        }
+        run_overlaybd_create(
+            &node_client,
+            &db_pool,
+            vm_id,
+            job_id,
+            &image_ref,
+            &overlaybd_pool.config,
+            overlaybd_pool.id,
+            persistent_upper_pool_id,
+        )
+        .await;
     });
 
     use axum::response::IntoResponse as _;
@@ -871,50 +854,6 @@ async fn register_static_ips(
         }
     }
     Ok(())
-}
-
-/// Background task for the virtiofs (Nydus) OCI image boot path.
-async fn run_virtiofs_create(
-    node_client: &NodeClient,
-    db_pool: &sqlx::PgPool,
-    vm_id: uuid::Uuid,
-    job_id: uuid::Uuid,
-    image_ref: &str,
-) {
-    // Step 1: Pull image
-    let image_info = match node_client.pull_image(image_ref).await {
-        Ok(info) => info,
-        Err(e) => {
-            let msg = format!("Failed to pull OCI image: {}", e);
-            tracing::error!(vm_id = %vm_id, job_id = %job_id, error = %msg);
-            let _ = jobs::mark_failed(db_pool, job_id, &msg).await;
-            let _ = vms::update_status(db_pool, vm_id, VmStatus::Unknown).await;
-            return;
-        }
-    };
-
-    let _ = jobs::update_progress(db_pool, job_id, 50).await;
-
-    // Step 2: Persist virtiofs filesystem record
-    let fs_record = NewVmFilesystem {
-        vm_id,
-        tag: "rootfs".to_string(),
-        num_queues: Some(1),
-        queue_size: Some(1024),
-        pci_segment: None,
-        image_ref: Some(image_ref.to_string()),
-        image_digest: Some(image_info.digest.clone()),
-    };
-    if let Err(e) = vm_filesystems::create(db_pool, &fs_record).await {
-        tracing::warn!(vm_id = %vm_id, error = %e, "Failed to persist filesystem record");
-    }
-
-    // Mark VM as created (on node provisioning is deferred to vm start)
-    let _ = vms::update_status(db_pool, vm_id, VmStatus::Created).await;
-    let result = serde_json::json!({ "digest": image_info.digest });
-    let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
-
-    tracing::info!(vm_id = %vm_id, job_id = %job_id, "VM creation job completed (virtiofs)");
 }
 
 /// Background task for the OverlayBD lazy block loading path.
@@ -970,7 +909,7 @@ async fn run_overlaybd_create(
             name: format!("overlaybd-{}", vm_id),
             storage_pool_id: Some(storage_pool_id),
             object_type: storage_objects::StorageObjectType::OciImage,
-            size_bytes: 0,
+            size_bytes: import_result.size_bytes,
             config: so_config,
             parent_id: None,
         },
@@ -1125,6 +1064,11 @@ pub(crate) async fn start_vm_internal(env: &App, vm_id: Uuid) -> Result<Uuid> {
                 "VM is being migrated; wait for migration to finish".into(),
             ));
         }
+        VmStatus::Committing => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "VM is being committed; wait for commit to finish".into(),
+            ));
+        }
         VmStatus::Created | VmStatus::Shutdown | VmStatus::Unknown => {
             // Valid states to start from
         }
@@ -1155,7 +1099,7 @@ pub(crate) async fn start_vm_internal(env: &App, vm_id: Uuid) -> Result<Uuid> {
             job_type: JobType::VmStart,
             description: Some(format!("Starting VM {}", vm.name)),
             resource_id: Some(vm_id),
-            resource_type: Some("vm".to_string()),
+            resource_type: Some(jobs::resource_types::VM.to_string()),
         },
     )
     .await?;
@@ -1633,7 +1577,7 @@ pub async fn restore(
     let vm = vms::get(env.pool(), vm_id).await?;
 
     match vm.status {
-        VmStatus::Running | VmStatus::Paused | VmStatus::Pending => {
+        VmStatus::Running | VmStatus::Paused | VmStatus::Pending | VmStatus::Committing => {
             return Err(crate::errors::Error::UnprocessableEntity(
                 "VM must be stopped before restoring".into(),
             ));
@@ -2024,9 +1968,8 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         }
     };
 
-    // Load disks, filesystems, and networks
+    // Load disks and networks
     let db_disks = vm_disks::list_by_vm(env.pool(), vm_id).await?;
-    let filesystems = vm_filesystems::list_by_vm(env.pool(), vm_id).await?;
     let db_networks = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
 
     let mut networks = net_configs_from_db(&db_networks);
@@ -2182,9 +2125,8 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
     let has_vhost_user_network = networks.iter().any(|n| n.vhost_user.unwrap_or(false));
 
     // Choose cmdline based on what's attached
-    let (fs_configs, cmdline, memory_shared) = if has_overlaybd_boot {
+    let (cmdline, memory_shared) = if has_overlaybd_boot {
         (
-            vec![],
             // net.ifnames=0: keep eth0 naming (prevents udev renaming to ens*/enp*)
             // init=/.qarax-init: use our injected init binary instead of the OCI image's /sbin/init
             Some(format!(
@@ -2193,34 +2135,10 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
             )),
             false,
         )
-    } else if !filesystems.is_empty() {
-        let fs = &filesystems[0];
-        let socket_path = format!("/var/lib/qarax/vms/{}-fs0.sock", vm_id);
-        // Derive the rootfs path from image_ref so the node can start virtiofsd.
-        // The image store uses: <cache_dir>/<safe_name>/rootfs
-        // where safe_name replaces '/', ':', '@' with '_'.
-        let bootstrap_path = fs.image_ref.as_deref().map(image_ref_to_rootfs_path);
-        let fs_config = FsConfig {
-            tag: fs.tag.clone(),
-            socket: socket_path,
-            num_queues: fs.num_queues,
-            queue_size: fs.queue_size,
-            pci_segment: fs.pci_segment,
-            id: Some("fs0".to_string()),
-            bootstrap_path,
-        };
-        (
-            vec![fs_config],
-            Some(format!(
-                "console=ttyS0 root=rootfs rootfstype=virtiofs rw init=/.qarax-init{}",
-                ip_params
-            )),
-            true,
-        )
     } else {
         // Plain boot with kernel/initramfs only (or firmware — cmdline stays None)
         let c = default_cmdline.map(|s| format!("{}{}", s, ip_params));
-        (vec![], c, vm.memory_shared)
+        (c, vm.memory_shared)
     };
 
     // For overlaybd boot, don't pass an initramfs — the kernel mounts /dev/vda (ext4)
@@ -2262,7 +2180,6 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         firmware,
         initramfs,
         cmdline,
-        fs_configs,
         memory_shared: memory_shared || has_vhost_user_network,
         memory_hotplug_size: vm.memory_hotplug_size,
         memory_hugepages: vm.memory_hugepages,
@@ -3095,7 +3012,7 @@ pub async fn migrate(
                 vm.name, source_host.id, target_host.id
             )),
             resource_id: Some(vm_id),
-            resource_type: Some("vm".to_string()),
+            resource_type: Some(jobs::resource_types::VM.to_string()),
         },
     )
     .await?;
@@ -3160,7 +3077,6 @@ pub async fn migrate(
             }),
             console: None,
             rate_limit_groups: vec![],
-            fs: create_req.fs_configs,
             cloud_init: create_req.cloud_init_user_data.as_ref().map(|user_data| {
                 crate::grpc_client::node::CloudInitConfig {
                     user_data: user_data.clone(),
@@ -3437,6 +3353,381 @@ pub async fn resize_disk(
         code: StatusCode::OK,
     }
     .into_response())
+}
+
+// ============================================================================
+// VM Commit (convert OCI image VM to raw disk)
+// ============================================================================
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CommitVmRequest {
+    /// Storage pool to create the raw disk on (must be Local or NFS, attached to the VM's host).
+    pub storage_pool_id: Uuid,
+    /// Size of the committed disk in bytes.
+    pub size_bytes: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CommitVmResponse {
+    pub vm_id: Uuid,
+    pub job_id: Uuid,
+}
+
+#[utoipa::path(
+    post,
+    path = "/vms/{vm_id}/commit",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    request_body = CommitVmRequest,
+    responses(
+        (status = 202, description = "Commit job accepted", body = CommitVmResponse),
+        (status = 404, description = "VM not found"),
+        (status = 422, description = "VM not eligible for commit"),
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn commit(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+    Json(req): Json<CommitVmRequest>,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse as _;
+
+    let vm = vms::get(env.pool(), vm_id).await?;
+
+    // VM must have an image_ref (i.e. was created from an OCI image)
+    if vm.image_ref.is_none() {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "VM has no image_ref — only OCI image-based VMs can be committed".into(),
+        ));
+    }
+
+    // Atomically transition VM to Committing — prevents concurrent commits
+    // and ensures VM was in a valid state (Created or Shutdown).
+    let transitioned = vms::try_set_committing(env.pool(), vm_id).await?;
+    if !transitioned {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "VM must be stopped (Created or Shutdown) to commit".into(),
+        ));
+    }
+
+    // VM must have a host assigned
+    let host = host_for_vm(&env, vm_id).await?;
+
+    // Find the OCI image disk (storage object on an OverlayBD pool)
+    let oci_disk = find_oci_disk(env.pool(), vm_id).await?;
+
+    // Validate target pool: must be Local or NFS, Active, attached to host
+    let target_pool = storage_pools::get(env.pool(), req.storage_pool_id)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => crate::errors::Error::NotFound,
+            _ => crate::errors::Error::InternalServerError,
+        })?;
+    match target_pool.pool_type {
+        storage_pools::StoragePoolType::Local | storage_pools::StoragePoolType::Nfs => {}
+        _ => {
+            return Err(crate::errors::Error::UnprocessableEntity(
+                "target storage pool must be Local or NFS".into(),
+            ));
+        }
+    }
+    if target_pool.status != storage_pools::StoragePoolStatus::Active {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "target storage pool is not active".into(),
+        ));
+    }
+    let attached = storage_pools::host_has_pool(env.pool(), host.id, target_pool.id)
+        .await
+        .map_err(|e| {
+            error!("Failed to check pool attachment: {}", e);
+            crate::errors::Error::InternalServerError
+        })?;
+    if !attached {
+        return Err(crate::errors::Error::UnprocessableEntity(format!(
+            "target storage pool {} is not attached to the VM's host",
+            req.storage_pool_id
+        )));
+    }
+
+    // Create the job
+    let job = jobs::create(
+        env.pool(),
+        NewJob {
+            job_type: JobType::VmCommit,
+            description: Some(format!("Committing VM {} to raw disk", vm.name)),
+            resource_id: Some(vm_id),
+            resource_type: Some(jobs::resource_types::VM.to_string()),
+        },
+    )
+    .await?;
+    let job_id = job.id;
+
+    // Spawn background task — pass the VM's previous status so we can restore it when done
+    let db_pool = env.pool_arc();
+    let commit_params = CommitParams {
+        vm_id,
+        job_id,
+        previous_status: vm.status,
+        target_pool_id: target_pool.id,
+        size_bytes: req.size_bytes,
+    };
+
+    tokio::spawn(async move {
+        run_vm_commit(&db_pool, &commit_params, &host, &oci_disk).await;
+    });
+
+    Ok(ApiResponse {
+        data: CommitVmResponse { vm_id, job_id },
+        code: StatusCode::ACCEPTED,
+    }
+    .into_response())
+}
+
+/// Information about the OCI image disk found on a VM.
+struct OciDiskInfo {
+    disk_id: Uuid,
+    image_ref: String,
+    registry_url: String,
+    upper_data: Option<String>,
+    upper_index: Option<String>,
+    oci_storage_object_id: Uuid,
+    upper_storage_object_id: Option<Uuid>,
+}
+
+/// Find the OCI image disk on a VM using a single SQL join query.
+async fn find_oci_disk(pool: &sqlx::PgPool, vm_id: Uuid) -> Result<OciDiskInfo> {
+    let row = vm_disks::find_oci_disk_for_vm(pool, vm_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity("VM has no OCI image disk to commit".into())
+        })?;
+
+    let oci_config =
+        storage_objects::OciImageConfig::from_value(&row.oci_config).ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity(
+                "OCI image storage object has invalid config".into(),
+            )
+        })?;
+
+    let (upper_data, upper_index) = row
+        .upper_config
+        .as_ref()
+        .and_then(|c| storage_objects::OverlaybdUpperConfig::from_value(c))
+        .map(|c| (Some(c.upper_data), Some(c.upper_index)))
+        .unwrap_or((None, None));
+
+    Ok(OciDiskInfo {
+        disk_id: row.disk_id,
+        image_ref: oci_config.image_ref,
+        registry_url: oci_config.registry_url,
+        upper_data,
+        upper_index,
+        oci_storage_object_id: row.oci_storage_object_id,
+        upper_storage_object_id: row.upper_storage_object_id,
+    })
+}
+
+/// Grouped parameters for the VM commit background task.
+struct CommitParams {
+    vm_id: Uuid,
+    job_id: Uuid,
+    previous_status: VmStatus,
+    target_pool_id: Uuid,
+    size_bytes: i64,
+}
+
+/// Background task that performs the actual commit operation.
+/// Restores `previous_status` when done (success or failure), since the handler
+/// atomically set the VM to `Committing` before spawning this task.
+async fn run_vm_commit(
+    db_pool: &sqlx::PgPool,
+    params: &CommitParams,
+    host: &Host,
+    oci_disk: &OciDiskInfo,
+) {
+    let vm_id = params.vm_id;
+    let job_id = params.job_id;
+
+    if let Err(e) = jobs::mark_running(db_pool, job_id).await {
+        error!(job_id = %job_id, error = %e, "Failed to mark commit job as running");
+        let _ = vms::update_status(db_pool, vm_id, params.previous_status.clone()).await;
+        return;
+    }
+
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+
+    match run_vm_commit_inner(
+        db_pool,
+        vm_id,
+        job_id,
+        &node_client,
+        oci_disk,
+        params.target_pool_id,
+        params.size_bytes,
+    )
+    .await
+    {
+        Ok((disk_so_id, disk_path)) => {
+            let result = serde_json::json!({
+                "storage_object_id": disk_so_id,
+                "path": disk_path,
+            });
+            let _ = jobs::mark_completed(db_pool, job_id, Some(result)).await;
+            info!(vm_id = %vm_id, job_id = %job_id, "VM commit completed");
+        }
+        Err(e) => {
+            error!(vm_id = %vm_id, job_id = %job_id, error = %e, "VM commit failed");
+            let _ = jobs::mark_failed(db_pool, job_id, &e.to_string()).await;
+        }
+    }
+
+    // Restore VM to its previous status now that commit is done
+    let _ = vms::update_status(db_pool, vm_id, params.previous_status.clone()).await;
+}
+
+async fn run_vm_commit_inner(
+    db_pool: &sqlx::PgPool,
+    vm_id: Uuid,
+    job_id: Uuid,
+    node_client: &NodeClient,
+    oci_disk: &OciDiskInfo,
+    target_pool_id: Uuid,
+    size_bytes: i64,
+) -> anyhow::Result<(Uuid, String)> {
+    use anyhow::Context;
+
+    // Step 1: Create the target Disk storage object (this derives the on-disk path)
+    let disk_so = storage_objects::create_returning(
+        db_pool,
+        NewStorageObject {
+            name: format!("committed-{}", vm_id),
+            storage_pool_id: Some(target_pool_id),
+            object_type: StorageObjectType::Disk,
+            size_bytes,
+            config: serde_json::Value::Object(serde_json::Map::new()),
+            parent_id: None,
+        },
+    )
+    .await
+    .context("Failed to create target disk storage object")?;
+
+    let disk_so_id = disk_so.id;
+
+    // All steps after this must clean up disk_so on failure
+    let result = run_vm_commit_copy_and_swap(
+        db_pool,
+        vm_id,
+        job_id,
+        node_client,
+        oci_disk,
+        &disk_so,
+        size_bytes,
+    )
+    .await;
+
+    if result.is_err() {
+        let _ = storage_objects::delete(db_pool, disk_so_id).await;
+    }
+
+    result
+}
+
+async fn run_vm_commit_copy_and_swap(
+    db_pool: &sqlx::PgPool,
+    vm_id: Uuid,
+    job_id: Uuid,
+    node_client: &NodeClient,
+    oci_disk: &OciDiskInfo,
+    disk_so: &StorageObject,
+    size_bytes: i64,
+) -> anyhow::Result<(Uuid, String)> {
+    use anyhow::Context;
+
+    let disk_so_id = disk_so.id;
+    let disk_path = storage_objects::get_path_from_config(&disk_so.config)
+        .ok_or_else(|| anyhow::anyhow!("Target storage object has no path in config"))?;
+
+    let _ = jobs::update_progress(db_pool, job_id, 10).await;
+
+    // Step 2: Copy OverlayBD to raw disk with inline-awaited progress updates
+    info!(
+        vm_id = %vm_id,
+        job_id = %job_id,
+        image_ref = %oci_disk.image_ref,
+        dest = %disk_path,
+        "Starting OverlayBD to raw disk copy"
+    );
+
+    let mut last_pct = 0i32;
+    node_client
+        .create_disk_from_overlaybd(
+            &disk_path,
+            size_bytes,
+            crate::grpc_client::node::OverlayBdDiskSource {
+                image_ref: oci_disk.image_ref.clone(),
+                registry_url: oci_disk.registry_url.clone(),
+                upper_data: oci_disk.upper_data.clone(),
+                upper_index: oci_disk.upper_index.clone(),
+            },
+            |bytes_written| {
+                let pct = if size_bytes > 0 {
+                    10 + ((bytes_written as f64 / size_bytes as f64) * 70.0) as i32
+                } else {
+                    10
+                };
+                let should_update = pct != last_pct;
+                if should_update {
+                    last_pct = pct;
+                }
+                let pool = db_pool.clone();
+                async move {
+                    if should_update {
+                        let _ = jobs::update_progress(&pool, job_id, pct).await;
+                    }
+                }
+            },
+        )
+        .await
+        .context("Failed to copy OverlayBD to raw disk")?;
+
+    info!(vm_id = %vm_id, job_id = %job_id, "OverlayBD copy complete");
+    let _ = jobs::update_progress(db_pool, job_id, 80).await;
+
+    // Step 3: Swap vm_disk to the new storage object
+    vm_disks::update_storage_object(db_pool, oci_disk.disk_id, disk_so_id, None)
+        .await
+        .context("Failed to update vm_disk storage object")?;
+
+    // Step 4: Clean up old OCI storage objects (non-fatal)
+    if let Err(e) = storage_objects::delete(db_pool, oci_disk.oci_storage_object_id).await {
+        warn!(
+            vm_id = %vm_id,
+            storage_object_id = %oci_disk.oci_storage_object_id,
+            error = %e,
+            "Failed to delete old OciImage storage object"
+        );
+    }
+    if let Some(upper_id) = oci_disk.upper_storage_object_id
+        && let Err(e) = storage_objects::delete(db_pool, upper_id).await
+    {
+        warn!(
+            vm_id = %vm_id,
+            storage_object_id = %upper_id,
+            error = %e,
+            "Failed to delete old OverlaybdUpper storage object"
+        );
+    }
+
+    // Step 5: Clear image_ref on the VM (non-fatal)
+    if let Err(e) = vms::clear_image_ref(db_pool, vm_id).await {
+        warn!(vm_id = %vm_id, error = %e, "Failed to clear image_ref on VM");
+    }
+
+    Ok((disk_so_id, disk_path))
 }
 
 #[cfg(test)]

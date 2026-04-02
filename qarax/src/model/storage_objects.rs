@@ -203,8 +203,12 @@ WHERE object_type = $1
     Ok(storage_objects)
 }
 
-pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid, sqlx::Error> {
-    // Resolve pool: use the one provided, or pick a random active pool.
+/// Resolve pool ID and derive config for a new storage object.
+/// Returns `(id, pool_id, config)` ready for INSERT.
+async fn resolve_new_object(
+    pool: &PgPool,
+    new_object: &NewStorageObject,
+) -> Result<(Uuid, Uuid, serde_json::Value), sqlx::Error> {
     let pool_id = match new_object.storage_pool_id {
         Some(id) => id,
         None => storage_pools::pick_active(pool)
@@ -240,10 +244,10 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
                     "upper_index": format!("{}.upper.index", base),
                 })
             } else {
-                new_object.config
+                new_object.config.clone()
             }
         } else {
-            new_object.config
+            new_object.config.clone()
         }
     } else if (new_object.object_type == StorageObjectType::Disk
         || new_object.object_type == StorageObjectType::Snapshot)
@@ -264,14 +268,20 @@ pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid,
             if let Some(path) = derived_path {
                 serde_json::json!({ "path": path })
             } else {
-                new_object.config
+                new_object.config.clone()
             }
         } else {
-            new_object.config
+            new_object.config.clone()
         }
     } else {
-        new_object.config
+        new_object.config.clone()
     };
+
+    Ok((id, pool_id, config))
+}
+
+pub async fn create(pool: &PgPool, new_object: NewStorageObject) -> Result<Uuid, sqlx::Error> {
+    let (id, pool_id, config) = resolve_new_object(pool, &new_object).await?;
 
     sqlx::query(
         r#"
@@ -290,6 +300,40 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
     .await?;
 
     Ok(id)
+}
+
+/// Like `create`, but returns the full `StorageObject` without a re-fetch.
+pub async fn create_returning(
+    pool: &PgPool,
+    new_object: NewStorageObject,
+) -> Result<StorageObject, sqlx::Error> {
+    let (id, pool_id, config) = resolve_new_object(pool, &new_object).await?;
+
+    sqlx::query(
+        r#"
+INSERT INTO storage_objects (id, name, storage_pool_id, object_type, size_bytes, config, parent_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "#,
+    )
+    .bind(id)
+    .bind(&new_object.name)
+    .bind(pool_id)
+    .bind(&new_object.object_type)
+    .bind(new_object.size_bytes)
+    .bind(&config)
+    .bind(new_object.parent_id)
+    .execute(pool)
+    .await?;
+
+    Ok(StorageObject {
+        id,
+        name: new_object.name,
+        storage_pool_id: pool_id,
+        object_type: new_object.object_type,
+        size_bytes: new_object.size_bytes,
+        config,
+        parent_id: new_object.parent_id,
+    })
 }
 
 pub async fn delete(pool: &PgPool, object_id: Uuid) -> Result<(), sqlx::Error> {
@@ -340,4 +384,30 @@ pub fn get_path_from_config(config: &serde_json::Value) -> Option<String> {
         .get("path")?
         .as_str()
         .map(|s| s.to_string())
+}
+
+/// Typed config for OciImage storage objects.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OciImageConfig {
+    pub image_ref: String,
+    pub registry_url: String,
+}
+
+impl OciImageConfig {
+    pub fn from_value(config: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(config.clone()).ok()
+    }
+}
+
+/// Typed config for OverlaybdUpper storage objects.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OverlaybdUpperConfig {
+    pub upper_data: String,
+    pub upper_index: String,
+}
+
+impl OverlaybdUpperConfig {
+    pub fn from_value(config: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(config.clone()).ok()
+    }
 }

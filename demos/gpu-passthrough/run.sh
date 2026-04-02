@@ -4,11 +4,11 @@
 #
 # This script demonstrates GPU passthrough using qarax with an OCI container
 # image (e.g. NVIDIA CUDA). qarax pulls the image, unpacks the rootfs, and
-# boots it via virtiofs with the GPU passed through as a VFIO device.
+# boots it via OverlayBD with the GPU passed through as a VFIO device.
 #
 #   1. List available GPUs on the host
 #   2. Create a VM with --image-ref and GPU scheduling flags
-#   3. Start the VM — image is pulled, virtiofsd started, VFIO devices attached
+#   3. Start the VM — image is imported via OverlayBD, VFIO devices attached
 #
 # Prerequisites:
 #   - qarax stack running (make run-local)
