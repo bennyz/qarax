@@ -105,6 +105,7 @@ pub struct VmListQuery {
         vm::handler::remove_nic,
         vm::handler::resize_vm,
         vm::handler::resize_disk,
+        vm::handler::commit,
         storage_object::handler::list,
         storage_object::handler::get,
         storage_object::handler::create,
@@ -190,8 +191,6 @@ pub struct VmListQuery {
             crate::model::transfers::NewTransfer,
             crate::model::transfers::TransferType,
             crate::model::transfers::TransferStatus,
-            crate::model::vm_filesystems::VmFilesystem,
-            crate::model::vm_filesystems::NewVmFilesystem,
             crate::model::vm_disks::VmDisk,
             crate::model::jobs::Job,
             crate::model::jobs::JobStatus,
@@ -209,6 +208,8 @@ pub struct VmListQuery {
             crate::handlers::vm::handler::VmMigrateResponse,
             crate::handlers::vm::handler::VmResizeRequest,
             crate::handlers::vm::handler::DiskResizeRequest,
+            crate::handlers::vm::handler::CommitVmRequest,
+            crate::handlers::vm::handler::CommitVmResponse,
             crate::handlers::storage_pool::handler::ImportToPoolRequest,
             crate::handlers::storage_pool::handler::ImportToPoolResponse,
             crate::handlers::storage_pool::handler::CreateDiskRequest,
@@ -396,6 +397,7 @@ fn vms() -> Router {
             "/vms/{vm_id}/disks/{disk_id}/resize",
             axum::routing::put(vm::handler::resize_disk),
         )
+        .route("/vms/{vm_id}/commit", post(vm::handler::commit))
 }
 
 fn instance_types() -> Router {

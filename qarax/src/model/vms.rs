@@ -172,6 +172,7 @@ pub enum VmStatus {
     Paused,
     Shutdown,
     Migrating,
+    Committing,
 }
 
 /// Network interface config for create-VM request. Passed to qarax-node; id is required.
@@ -253,8 +254,8 @@ pub struct NewVm {
     pub description: Option<String>,
 
     /// OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
-    /// When set, the handler will check whether the selected host has an OverlayBD storage pool.
-    /// If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
+    /// When set, the handler will check whether the selected host has an OverlayBD storage pool
+    /// and the image is served via lazy block loading (virtio-blk).
     pub image_ref: Option<String>,
 
     /// Cloud-init user-data (raw YAML). When provided a NoCloud seed image is
@@ -849,6 +850,29 @@ pub async fn update_status(
         }
     }
 
+    Ok(())
+}
+
+/// Atomically set a VM's status to Committing if it is currently in a
+/// committable state (Created or Shutdown). Returns `true` if the transition
+/// succeeded, `false` if the VM was in a different state (another commit or
+/// start is already in progress).
+pub async fn try_set_committing(pool: &PgPool, vm_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE vms SET status = 'COMMITTING' WHERE id = $1 AND status IN ('CREATED', 'SHUTDOWN')",
+    )
+    .bind(vm_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn clear_image_ref(pool: &PgPool, vm_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE vms SET image_ref = NULL WHERE id = $1")
+        .bind(vm_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

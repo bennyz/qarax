@@ -1501,6 +1501,36 @@ paths:
           description: VM not found
         '500':
           description: Internal server error
+  /vms/{vm_id}/commit:
+    post:
+      tags:
+      - vms
+      operationId: commit
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitVmRequest'
+        required: true
+      responses:
+        '202':
+          description: Commit job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitVmResponse'
+        '404':
+          description: VM not found
+        '422':
+          description: VM not eligible for commit
   /vms/{vm_id}/console:
     get:
       tags:
@@ -2138,6 +2168,32 @@ components:
           - 'null'
         name:
           type: string
+    CommitVmRequest:
+      type: object
+      required:
+      - storage_pool_id
+      - size_bytes
+      properties:
+        size_bytes:
+          type: integer
+          format: int64
+          description: Size of the committed disk in bytes.
+        storage_pool_id:
+          type: string
+          format: uuid
+          description: Storage pool to create the raw disk on (must be Local or NFS, attached to the VM's host).
+    CommitVmResponse:
+      type: object
+      required:
+      - vm_id
+      - job_id
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        vm_id:
+          type: string
+          format: uuid
     CreateDiskRequest:
       type: object
       required:
@@ -2810,6 +2866,7 @@ components:
       - vm_start
       - vm_migrate
       - disk_create
+      - vm_commit
     LifecycleHook:
       type: object
       required:
@@ -3262,8 +3319,8 @@ components:
           - 'null'
           description: |-
             OCI image reference to use as root filesystem (e.g. "docker.io/library/ubuntu:22.04").
-            When set, the handler will check whether the selected host has an OverlayBD storage pool.
-            If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
+            When set, the handler will check whether the selected host has an OverlayBD storage pool
+            and the image is served via lazy block loading (virtio-blk).
         instance_type_id:
           type:
           - string
@@ -3358,40 +3415,6 @@ components:
           type:
           - string
           - 'null'
-          format: uuid
-    NewVmFilesystem:
-      type: object
-      required:
-      - vm_id
-      - tag
-      properties:
-        image_digest:
-          type:
-          - string
-          - 'null'
-        image_ref:
-          type:
-          - string
-          - 'null'
-        num_queues:
-          type:
-          - integer
-          - 'null'
-          format: int32
-        pci_segment:
-          type:
-          - integer
-          - 'null'
-          format: int32
-        queue_size:
-          type:
-          - integer
-          - 'null'
-          format: int32
-        tag:
-          type: string
-        vm_id:
-          type: string
           format: uuid
     NewVmNetwork:
       type: object
@@ -4115,42 +4138,6 @@ components:
         vm_id:
           type: string
           format: uuid
-    VmFilesystem:
-      type: object
-      required:
-      - id
-      - vm_id
-      - tag
-      - num_queues
-      - queue_size
-      properties:
-        id:
-          type: string
-          format: uuid
-        image_digest:
-          type:
-          - string
-          - 'null'
-        image_ref:
-          type:
-          - string
-          - 'null'
-        num_queues:
-          type: integer
-          format: int32
-        pci_segment:
-          type:
-          - integer
-          - 'null'
-          format: int32
-        queue_size:
-          type: integer
-          format: int32
-        tag:
-          type: string
-        vm_id:
-          type: string
-          format: uuid
     VmImagePreflightCheck:
       type: object
       required:
@@ -4190,14 +4177,11 @@ components:
       - bootable
       - host_id
       - host_name
-      - backend
       - resolved_image_ref
       - architecture
       - checks
       properties:
         architecture:
-          type: string
-        backend:
           type: string
         bootable:
           type: boolean
@@ -4299,6 +4283,7 @@ components:
       - paused
       - shutdown
       - migrating
+      - committing
     VmTemplate:
       type: object
       required:

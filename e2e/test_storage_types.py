@@ -75,6 +75,46 @@ async def wait_for_job(c, job_id, timeout=JOB_TIMEOUT):
     raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
 
 
+async def _create_pool(c, name, pool_type, config):
+    """Create a storage pool and return its UUID."""
+    raw = await create_pool.asyncio(
+        client=c, body=NewStoragePool(name=name, pool_type=pool_type, config=config)
+    )
+    return UUID(str(raw).strip('"'))
+
+
+async def _attach_pools_to_hosts(c, hosts, pool_ids):
+    """Attach all pools to all hosts. Skips test if OverlayBD not configured."""
+    for host in hosts:
+        for pool_id in pool_ids:
+            resp = await attach_pool_host.asyncio_detailed(
+                client=c,
+                pool_id=pool_id,
+                body=AttachPoolHostRequest(host_id=host.id),
+            )
+            if (
+                resp.status_code == 422
+                and "Overlaybd storage backend not configured"
+                in resp.content.decode()
+            ):
+                pytest.skip("OverlayBD backend not configured on this e2e node")
+            assert resp.status_code in (200, 201, 204), (
+                f"Attach pool {pool_id} to host failed: HTTP {resp.status_code}"
+            )
+
+
+async def _cleanup(c, vm_id, object_name_prefixes, pool_ids):
+    """Delete VM, storage objects by name prefix, and pools."""
+    if vm_id is not None:
+        await delete_vm.asyncio_detailed(client=c, vm_id=vm_id)
+    for prefix in object_name_prefixes:
+        objects = await list_storage_objects.asyncio(client=c, name=prefix)
+        for obj in objects or []:
+            await delete_storage_object.asyncio_detailed(client=c, object_id=obj.id)
+    for pool_id in pool_ids:
+        await delete_pool.asyncio_detailed(client=c, pool_id=pool_id)
+
+
 @pytest.fixture(scope="session")
 def oci_image_ref():
     """Push a minimal image to the local test registry; return its internal ref."""
@@ -95,61 +135,95 @@ def oci_image_ref():
 @pytest.mark.asyncio
 async def test_create_vm_with_oci_image(client, oci_image_ref):
     """VM created with image_ref should trigger an async job and reach CREATED state."""
+    test_id = str(uuid.uuid4())[:8]
     async with client as c:
-        new_vm = NewVm(
-            name="e2e-oci-image-vm",
-            hypervisor=Hypervisor.CLOUD_HV,
-            boot_vcpus=1,
-            max_vcpus=1,
-            memory_size=268435456,
-            image_ref=oci_image_ref,
-        )
-        result = await create_vm.asyncio(client=c, body=new_vm)
-        assert result is not None
-        assert isinstance(result, CreateVmResponse), (
-            f"Expected CreateVmResponse (202) for OCI VM, got {type(result)}"
-        )
-        job_id = result.job_id
-        vm_id = result.vm_id
+        hosts = await list_hosts.asyncio(client=c)
+        assert hosts, "No hosts registered"
 
+        overlaybd_pool_id = await _create_pool(
+            c,
+            f"e2e-oci-obd-{test_id}",
+            StoragePoolType.OVERLAY_BD,
+            {"url": f"http://{REGISTRY_INTERNAL_URL}"},
+        )
+
+        vm_id = None
         try:
+            await _attach_pools_to_hosts(c, hosts, [overlaybd_pool_id])
+
+            new_vm = NewVm(
+                name=f"e2e-oci-image-vm-{test_id}",
+                hypervisor=Hypervisor.CLOUD_HV,
+                boot_vcpus=1,
+                max_vcpus=1,
+                memory_size=268435456,
+                image_ref=oci_image_ref,
+            )
+            result = await create_vm.asyncio(client=c, body=new_vm)
+            assert result is not None
+            assert isinstance(result, CreateVmResponse), (
+                f"Expected CreateVmResponse (202) for OCI VM, got {type(result)}"
+            )
+            job_id = result.job_id
+            vm_id = UUID(str(result.vm_id))
+
             await wait_for_job(c, job_id)
 
-            vm = await get_vm.asyncio(client=c, vm_id=UUID(str(vm_id)))
+            vm = await get_vm.asyncio(client=c, vm_id=vm_id)
             assert vm is not None
             assert vm.status.value == "created", f"Expected 'created', got {vm.status}"
         finally:
-            await delete_vm.asyncio_detailed(client=c, vm_id=UUID(str(vm_id)))
+            await _cleanup(
+                c,
+                vm_id,
+                [f"overlaybd-{vm_id}"] if vm_id else [],
+                [overlaybd_pool_id],
+            )
 
 
 @pytest.mark.asyncio
 async def test_preflight_oci_image(client, oci_image_ref):
-    """Preflight should report the selected backend and mark the test image bootable."""
+    """Preflight should mark the test image bootable via OverlayBD."""
+    test_id = str(uuid.uuid4())[:8]
     async with client as c:
-        response = await c.get_async_httpx_client().post(
-            f"{QARAX_URL}/vms/preflight",
-            json={
-                "image_ref": oci_image_ref,
-                "boot_mode": "kernel",
-            },
+        hosts = await list_hosts.asyncio(client=c)
+        assert hosts, "No hosts registered"
+
+        overlaybd_pool_id = await _create_pool(
+            c,
+            f"e2e-preflight-obd-{test_id}",
+            StoragePoolType.OVERLAY_BD,
+            {"url": f"http://{REGISTRY_INTERNAL_URL}"},
         )
-        assert response.status_code == 200, response.text
 
-        body = response.json()
-        assert body["backend"] in ("virtiofs", "overlaybd")
-        assert body["architecture"]
-        assert body["checks"], "expected preflight checks"
+        try:
+            await _attach_pools_to_hosts(c, hosts, [overlaybd_pool_id])
 
-        if body["backend"] == "overlaybd" and any(
-            check["name"] == "overlaybd_import" and not check["ok"]
-            for check in body["checks"]
-        ):
-            pytest.skip("OverlayBD backend not configured on this e2e node")
+            response = await c.get_async_httpx_client().post(
+                f"{QARAX_URL}/vms/preflight",
+                json={
+                    "image_ref": oci_image_ref,
+                    "boot_mode": "kernel",
+                },
+            )
+            assert response.status_code == 200, response.text
 
-        assert body["bootable"] is True, body
-        assert any(
-            check["name"] == "guest_command" and check["ok"] for check in body["checks"]
-        )
+            body = response.json()
+            assert body["architecture"]
+            assert body["checks"], "expected preflight checks"
+
+            if any(
+                check["name"] == "overlaybd_import" and not check["ok"]
+                for check in body["checks"]
+            ):
+                pytest.skip("OverlayBD backend not configured on this e2e node")
+
+            assert body["bootable"] is True, body
+            assert any(
+                check["name"] == "guest_command" and check["ok"] for check in body["checks"]
+            )
+        finally:
+            await _cleanup(c, None, [], [overlaybd_pool_id])
 
 
 @pytest.mark.asyncio
@@ -162,49 +236,24 @@ async def test_create_vm_with_persistent_overlaybd_upper_has_storage_object(
         hosts = await list_hosts.asyncio(client=c)
         assert hosts, "No hosts registered"
 
-        upper_pool = NewStoragePool(
-            name=f"e2e-overlaybd-upper-{test_id}",
-            pool_type=StoragePoolType.LOCAL,
-            config={"path": f"/var/lib/qarax/e2e-overlaybd-upper-{test_id}"},
+        upper_pool_id = await _create_pool(
+            c,
+            f"e2e-overlaybd-upper-{test_id}",
+            StoragePoolType.LOCAL,
+            {"path": f"/var/lib/qarax/e2e-overlaybd-upper-{test_id}"},
         )
-        upper_pool_id_raw = await create_pool.asyncio(client=c, body=upper_pool)
-        upper_pool_id = UUID(str(upper_pool_id_raw).strip('"'))
-
-        overlaybd_pool = NewStoragePool(
-            name=f"e2e-overlaybd-{test_id}",
-            pool_type=StoragePoolType.OVERLAY_BD,
-            config={"url": f"http://{REGISTRY_INTERNAL_URL}"},
+        overlaybd_pool_id = await _create_pool(
+            c,
+            f"e2e-overlaybd-{test_id}",
+            StoragePoolType.OVERLAY_BD,
+            {"url": f"http://{REGISTRY_INTERNAL_URL}"},
         )
-        overlaybd_pool_id_raw = await create_pool.asyncio(client=c, body=overlaybd_pool)
-        overlaybd_pool_id = UUID(str(overlaybd_pool_id_raw).strip('"'))
 
         vm_id = None
-        created_object_names: list[str] = []
         try:
-            for host in hosts:
-                upper_attach_resp = await attach_pool_host.asyncio_detailed(
-                    client=c,
-                    pool_id=upper_pool_id,
-                    body=AttachPoolHostRequest(host_id=host.id),
-                )
-                assert upper_attach_resp.status_code in (200, 201, 204), (
-                    f"Attach upper pool host failed: HTTP {upper_attach_resp.status_code}"
-                )
-
-                overlaybd_attach_resp = await attach_pool_host.asyncio_detailed(
-                    client=c,
-                    pool_id=overlaybd_pool_id,
-                    body=AttachPoolHostRequest(host_id=host.id),
-                )
-                if (
-                    overlaybd_attach_resp.status_code == 422
-                    and "Overlaybd storage backend not configured"
-                    in overlaybd_attach_resp.content.decode()
-                ):
-                    pytest.skip("OverlayBD backend not configured on this e2e node")
-                assert overlaybd_attach_resp.status_code in (200, 201, 204), (
-                    f"Attach OverlayBD pool host failed: HTTP {overlaybd_attach_resp.status_code}"
-                )
+            await _attach_pools_to_hosts(
+                c, hosts, [upper_pool_id, overlaybd_pool_id]
+            )
 
             new_vm = NewVm(
                 name=f"e2e-oci-persistent-upper-{test_id}",
@@ -223,9 +272,6 @@ async def test_create_vm_with_persistent_overlaybd_upper_has_storage_object(
             await wait_for_job(c, result.job_id)
 
             upper_name = f"overlaybd-upper-{vm_id}"
-            image_name = f"overlaybd-{vm_id}"
-            created_object_names.extend([upper_name, image_name])
-
             upper_objects = await list_storage_objects.asyncio(
                 client=c, name=upper_name
             )
@@ -253,16 +299,104 @@ async def test_create_vm_with_persistent_overlaybd_upper_has_storage_object(
                 resize_resp.content.decode()
             )
         finally:
-            if vm_id is not None:
-                await delete_vm.asyncio_detailed(client=c, vm_id=vm_id)
-            for object_name in created_object_names:
-                objects = await list_storage_objects.asyncio(client=c, name=object_name)
-                for obj in objects or []:
-                    await delete_storage_object.asyncio_detailed(
-                        client=c, object_id=obj.id
-                    )
-            await delete_pool.asyncio_detailed(client=c, pool_id=overlaybd_pool_id)
-            await delete_pool.asyncio_detailed(client=c, pool_id=upper_pool_id)
+            await _cleanup(
+                c,
+                vm_id,
+                [f"overlaybd-upper-{vm_id}", f"overlaybd-{vm_id}"] if vm_id else [],
+                [overlaybd_pool_id, upper_pool_id],
+            )
+
+
+# VM commit tests
+
+
+@pytest.mark.asyncio
+async def test_vm_commit_converts_oci_to_raw_disk(client, oci_image_ref):
+    """Commit should convert an OCI image VM to a standalone raw disk VM."""
+    test_id = str(uuid.uuid4())[:8]
+    async with client as c:
+        hosts = await list_hosts.asyncio(client=c)
+        assert hosts, "No hosts registered"
+
+        overlaybd_pool_id = await _create_pool(
+            c,
+            f"e2e-commit-obd-{test_id}",
+            StoragePoolType.OVERLAY_BD,
+            {"url": f"http://{REGISTRY_INTERNAL_URL}"},
+        )
+        commit_pool_id = await _create_pool(
+            c,
+            f"e2e-commit-local-{test_id}",
+            StoragePoolType.LOCAL,
+            {"path": f"/var/lib/qarax/e2e-commit-{test_id}"},
+        )
+
+        vm_id = None
+        try:
+            await _attach_pools_to_hosts(
+                c, hosts, [overlaybd_pool_id, commit_pool_id]
+            )
+
+            # Create the OCI-backed VM
+            new_vm = NewVm(
+                name=f"e2e-commit-vm-{test_id}",
+                hypervisor=Hypervisor.CLOUD_HV,
+                boot_vcpus=1,
+                max_vcpus=1,
+                memory_size=268435456,
+                image_ref=oci_image_ref,
+            )
+            result = await create_vm.asyncio(client=c, body=new_vm)
+            assert isinstance(result, CreateVmResponse)
+            vm_id = UUID(str(result.vm_id))
+            await wait_for_job(c, result.job_id)
+
+            # Verify VM has image_ref set before commit
+            vm = await get_vm.asyncio(client=c, vm_id=vm_id)
+            assert vm.image_ref is not None, "VM should have image_ref before commit"
+
+            # Commit the VM (raw httpx since SDK not regenerated yet)
+            httpx_client = c.get_async_httpx_client()
+            commit_resp = await httpx_client.post(
+                f"{QARAX_URL}/vms/{vm_id}/commit",
+                json={
+                    "storage_pool_id": str(commit_pool_id),
+                    "size_bytes": 1073741824,  # 1 GiB
+                },
+            )
+            assert commit_resp.status_code == 202, (
+                f"Expected 202, got {commit_resp.status_code}: {commit_resp.text}"
+            )
+            commit_body = commit_resp.json()
+            commit_job_id = commit_body["job_id"]
+
+            await wait_for_job(c, commit_job_id)
+
+            # Verify VM no longer has image_ref
+            vm_after = await get_vm.asyncio(client=c, vm_id=vm_id)
+            assert vm_after.image_ref is None, (
+                f"VM image_ref should be cleared after commit, got {vm_after.image_ref}"
+            )
+
+            # Verify a Disk storage object exists on the commit pool
+            disks_resp = await httpx_client.get(
+                f"{QARAX_URL}/storage-objects",
+                params={"name": f"committed-{vm_id}"},
+            )
+            assert disks_resp.status_code == 200
+            disk_objects = disks_resp.json()
+            assert len(disk_objects) == 1, (
+                f"Expected exactly one committed disk object, got {len(disk_objects)}"
+            )
+            assert disk_objects[0]["object_type"] == "disk"
+            assert disk_objects[0]["storage_pool_id"] == str(commit_pool_id)
+        finally:
+            await _cleanup(
+                c,
+                vm_id,
+                [f"committed-{vm_id}", f"overlaybd-{vm_id}"] if vm_id else [],
+                [commit_pool_id, overlaybd_pool_id],
+            )
 
 
 # NFS storage pool tests
@@ -276,13 +410,12 @@ async def test_nfs_storage_pool_attach(client):
         assert hosts and len(hosts) > 0, "No hosts registered"
         host = next((h for h in hosts if h.name.startswith("e2e-node")), hosts[0])
 
-        pool = NewStoragePool(
-            name="e2e-nfs-pool",
-            pool_type=StoragePoolType.NFS,
-            config={"url": f"{NFS_SERVER_HOST}:{NFS_EXPORT_PATH}"},
+        pool_id = await _create_pool(
+            c,
+            "e2e-nfs-pool",
+            StoragePoolType.NFS,
+            {"url": f"{NFS_SERVER_HOST}:{NFS_EXPORT_PATH}"},
         )
-        pool_id_raw = await create_pool.asyncio(client=c, body=pool)
-        pool_id = UUID(str(pool_id_raw).strip('"'))
 
         try:
             resp = await attach_pool_host.asyncio_detailed(
@@ -308,13 +441,12 @@ async def test_nfs_storage_object_create(client):
         assert hosts and len(hosts) > 0, "No hosts registered"
         host = next((h for h in hosts if h.name.startswith("e2e-node")), hosts[0])
 
-        pool = NewStoragePool(
-            name="e2e-nfs-obj-pool",
-            pool_type=StoragePoolType.NFS,
-            config={"url": f"{NFS_SERVER_HOST}:{NFS_EXPORT_PATH}"},
+        pool_id = await _create_pool(
+            c,
+            "e2e-nfs-obj-pool",
+            StoragePoolType.NFS,
+            {"url": f"{NFS_SERVER_HOST}:{NFS_EXPORT_PATH}"},
         )
-        pool_id_raw = await create_pool.asyncio(client=c, body=pool)
-        pool_id = UUID(str(pool_id_raw).strip('"'))
 
         try:
             attach_resp = await attach_pool_host.asyncio_detailed(

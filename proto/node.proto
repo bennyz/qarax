@@ -49,9 +49,6 @@ message VmConfig {
   // Rate limiting groups (shared across devices)
   repeated RateLimitGroupConfig rate_limit_groups = 10;
 
-  // Filesystem (virtiofs) devices
-  repeated FsConfig fs = 11;
-
   // Cloud-init seed data (optional)
   optional CloudInitConfig cloud_init = 12;
 
@@ -71,20 +68,6 @@ message VsockConfig {
   optional bool iommu = 3;
   optional int32 pci_segment = 4;
   optional string id = 5;
-}
-
-// ============================================================================
-// Filesystem (virtiofs) Configuration
-// ============================================================================
-
-message FsConfig {
-  string tag = 1;                      // Virtiofs mount tag (used as mount source in guest)
-  string socket = 2;                   // Unix socket path for the virtiofs backend (nydusd)
-  int32 num_queues = 3;                // Number of virtqueues (default: 1)
-  int32 queue_size = 4;                // Size of each queue (default: 1024)
-  optional int32 pci_segment = 5;      // PCI segment number
-  optional string id = 6;              // Device identifier
-  optional string bootstrap_path = 7;  // RAFS bootstrap path (for nydusd)
 }
 
 message VmState {
@@ -464,10 +447,6 @@ service VmService {
   rpc AddDiskDevice(AddDiskDeviceRequest) returns (google.protobuf.Empty) {}
   rpc RemoveDiskDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
 
-  // Filesystem (virtiofs) hot-attach operations
-  rpc AddFsDevice(AddFsDeviceRequest) returns (google.protobuf.Empty) {}
-  rpc RemoveFsDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
-
   // VFIO device hot-attach operations (GPU passthrough)
   rpc AddDevice(AddDeviceRequest) returns (google.protobuf.Empty) {}
   rpc RemoveVfioDevice(RemoveDeviceRequest) returns (google.protobuf.Empty) {}
@@ -479,8 +458,6 @@ service VmService {
   rpc ResizeDisk(ResizeDiskRequest) returns (google.protobuf.Empty) {}
 
   // OCI image management
-  rpc PullImage(OciImageRequest) returns (OciImageResponse) {}
-  rpc GetImageStatus(OciImageRequest) returns (OciImageResponse) {}
   rpc PreflightImage(PreflightImageRequest) returns (PreflightImageResponse) {}
 
   // OverlayBD image import (convert OCI image for lazy block loading)
@@ -516,20 +493,43 @@ message TransferResponse {
   bool success = 2;
   int64 bytes_written = 3;
   string error = 4;
+  bool is_final = 5;  // true for the terminal message (success or failure); false for progress
 }
 
 message CreateDiskRequest {
-  string path                = 1;  // Absolute host path to create the disk at
-  int64  size_bytes          = 2;  // Logical size of the disk in bytes
-  optional string source_url = 3;  // If set, populate disk by downloading this URL
-  optional bool   preallocate = 4; // If true, use fallocate (reserve blocks); default sparse
+  string path       = 1;  // Absolute host path to create the disk at
+  int64  size_bytes  = 2;  // Logical size of the disk in bytes
+  reserved 3, 4, 5, 6, 7, 8;  // previously flat optional fields, replaced by oneof
+  oneof source {
+    BlankDiskSource    blank    = 9;
+    UrlDiskSource      url      = 10;
+    OverlayBdDiskSource overlaybd = 11;
+  }
+}
+
+message BlankDiskSource {
+  bool preallocate = 1;  // If true, use fallocate to reserve blocks; default sparse
+}
+
+message UrlDiskSource {
+  string url = 1;  // HTTP(S) URL to download disk contents from
+}
+
+message OverlayBdDiskSource {
+  string image_ref    = 1;  // OCI image ref in local registry
+  string registry_url = 2;  // e.g. "http://my-registry:5000"
+  optional string upper_data  = 3;  // persistent upper data path (optional)
+  optional string upper_index = 4;  // persistent upper index path (optional)
 }
 
 service FileTransferService {
   rpc DownloadFile(DownloadFileRequest) returns (TransferResponse) {}
   rpc CopyFile(CopyFileRequest) returns (TransferResponse) {}
-  // Create a disk file: blank (sparse or preallocated) or populated from source_url.
-  rpc CreateDisk(CreateDiskRequest) returns (TransferResponse) {}
+  // Create a disk file: blank, downloaded from a URL, or copied from an OverlayBD
+  // block device (determined by the oneof source in CreateDiskRequest).
+  // Server-streaming: intermediate messages (is_final=false) carry bytes_written
+  // progress; the terminal message (is_final=true) has success and/or error.
+  rpc CreateDisk(CreateDiskRequest) returns (stream TransferResponse) {}
 }
 
 // ============================================================================
@@ -544,11 +544,6 @@ message AddNetworkDeviceRequest {
 message AddDiskDeviceRequest {
   string vm_id = 1;
   DiskConfig config = 2;
-}
-
-message AddFsDeviceRequest {
-  string vm_id = 1;
-  FsConfig config = 2;
 }
 
 message AddDeviceRequest {
@@ -578,16 +573,12 @@ message ResizeDiskRequest {
 // OCI Image Management
 // ============================================================================
 
-message OciImageRequest {
-  string image_ref = 1;   // OCI image reference (e.g. "docker.io/library/ubuntu:22.04")
-}
 
 message PreflightImageRequest {
   string image_ref = 1;    // OCI image reference to validate
-  string backend = 2;      // "virtiofs" or "overlaybd"
-  string registry_url = 3; // required for overlaybd imports
-  string architecture = 4; // normalized target arch (e.g. "x86_64")
-  string boot_mode = 5;    // "kernel" or "firmware"
+  string registry_url = 2; // registry URL for OverlayBD imports
+  string architecture = 3; // normalized target arch (e.g. "x86_64")
+  string boot_mode = 4;    // "kernel" or "firmware"
 }
 
 message PreflightCheck {
@@ -609,6 +600,7 @@ message ImportOverlayBdResponse {
   string image_ref = 1;   // converted ref in target registry
   string digest    = 2;   // sha256:...
   bool available   = 3;
+  int64 size_bytes = 4;   // virtual block device size in bytes
 }
 
 // ============================================================================
@@ -664,18 +656,10 @@ message DetachNetworkRequest {
 
 message DetachNetworkResponse {}
 
-message OciImageResponse {
-  string image_ref = 1;   // OCI image reference
-  string digest = 2;      // Content digest (sha256:...)
-  string bootstrap_path = 3;  // Path to RAFS bootstrap file on host
-  string socket_path = 4;     // Path to nydusd socket (set after start_nydusd)
-  bool available = 5;     // Whether the image is locally cached
-}
 
 message PreflightImageResponse {
   bool bootable = 1;
-  string backend = 2;
-  string resolved_image_ref = 3;
-  string architecture = 4;
-  repeated PreflightCheck checks = 5;
+  string resolved_image_ref = 2;
+  string architecture = 3;
+  repeated PreflightCheck checks = 4;
 }

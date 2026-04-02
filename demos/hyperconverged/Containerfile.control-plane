@@ -5,7 +5,7 @@
 # fully self-contained hyperconverged node: control plane + compute.
 #
 # Includes: PostgreSQL, qarax, qarax-node, Cloud Hypervisor, overlaybd,
-# virtiofsd, kernel/initramfs for nested VMs, and systemd services.
+# kernel/initramfs for nested VMs, and systemd services.
 #
 # The image is exported to a flat rootfs tarball, then the demo script builds
 # a GPT disk image with an ESP (FAT32, kernel + BLS entry) and an ext4 root
@@ -38,7 +38,6 @@ RUN dnf install -y \
     socat \
     iptables \
     nftables \
-    virtiofsd \
     podman \
     e2fsprogs \
     cpio \
@@ -48,8 +47,7 @@ RUN dnf install -y \
     openssh-server \
     kernel-core \
     kernel-modules \
-    && dnf clean all \
-    && ln -sf /usr/libexec/virtiofsd /usr/local/bin/virtiofsd
+    && dnf clean all
 
 # Initialize PostgreSQL data directory (can't use postgresql-setup, no systemd during build)
 RUN su - postgres -c "initdb -D /var/lib/pgsql/data"

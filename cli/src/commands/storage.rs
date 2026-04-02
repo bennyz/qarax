@@ -79,8 +79,8 @@ enum StoragePoolCommand {
         /// Pool config as JSON (e.g. '{"url":"http://registry:5000"}' for overlaybd)
         #[arg(long, value_name = "JSON")]
         config: Option<String>,
-        /// Host to attach this pool to (name or ID, for local pools)
-        #[arg(long)]
+        /// Host to attach this pool to (name or ID). Required for local pools.
+        #[arg(long, required_if_eq("pool_type", "local"))]
         host: Option<String>,
     },
     /// Delete a storage pool

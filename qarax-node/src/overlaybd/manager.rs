@@ -109,11 +109,16 @@ impl OverlayBdManager {
     ///   2. Convert the mirrored image to OverlayBD format using `convertor`.
     ///
     /// Returns the image reference in the target registry.
+    /// Import an OCI image into the local registry in OverlayBD format.
+    ///
+    /// Returns `(target_ref, converted_size_bytes)` where `converted_size_bytes`
+    /// is the sum of the converted layer sizes stored in the local registry —
+    /// i.e. the actual disk space consumed by this image on the OverlayBD pool.
     pub async fn import_image(
         &self,
         image_ref: &str,
         registry_url: &str,
-    ) -> Result<String, OverlayBdError> {
+    ) -> Result<(String, i64), OverlayBdError> {
         let target_ref = build_target_ref(image_ref, registry_url)?;
 
         info!("Copying OCI image {} → {}", image_ref, target_ref);
@@ -123,8 +128,48 @@ impl OverlayBdManager {
         info!("Converting {} to OverlayBD format", target_ref);
         self.convert_to_overlaybd(&target_ref).await?;
 
-        info!("OverlayBD image ready: {}", target_ref);
-        Ok(target_ref)
+        let size_bytes = self
+            .fetch_image_size(&target_ref, registry_url)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "Could not determine converted image size for {}: {}",
+                    target_ref, e
+                );
+                0
+            });
+
+        info!(
+            "OverlayBD image ready: {} ({} bytes)",
+            target_ref, size_bytes
+        );
+        Ok((target_ref, size_bytes))
+    }
+
+    /// Fetch the total compressed layer size of an image in the local registry.
+    ///
+    /// Pulls the manifest and sums the `size` field of each layer descriptor.
+    /// This is the actual bytes stored on disk in the registry for this image.
+    async fn fetch_image_size(
+        &self,
+        image_ref: &str,
+        registry_url: &str,
+    ) -> Result<i64, OverlayBdError> {
+        let reference = Reference::try_from(image_ref)
+            .map_err(|e| OverlayBdError::InvalidImageRef(e.to_string()))?;
+
+        let client = Client::new(ClientConfig {
+            protocol: ClientProtocol::HttpsExcept(vec![registry_host(registry_url)]),
+            ..Default::default()
+        });
+
+        let (manifest, _digest) = client
+            .pull_image_manifest(&reference, &RegistryAuth::Anonymous)
+            .await
+            .map_err(|e| OverlayBdError::OciError(e.to_string()))?;
+
+        let total: i64 = manifest.layers.iter().map(|l| l.size).sum();
+        Ok(total)
     }
 
     /// Copy an OCI image from an arbitrary source registry to the local registry.
@@ -448,10 +493,13 @@ impl OverlayBdManager {
     ) -> Result<(String, Vec<PreflightCheckResult>), OverlayBdError> {
         let mut checks = vec![boot_mode_check(boot_mode)];
 
-        let imported_ref = self.import_image(image_ref, registry_url).await?;
+        let (imported_ref, size_bytes) = self.import_image(image_ref, registry_url).await?;
         checks.push(PreflightCheckResult::ok(
             "overlaybd_import",
-            format!("imported image into local registry as {}", imported_ref),
+            format!(
+                "imported image into local registry as {} ({} bytes)",
+                imported_ref, size_bytes
+            ),
         ));
 
         let oci_config = self

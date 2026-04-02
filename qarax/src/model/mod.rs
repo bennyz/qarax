@@ -17,7 +17,6 @@ pub mod storage_pools;
 pub mod transfers;
 pub mod vm_consoles;
 pub mod vm_disks;
-pub mod vm_filesystems;
 pub mod vm_rng;
 pub mod vm_templates;
 pub mod vms;

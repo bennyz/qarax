@@ -201,10 +201,21 @@ pub struct VmImagePreflightResponse {
     pub bootable: bool,
     pub host_id: Uuid,
     pub host_name: String,
-    pub backend: String,
     pub resolved_image_ref: String,
     pub architecture: String,
     pub checks: Vec<VmImagePreflightCheck>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommitVmRequest {
+    pub storage_pool_id: Uuid,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommitVmResponse {
+    pub vm_id: Uuid,
+    pub job_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

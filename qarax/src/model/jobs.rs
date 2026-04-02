@@ -34,6 +34,7 @@ pub enum JobType {
     VmStart,
     VmMigrate,
     DiskCreate,
+    VmCommit,
 }
 
 #[derive(
@@ -48,6 +49,11 @@ pub enum JobStatus {
     Running,
     Completed,
     Failed,
+}
+
+/// Well-known resource type values for the `resource_type` column.
+pub mod resource_types {
+    pub const VM: &str = "vm";
 }
 
 pub struct NewJob {

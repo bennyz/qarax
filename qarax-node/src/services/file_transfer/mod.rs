@@ -1,22 +1,34 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
+use crate::overlaybd::manager::OverlayBdManager;
 use crate::rpc::node::{
-    CopyFileRequest, CreateDiskRequest, DownloadFileRequest, TransferResponse,
-    file_transfer_service_server::FileTransferService,
+    CopyFileRequest, CreateDiskRequest, DownloadFileRequest, OverlayBdDiskSource, TransferResponse,
+    create_disk_request::Source, file_transfer_service_server::FileTransferService,
 };
 
 /// Implementation of the FileTransferService gRPC service.
 ///
 /// Handles file downloads (HTTP(S) → disk), local copies, and disk creation on the node.
+/// Optionally holds an OverlayBdManager for creating disks from OverlayBD TCMU devices.
 #[derive(Clone, Default)]
-pub struct FileTransferServiceImpl;
+pub struct FileTransferServiceImpl {
+    overlaybd_manager: Option<Arc<OverlayBdManager>>,
+}
 
 impl FileTransferServiceImpl {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn with_overlaybd(overlaybd_manager: Option<Arc<OverlayBdManager>>) -> Self {
+        Self { overlaybd_manager }
     }
 }
 
@@ -42,6 +54,7 @@ impl FileTransferService for FileTransferServiceImpl {
                     success: true,
                     bytes_written,
                     error: String::new(),
+                    is_final: true,
                 }))
             }
             Err(e) => {
@@ -51,6 +64,7 @@ impl FileTransferService for FileTransferServiceImpl {
                     success: false,
                     bytes_written: 0,
                     error: e.to_string(),
+                    is_final: true,
                 }))
             }
         }
@@ -78,6 +92,7 @@ impl FileTransferService for FileTransferServiceImpl {
                 success: false,
                 bytes_written: 0,
                 error: format!("Failed to create directory: {e}"),
+                is_final: true,
             }));
         }
 
@@ -89,6 +104,7 @@ impl FileTransferService for FileTransferServiceImpl {
                     success: true,
                     bytes_written: bytes_written as i64,
                     error: String::new(),
+                    is_final: true,
                 }))
             }
             Err(e) => {
@@ -98,52 +114,189 @@ impl FileTransferService for FileTransferServiceImpl {
                     success: false,
                     bytes_written: 0,
                     error: e.to_string(),
+                    is_final: true,
                 }))
             }
         }
     }
+
+    type CreateDiskStream =
+        Pin<Box<dyn futures::Stream<Item = Result<TransferResponse, Status>> + Send + 'static>>;
 
     async fn create_disk(
         &self,
         request: Request<CreateDiskRequest>,
-    ) -> Result<Response<TransferResponse>, Status> {
+    ) -> Result<Response<Self::CreateDiskStream>, Status> {
         let req = request.into_inner();
         info!(
             dest = %req.path,
             size_bytes = req.size_bytes,
-            source_url = ?req.source_url,
-            preallocate = req.preallocate.unwrap_or(false),
+            source = ?req.source,
             "Creating disk"
         );
 
-        let result = if let Some(ref url) = req.source_url {
-            do_download(url, &req.path).await
-        } else {
-            do_create_blank(&req.path, req.size_bytes, req.preallocate.unwrap_or(false)).await
-        };
+        let (tx, rx) = mpsc::channel(16);
+        let overlaybd_manager = self.overlaybd_manager.clone();
 
-        match result {
-            Ok(bytes_written) => {
-                info!(dest = %req.path, bytes_written, "Disk created");
-                Ok(Response::new(TransferResponse {
+        tokio::spawn(async move {
+            let result = match req.source {
+                Some(Source::Overlaybd(ref source)) => {
+                    do_create_from_overlaybd(
+                        overlaybd_manager.as_ref(),
+                        &req.path,
+                        req.size_bytes,
+                        source,
+                        &tx,
+                    )
+                    .await
+                }
+                Some(Source::Url(ref source)) => do_download(&source.url, &req.path).await,
+                Some(Source::Blank(ref source)) => {
+                    do_create_blank(&req.path, req.size_bytes, source.preallocate).await
+                }
+                None => do_create_blank(&req.path, req.size_bytes, false).await,
+            };
+
+            let final_msg = match result {
+                Ok(bytes_written) => {
+                    info!(dest = %req.path, bytes_written, "Disk created");
+                    TransferResponse {
+                        transfer_id: String::new(),
+                        success: true,
+                        bytes_written,
+                        error: String::new(),
+                        is_final: true,
+                    }
+                }
+                Err(e) => {
+                    error!(dest = %req.path, error = %e, "Disk creation failed");
+                    let _ = tokio::fs::remove_file(&req.path).await;
+                    TransferResponse {
+                        transfer_id: String::new(),
+                        success: false,
+                        bytes_written: 0,
+                        error: e.to_string(),
+                        is_final: true,
+                    }
+                }
+            };
+            let _ = tx.send(Ok(final_msg)).await;
+        });
+
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        )))
+    }
+}
+
+/// Mount an OverlayBD TCMU device and copy its contents to a raw disk file.
+///
+/// Uses a temporary mount ID (`commit-{random}`) so it doesn't collide with any
+/// existing VM mount.  The device is unmounted after the copy completes.
+async fn do_create_from_overlaybd(
+    manager: Option<&Arc<OverlayBdManager>>,
+    path: &str,
+    size_bytes: i64,
+    source: &OverlayBdDiskSource,
+    progress_tx: &mpsc::Sender<Result<TransferResponse, Status>>,
+) -> anyhow::Result<i64> {
+    let mgr = manager.ok_or_else(|| {
+        anyhow::anyhow!("OverlayBD manager not available — cannot create disk from OCI image")
+    })?;
+
+    let mount_id = format!("commit-{}", uuid::Uuid::new_v4());
+
+    // Mount the OverlayBD TCMU device
+    let mounted = mgr
+        .mount(
+            &mount_id,
+            &source.image_ref,
+            &source.registry_url,
+            source.upper_data.as_deref(),
+            source.upper_index.as_deref(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("OverlayBD mount failed: {}", e))?;
+
+    let device_path = mounted.device_path.clone();
+
+    // Ensure the target directory exists
+    let dest = std::path::Path::new(path);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    // Copy block device contents to the target file, then unmount regardless of outcome
+    let copy_result = copy_block_device(&device_path, path, size_bytes, progress_tx).await;
+    mgr.unmount(&mount_id).await;
+    copy_result
+}
+
+/// Copy exactly `size_bytes` from a block device to a new file.
+///
+/// Reads in 4 MiB chunks using async I/O.
+/// Sends progress updates (is_final=false) through `progress_tx` every 64 MiB.
+async fn copy_block_device(
+    device_path: &str,
+    dest_path: &str,
+    size_bytes: i64,
+    progress_tx: &mpsc::Sender<Result<TransferResponse, Status>>,
+) -> anyhow::Result<i64> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let size = size_bytes as u64;
+    info!(
+        src = device_path,
+        dest = dest_path,
+        size_bytes,
+        "Copying block device to raw file"
+    );
+
+    let mut src = tokio::fs::File::open(device_path).await?;
+    let mut dst = tokio::fs::File::create(dest_path).await?;
+
+    const BUF_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+    const PROGRESS_INTERVAL: u64 = 64 * 1024 * 1024; // report every 64 MiB
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut bytes_written: u64 = 0;
+    let mut last_reported: u64 = 0;
+
+    while bytes_written < size {
+        let to_read = ((size - bytes_written) as usize).min(BUF_SIZE);
+        let n = src.read(&mut buf[..to_read]).await?;
+        if n == 0 {
+            return Err(anyhow::anyhow!(
+                "block device {} is smaller than requested size_bytes {} (read {} bytes)",
+                device_path,
+                size_bytes,
+                bytes_written
+            ));
+        }
+        dst.write_all(&buf[..n]).await?;
+        bytes_written += n as u64;
+
+        if bytes_written - last_reported >= PROGRESS_INTERVAL {
+            last_reported = bytes_written;
+            debug!(
+                bytes_written,
+                total_bytes = size,
+                "Block device copy progress"
+            );
+            let _ = progress_tx
+                .send(Ok(TransferResponse {
                     transfer_id: String::new(),
                     success: true,
-                    bytes_written,
+                    bytes_written: bytes_written as i64,
                     error: String::new(),
+                    is_final: false,
                 }))
-            }
-            Err(e) => {
-                error!(dest = %req.path, error = %e, "Disk creation failed");
-                let _ = tokio::fs::remove_file(&req.path).await;
-                Ok(Response::new(TransferResponse {
-                    transfer_id: String::new(),
-                    success: false,
-                    bytes_written: 0,
-                    error: e.to_string(),
-                }))
-            }
+                .await;
         }
     }
+
+    dst.flush().await?;
+    info!(dest = dest_path, size_bytes, "Block device copy complete");
+    Ok(size_bytes)
 }
 
 /// Create a blank disk file at `path` with logical size `size_bytes`.

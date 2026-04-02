@@ -7,12 +7,11 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::cloud_hypervisor::VmManager;
 use crate::rpc::node::{
-    AddDeviceRequest, AddDiskDeviceRequest, AddFsDeviceRequest, AddNetworkDeviceRequest,
-    AttachNetworkRequest, AttachNetworkResponse, AttachStoragePoolRequest,
-    AttachStoragePoolResponse, ConsoleInput, ConsoleLogResponse, ConsoleOutput,
-    ConsolePtyPathResponse, DetachNetworkRequest, DetachNetworkResponse, DetachStoragePoolRequest,
-    DeviceCounters, ExecVmRequest, ExecVmResponse, GpuInfo, ImportOverlayBdRequest,
-    ImportOverlayBdResponse, NodeInfo, NumaNode, OciImageRequest, OciImageResponse, PreflightCheck,
+    AddDeviceRequest, AddDiskDeviceRequest, AddNetworkDeviceRequest, AttachNetworkRequest,
+    AttachNetworkResponse, AttachStoragePoolRequest, AttachStoragePoolResponse, ConsoleInput,
+    ConsoleLogResponse, ConsoleOutput, ConsolePtyPathResponse, DetachNetworkRequest,
+    DetachNetworkResponse, DetachStoragePoolRequest, DeviceCounters, ExecVmRequest, ExecVmResponse,
+    GpuInfo, ImportOverlayBdRequest, ImportOverlayBdResponse, NodeInfo, NumaNode, PreflightCheck,
     PreflightImageRequest, PreflightImageResponse, ReceiveMigrationRequest,
     ReceiveMigrationResponse, RemoveDeviceRequest, ResizeDiskRequest, ResizeVmRequest,
     RestoreVmRequest, SendMigrationRequest, SnapshotVmRequest, StoragePoolKind, VmConfig,
@@ -328,58 +327,6 @@ impl VmService for VmServiceImpl {
         }
     }
 
-    async fn add_fs_device(
-        &self,
-        request: Request<AddFsDeviceRequest>,
-    ) -> Result<Response<()>, Status> {
-        let req = request.into_inner();
-        info!("Adding fs device to VM: {}", req.vm_id);
-
-        let config = req
-            .config
-            .ok_or_else(|| Status::invalid_argument("Missing fs config"))?;
-
-        match self.manager.add_fs_device(&req.vm_id, &config).await {
-            Ok(()) => {
-                info!("Fs device added to VM {}", req.vm_id);
-                Ok(Response::new(()))
-            }
-            Err(e) => {
-                error!("Failed to add fs device to VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
-            }
-        }
-    }
-
-    async fn remove_fs_device(
-        &self,
-        request: Request<RemoveDeviceRequest>,
-    ) -> Result<Response<()>, Status> {
-        let req = request.into_inner();
-        info!(
-            "Removing fs device {} from VM: {}",
-            req.device_id, req.vm_id
-        );
-
-        match self
-            .manager
-            .remove_fs_device(&req.vm_id, &req.device_id)
-            .await
-        {
-            Ok(()) => {
-                info!("Fs device {} removed from VM {}", req.device_id, req.vm_id);
-                Ok(Response::new(()))
-            }
-            Err(e) => {
-                error!(
-                    "Failed to remove fs device {} from VM {}: {}",
-                    req.device_id, req.vm_id, e
-                );
-                Err(map_manager_error(e))
-            }
-        }
-    }
-
     async fn add_device(&self, request: Request<AddDeviceRequest>) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         let config = req
@@ -479,69 +426,11 @@ impl VmService for VmServiceImpl {
         }
     }
 
-    async fn pull_image(
-        &self,
-        request: Request<OciImageRequest>,
-    ) -> Result<Response<OciImageResponse>, Status> {
-        let image_ref = request.into_inner().image_ref;
-        info!("Pulling OCI image: {}", image_ref);
-
-        let store = self
-            .manager
-            .image_store_manager()
-            .ok_or_else(|| Status::unimplemented("virtiofsd not configured on this node"))?;
-
-        match store.pull_and_unpack(&image_ref).await {
-            Ok(info) => Ok(Response::new(OciImageResponse {
-                image_ref: info.image_ref,
-                digest: info.digest,
-                bootstrap_path: info.rootfs_path.to_string_lossy().to_string(),
-                socket_path: String::new(),
-                available: true,
-            })),
-            Err(e) => {
-                error!("Failed to pull image {}: {}", image_ref, e);
-                Err(Status::internal(format!("Pull failed: {}", e)))
-            }
-        }
-    }
-
-    async fn get_image_status(
-        &self,
-        request: Request<OciImageRequest>,
-    ) -> Result<Response<OciImageResponse>, Status> {
-        let image_ref = request.into_inner().image_ref;
-        info!("Getting image status: {}", image_ref);
-
-        let store = self
-            .manager
-            .image_store_manager()
-            .ok_or_else(|| Status::unimplemented("virtiofsd not configured on this node"))?;
-
-        match store.get_image_status(&image_ref).await {
-            Some(info) => Ok(Response::new(OciImageResponse {
-                image_ref: info.image_ref,
-                digest: info.digest,
-                bootstrap_path: info.rootfs_path.to_string_lossy().to_string(),
-                socket_path: String::new(),
-                available: true,
-            })),
-            None => Ok(Response::new(OciImageResponse {
-                image_ref,
-                digest: String::new(),
-                bootstrap_path: String::new(),
-                socket_path: String::new(),
-                available: false,
-            })),
-        }
-    }
-
     async fn preflight_image(
         &self,
         request: Request<PreflightImageRequest>,
     ) -> Result<Response<PreflightImageResponse>, Status> {
         let req = request.into_inner();
-        let backend = req.backend.trim();
         let boot_mode = if req.boot_mode.trim().is_empty() {
             "kernel"
         } else {
@@ -561,72 +450,42 @@ impl VmService for VmServiceImpl {
         };
 
         info!(
-            "Preflighting OCI image {} with backend={} architecture={} boot_mode={}",
-            req.image_ref, backend, architecture, boot_mode
+            "Preflighting OCI image {} with architecture={} boot_mode={}",
+            req.image_ref, architecture, boot_mode
         );
 
-        let response = match backend {
-            "virtiofs" => {
-                let store = self.manager.image_store_manager().ok_or_else(|| {
-                    Status::unimplemented("virtiofsd not configured on this node")
-                })?;
+        if req.registry_url.trim().is_empty() {
+            return Err(Status::invalid_argument(
+                "registry_url is required for overlaybd preflight",
+            ));
+        }
 
-                match store
-                    .preflight_boot(&req.image_ref, &architecture, boot_mode)
-                    .await
-                {
-                    Ok(checks) => preflight_response(backend, req.image_ref, architecture, checks),
-                    Err(e) => preflight_response(
-                        backend,
-                        req.image_ref,
-                        architecture,
-                        vec![crate::image_preflight::PreflightCheckResult::fail(
-                            "virtiofs_prepare",
-                            e.to_string(),
-                        )],
-                    ),
-                }
-            }
-            "overlaybd" => {
-                if req.registry_url.trim().is_empty() {
-                    return Err(Status::invalid_argument(
-                        "registry_url is required for overlaybd preflight",
-                    ));
-                }
+        let manager = self
+            .manager
+            .overlaybd_manager()
+            .ok_or_else(|| Status::unimplemented("OverlayBD not configured on this node"))?;
 
-                let manager = self.manager.overlaybd_manager().ok_or_else(|| {
-                    Status::unimplemented("OverlayBD not configured on this node")
-                })?;
-
-                match manager
-                    .preflight_boot(
-                        &req.image_ref,
-                        &req.registry_url,
-                        &architecture,
-                        boot_mode,
-                        self.manager.qarax_init_binary(),
-                    )
-                    .await
-                {
-                    Ok((resolved_image_ref, checks)) => {
-                        preflight_response(backend, resolved_image_ref, architecture, checks)
-                    }
-                    Err(e) => preflight_response(
-                        backend,
-                        req.image_ref,
-                        architecture,
-                        vec![crate::image_preflight::PreflightCheckResult::fail(
-                            "overlaybd_import",
-                            e.to_string(),
-                        )],
-                    ),
-                }
+        let response = match manager
+            .preflight_boot(
+                &req.image_ref,
+                &req.registry_url,
+                &architecture,
+                boot_mode,
+                self.manager.qarax_init_binary(),
+            )
+            .await
+        {
+            Ok((resolved_image_ref, checks)) => {
+                preflight_response(resolved_image_ref, architecture, checks)
             }
-            _ => {
-                return Err(Status::invalid_argument(
-                    "backend must be either 'virtiofs' or 'overlaybd'",
-                ));
-            }
+            Err(e) => preflight_response(
+                req.image_ref,
+                architecture,
+                vec![crate::image_preflight::PreflightCheckResult::fail(
+                    "overlaybd_import",
+                    e.to_string(),
+                )],
+            ),
         };
 
         Ok(Response::new(response))
@@ -651,12 +510,16 @@ impl VmService for VmServiceImpl {
             .import_image(&req.image_ref, &req.registry_url)
             .await
         {
-            Ok(target_ref) => {
-                info!("OverlayBD image imported: {}", target_ref);
+            Ok((target_ref, size_bytes)) => {
+                info!(
+                    "OverlayBD image imported: {} ({} bytes)",
+                    target_ref, size_bytes
+                );
                 Ok(Response::new(ImportOverlayBdResponse {
                     image_ref: target_ref,
                     digest: String::new(), // digest resolved by node at mount time
                     available: true,
+                    size_bytes,
                 }))
             }
             Err(e) => {
@@ -1461,7 +1324,6 @@ fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
 }
 
 fn preflight_response(
-    backend: &str,
     resolved_image_ref: impl Into<String>,
     architecture: impl Into<String>,
     checks: Vec<crate::image_preflight::PreflightCheckResult>,
@@ -1469,7 +1331,6 @@ fn preflight_response(
     let bootable = checks.iter().all(|check| check.ok);
     PreflightImageResponse {
         bootable,
-        backend: backend.to_string(),
         resolved_image_ref: resolved_image_ref.into(),
         architecture: architecture.into(),
         checks: checks
