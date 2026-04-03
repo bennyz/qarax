@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Type, types::Json};
+use sqlx::{PgPool, Postgres, Transaction, Type, types::Json};
 use strum_macros::{Display, EnumString};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::model::storage_pools;
+
+pub type PgTransaction<'a> = Transaction<'a, Postgres>;
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct StorageObject {
@@ -149,6 +151,31 @@ WHERE id = $1
         object_id
     )
     .fetch_one(pool)
+    .await?;
+
+    Ok(storage_object.into())
+}
+
+pub async fn get_for_update(
+    tx: &mut PgTransaction<'_>,
+    object_id: Uuid,
+) -> Result<StorageObject, sqlx::Error> {
+    let storage_object: StorageObjectRow = sqlx::query_as::<_, StorageObjectRow>(
+        r#"
+SELECT id,
+       name,
+       storage_pool_id,
+       object_type,
+       size_bytes,
+       config,
+       parent_id
+FROM storage_objects
+WHERE id = $1
+FOR UPDATE
+        "#,
+    )
+    .bind(object_id)
+    .fetch_one(tx.as_mut())
     .await?;
 
     Ok(storage_object.into())

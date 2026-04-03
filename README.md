@@ -28,14 +28,18 @@ make lint        # cargo clippy --workspace -- -D warnings
 ## Running locally
 
 ```bash
-make run-local           # start full Docker stack (qarax + qarax-node + Postgres)
-make run-local VM=1      # same, but boot a test VM with SSH access
+make run-local           # compose mode: qarax + qarax-node + Postgres in Docker Compose
+make run-local VM=1      # VM mode: run qarax-node inside a libvirt VM
 make stop-local          # stop the stack
 ```
 
 Requires Docker, Docker Compose, KVM (`/dev/kvm`), and a Rust toolchain.
 
 The API serves Swagger UI at `http://localhost:8000/swagger-ui`.
+
+See [docs/HOME_LAB.md](docs/HOME_LAB.md) for a verified cloud-image walkthrough,
+an explanation of compose mode vs VM mode, and the steps to turn the same CLI
+flow into a LAN-reachable home-lab deployment.
 
 ## CLI quickstart
 

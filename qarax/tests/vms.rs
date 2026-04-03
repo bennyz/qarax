@@ -432,6 +432,52 @@ async fn create_test_storage_object(
     (pool_id, object_id)
 }
 
+async fn create_network(
+    client: &reqwest::Client,
+    address: &str,
+    name: &str,
+    subnet: &str,
+    gateway: &str,
+) -> String {
+    let res = client
+        .post(format!("{}/networks", address))
+        .json(&json!({
+            "name": name,
+            "subnet": subnet,
+            "gateway": gateway
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    res.text().await.unwrap()
+}
+
+async fn count_ip_allocations_for_vm(pool: &PgPool, vm_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM ip_allocations WHERE vm_id = $1")
+        .bind(Uuid::parse_str(vm_id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn count_nics_for_vm(pool: &PgPool, vm_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM network_interfaces WHERE vm_id = $1")
+        .bind(Uuid::parse_str(vm_id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn set_vm_status(pool: &PgPool, vm_id: &str, status: &str) {
+    sqlx::query("UPDATE vms SET status = $1::vm_status WHERE id = $2")
+        .bind(status)
+        .bind(Uuid::parse_str(vm_id).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn test_attach_disk_auto_logical_name() {
     let app = spawn_app().await;
@@ -687,6 +733,315 @@ async fn test_attach_disk_duplicate_logical_name_rejected() {
         "Expected error for duplicate logical_name, got {}",
         res.status()
     );
+}
+
+#[tokio::test]
+async fn test_attach_disk_rejects_storage_object_used_by_other_vm() {
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    let host_id = ensure_host_up(&client, &app.address).await;
+
+    let vm_owner = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-disk-owner",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "config": {}
+        }),
+    )
+    .await;
+    let vm_other = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-disk-other",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "config": {}
+        }),
+    )
+    .await;
+    let (_pool_id, object_id) = create_test_storage_object(
+        &client,
+        &app.address,
+        &app.pool,
+        &host_id,
+        "shared-disk-pool",
+        "shared-disk",
+    )
+    .await;
+
+    let res = client
+        .post(format!("{}/vms/{}/disks", &app.address, vm_owner))
+        .json(&json!({
+            "storage_object_id": object_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let res = client
+        .post(format!("{}/vms/{}/disks", &app.address, vm_other))
+        .json(&json!({
+            "storage_object_id": object_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("vm-disk-owner")
+    );
+}
+
+#[tokio::test]
+async fn test_create_vm_rejects_root_disk_reused_by_other_vm() {
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    let host_id = ensure_host_up(&client, &app.address).await;
+
+    let (_pool_id, object_id) = create_test_storage_object(
+        &client,
+        &app.address,
+        &app.pool,
+        &host_id,
+        "root-disk-pool",
+        "root-disk",
+    )
+    .await;
+
+    let vm_owner = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-root-owner",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "root_disk_object_id": object_id,
+            "config": {}
+        }),
+    )
+    .await;
+    assert!(!vm_owner.is_empty());
+
+    let res = client
+        .post(format!("{}/vms", &app.address))
+        .json(&json!({
+            "name": "vm-root-other",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "root_disk_object_id": object_id,
+            "config": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("vm-root-owner")
+    );
+}
+
+#[tokio::test]
+async fn test_start_with_conflicting_disk_keeps_vm_created() {
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    let host_id = ensure_host_up(&client, &app.address).await;
+
+    let vm_owner = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-start-owner",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "config": {}
+        }),
+    )
+    .await;
+    let vm_other = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-start-other",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "config": {}
+        }),
+    )
+    .await;
+    let (_pool_id, object_id) = create_test_storage_object(
+        &client,
+        &app.address,
+        &app.pool,
+        &host_id,
+        "start-conflict-pool",
+        "start-conflict-disk",
+    )
+    .await;
+
+    let res = client
+        .post(format!("{}/vms/{}/disks", &app.address, vm_owner))
+        .json(&json!({
+            "storage_object_id": object_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    sqlx::query(
+        r#"
+        INSERT INTO vm_disks (
+            id, vm_id, storage_object_id, logical_name, device_path, boot_order,
+            read_only, direct, vhost_user, vhost_socket,
+            num_queues, queue_size, rate_limiter, rate_limit_group,
+            pci_segment, serial_number, config, upper_storage_object_id
+        )
+        VALUES (
+            $1, $2, $3, 'rootfs', '/dev/vda', 0,
+            false, false, false, NULL,
+            1, 128, NULL, NULL,
+            0, NULL, '{}'::jsonb, NULL
+        )
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::parse_str(&vm_other).unwrap())
+    .bind(Uuid::parse_str(&object_id).unwrap())
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let res = client
+        .post(format!("{}/vms/{}/start", &app.address, vm_other))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+
+    let res = client
+        .get(format!("{}/vms/{}", &app.address, vm_other))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["status"], "created");
+}
+
+#[tokio::test]
+async fn test_remove_nic_releases_ip_allocation() {
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    ensure_host_up(&client, &app.address).await;
+
+    let network_id = create_network(
+        &client,
+        &app.address,
+        "remove-nic-net",
+        "10.91.0.0/24",
+        "10.91.0.1",
+    )
+    .await;
+
+    let vm_id = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-remove-nic",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "network_id": network_id,
+            "config": {}
+        }),
+    )
+    .await;
+
+    assert_eq!(count_ip_allocations_for_vm(&app.pool, &vm_id).await, 1);
+    assert_eq!(count_nics_for_vm(&app.pool, &vm_id).await, 1);
+
+    let res = client
+        .delete(format!("{}/vms/{}/nics/net0", &app.address, vm_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(count_ip_allocations_for_vm(&app.pool, &vm_id).await, 0);
+    assert_eq!(count_nics_for_vm(&app.pool, &vm_id).await, 0);
+}
+
+#[tokio::test]
+async fn test_add_nic_hotplug_failure_cleans_up_allocation_and_record() {
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    ensure_host_up_with_name(&client, &app.address, "hotplug-host", 59999).await;
+
+    let network_id = create_network(
+        &client,
+        &app.address,
+        "hotplug-fail-net",
+        "10.92.0.0/24",
+        "10.92.0.1",
+    )
+    .await;
+
+    let vm_id = create_vm(
+        &client,
+        &app.address,
+        json!({
+            "name": "vm-hotplug-fail",
+            "hypervisor": "cloud_hv",
+            "boot_vcpus": 1,
+            "max_vcpus": 1,
+            "memory_size": 268435456,
+            "config": {}
+        }),
+    )
+    .await;
+    set_vm_status(&app.pool, &vm_id, "RUNNING").await;
+
+    let res = client
+        .post(format!("{}/vms/{}/nics", &app.address, vm_id))
+        .json(&json!({
+            "id": "",
+            "network_id": network_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = res.text().await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+
+    assert_eq!(count_ip_allocations_for_vm(&app.pool, &vm_id).await, 0);
+    assert_eq!(count_nics_for_vm(&app.pool, &vm_id).await, 0);
 }
 
 #[tokio::test]

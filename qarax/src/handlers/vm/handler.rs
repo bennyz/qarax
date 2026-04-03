@@ -321,6 +321,169 @@ async fn create_root_disk_record(
     Ok(())
 }
 
+fn storage_object_requires_exclusive_attachment(
+    object: &StorageObject,
+    storage_pool: &storage_pools::StoragePool,
+) -> bool {
+    matches!(
+        storage_pool.pool_type,
+        storage_pools::StoragePoolType::Local | storage_pools::StoragePoolType::Nfs
+    ) && matches!(
+        object.object_type,
+        StorageObjectType::Disk | StorageObjectType::Snapshot
+    )
+}
+
+async fn ensure_storage_object_can_be_attached(
+    pool: &sqlx::PgPool,
+    object: &StorageObject,
+    storage_pool: &storage_pools::StoragePool,
+    current_vm_id: Option<Uuid>,
+) -> Result<()> {
+    if !storage_object_requires_exclusive_attachment(object, storage_pool) {
+        return Ok(());
+    }
+
+    let attachments = vm_disks::list_by_storage_object(pool, object.id).await?;
+    if let Some(conflict) = attachments
+        .into_iter()
+        .find(|disk| Some(disk.vm_id) != current_vm_id)
+    {
+        let conflicting_vm = vms::get(pool, conflict.vm_id).await?;
+        return Err(crate::errors::Error::Conflict(format!(
+            "Storage object '{}' is already attached to VM '{}'. Clone the disk or create a snapshot before reusing it.",
+            object.name, conflicting_vm.name
+        )));
+    }
+
+    Ok(())
+}
+
+async fn ensure_storage_object_can_be_attached_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    pool: &sqlx::PgPool,
+    object: &StorageObject,
+    storage_pool: &storage_pools::StoragePool,
+    current_vm_id: Option<Uuid>,
+) -> Result<()> {
+    let attachments = vm_disks::list_by_storage_object_tx(tx, object.id).await?;
+    if current_vm_id.is_some()
+        && attachments
+            .iter()
+            .any(|disk| Some(disk.vm_id) == current_vm_id)
+    {
+        return Err(crate::errors::Error::Conflict(format!(
+            "Storage object {} is already attached to this VM",
+            object.id
+        )));
+    }
+
+    if !storage_object_requires_exclusive_attachment(object, storage_pool) {
+        return Ok(());
+    }
+
+    if let Some(conflict) = attachments
+        .into_iter()
+        .find(|disk| Some(disk.vm_id) != current_vm_id)
+    {
+        let conflicting_vm = vms::get(pool, conflict.vm_id).await?;
+        return Err(crate::errors::Error::Conflict(format!(
+            "Storage object '{}' is already attached to VM '{}'. Clone the disk or create a snapshot before reusing it.",
+            object.name, conflicting_vm.name
+        )));
+    }
+
+    Ok(())
+}
+
+async fn ensure_vm_disk_attachments_can_start(pool: &sqlx::PgPool, vm_id: Uuid) -> Result<()> {
+    for disk in vm_disks::list_by_vm(pool, vm_id).await? {
+        let Some(storage_object_id) = disk.storage_object_id else {
+            continue;
+        };
+        let object = storage_objects::get(pool, storage_object_id).await?;
+        let storage_pool = storage_pools::get(pool, object.storage_pool_id).await?;
+        ensure_storage_object_can_be_attached(pool, &object, &storage_pool, Some(vm_id)).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_ip_address_is_available(
+    pool: &sqlx::PgPool,
+    network_id: Uuid,
+    ip_address: &str,
+) -> Result<()> {
+    if networks::get_allocation(pool, network_id, ip_address)
+        .await?
+        .is_some()
+    {
+        return Err(crate::errors::Error::Conflict(format!(
+            "IP address {ip_address} is already allocated on network {network_id}"
+        )));
+    }
+
+    Ok(())
+}
+
+async fn validate_requested_static_ips_are_available(
+    pool: &sqlx::PgPool,
+    networks: Option<&[crate::model::vms::NewVmNetwork]>,
+) -> Result<()> {
+    for net in networks.unwrap_or(&[]) {
+        if let (Some(network_id), Some(ip_address)) = (net.network_id, net.ip.as_deref()) {
+            ensure_ip_address_is_available(pool, network_id, ip_address).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn allocate_network_ip_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    pool: &sqlx::PgPool,
+    vm_id: Uuid,
+    network_id: Uuid,
+    requested_ip: Option<&str>,
+) -> Result<String> {
+    if let Some(ip_address) = requested_ip {
+        return networks::try_allocate_ip_tx(tx, network_id, ip_address, Some(vm_id))
+            .await?
+            .map(|allocation| allocation.ip_address)
+            .ok_or_else(|| {
+                crate::errors::Error::Conflict(format!(
+                    "IP address {ip_address} is already allocated on network {network_id}"
+                ))
+            });
+    }
+
+    loop {
+        let ip = networks::next_available_ip(pool, network_id)
+            .await?
+            .ok_or_else(|| {
+                crate::errors::Error::UnprocessableEntity("No available IPs in network".into())
+            })?;
+
+        if let Some(allocation) =
+            networks::try_allocate_ip_tx(tx, network_id, &ip, Some(vm_id)).await?
+        {
+            return Ok(allocation.ip_address);
+        }
+    }
+}
+
+async fn delete_nic_and_release_ip(pool: &sqlx::PgPool, nic: &NetworkInterface) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    network_interfaces::delete_tx(&mut tx, nic.id).await?;
+
+    if let (Some(network_id), Some(ip_address)) = (nic.network_id, nic.ip_address.as_deref()) {
+        networks::release_ip_by_network_and_address_tx(&mut tx, network_id, ip_address).await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Resolve the host that a VM is assigned to, for routing subsequent operations.
 async fn host_for_vm(env: &App, vm_id: Uuid) -> Result<Host> {
     let vm = vms::get(env.pool(), vm_id).await?;
@@ -569,6 +732,7 @@ pub(crate) async fn create_vm_internal(env: &App, vm: ResolvedNewVm) -> Result<U
         .clone()
         .unwrap_or_else(|| env.control_plane_architecture().to_string());
     persist_vm_scheduling_metadata(&mut vm, &target_architecture);
+    validate_requested_static_ips_are_available(env.pool(), vm.networks.as_deref()).await?;
 
     let mut tx = env.pool().begin().await?;
     let host = pick_host(&mut tx, env, &scheduling_request).await?;
@@ -581,9 +745,14 @@ pub(crate) async fn create_vm_internal(env: &App, vm: ResolvedNewVm) -> Result<U
             scheduling_request.storage_pool_id,
         )
         .await?;
+        let object = storage_objects::get_for_update(&mut tx, root_disk_object_id).await?;
+        let storage_pool = storage_pools::get(env.pool(), object.storage_pool_id).await?;
+        ensure_storage_object_can_be_attached_tx(&mut tx, env.pool(), &object, &storage_pool, None)
+            .await?;
     }
 
     let id = vms::create_tx(&mut tx, &vm, Some(host.id)).await?;
+    register_static_ips_tx(&mut tx, env.pool(), id, vm.networks.as_deref()).await?;
     if let Some(root_disk_object_id) = vm.root_disk_object_id {
         create_root_disk_record(&mut tx, id, root_disk_object_id).await?;
     }
@@ -591,18 +760,15 @@ pub(crate) async fn create_vm_internal(env: &App, vm: ResolvedNewVm) -> Result<U
     for net in vm.networks.as_deref().unwrap_or(&[]) {
         network_interfaces::create(&mut tx, id, net).await?;
     }
+    if let Some(network_id) = vm.network_id {
+        create_managed_network_interface_tx(&mut tx, env.pool(), id, network_id).await?;
+    }
 
     if let Some(ref accel) = accel_config {
         allocate_vm_gpus(&mut tx, host.id, id, accel).await?;
     }
 
     tx.commit().await?;
-
-    register_static_ips(env.pool(), id, vm.networks.as_deref()).await?;
-
-    if let Some(network_id) = vm.network_id {
-        create_managed_network_interface(env.pool(), id, network_id).await?;
-    }
 
     Ok(id)
 }
@@ -626,6 +792,7 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
         .clone()
         .unwrap_or_else(|| env.control_plane_architecture().to_string());
     persist_vm_scheduling_metadata(&mut vm, &target_architecture);
+    validate_requested_static_ips_are_available(env.pool(), vm.networks.as_deref()).await?;
 
     let mut tx = env.pool().begin().await?;
     let host = pick_host(&mut tx, &env, &scheduling_request).await?;
@@ -638,6 +805,10 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
             scheduling_request.storage_pool_id,
         )
         .await?;
+        let object = storage_objects::get_for_update(&mut tx, root_disk_object_id).await?;
+        let storage_pool = storage_pools::get(env.pool(), object.storage_pool_id).await?;
+        ensure_storage_object_can_be_attached_tx(&mut tx, env.pool(), &object, &storage_pool, None)
+            .await?;
     }
 
     // The selected host must have an OverlayBD storage pool for OCI image boot.
@@ -752,10 +923,14 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
 
     // Create VM row with PENDING status
     let vm_id = vms::create_tx_with_status(&mut tx, &vm, Some(host.id), VmStatus::Pending).await?;
+    register_static_ips_tx(&mut tx, env.pool(), vm_id, vm.networks.as_deref()).await?;
 
     // Store network interfaces in the transaction
     for net in vm.networks.as_deref().unwrap_or(&[]) {
         network_interfaces::create(&mut tx, vm_id, net).await?;
+    }
+    if let Some(network_id) = vm.network_id {
+        create_managed_network_interface_tx(&mut tx, env.pool(), vm_id, network_id).await?;
     }
     if let Some(root_disk_object_id) = vm.root_disk_object_id {
         create_root_disk_record(&mut tx, vm_id, root_disk_object_id).await?;
@@ -767,15 +942,6 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
     }
 
     tx.commit().await?;
-
-    // For any explicit networks with a static IP + network_id, register in IPAM.
-    register_static_ips(env.pool(), vm_id, vm.networks.as_deref()).await?;
-
-    // If network_id is provided, allocate an IP and create a default interface.
-    // This mirrors the synchronous create path so async image-based VMs get managed networking.
-    if let Some(network_id) = vm.network_id {
-        create_managed_network_interface(env.pool(), vm_id, network_id).await?;
-    }
 
     // Create job record
     let job = jobs::create(
@@ -825,38 +991,34 @@ async fn create_with_image(env: App, vm: ResolvedNewVm) -> Result<axum::response
 }
 
 /// Allocate an IP from the given network and create the default network interface record for a VM.
-async fn create_managed_network_interface(
+async fn create_managed_network_interface_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     pool: &sqlx::PgPool,
     vm_id: uuid::Uuid,
     network_id: uuid::Uuid,
 ) -> Result<(), crate::errors::Error> {
-    let ip = networks::next_available_ip(pool, network_id)
-        .await?
-        .ok_or_else(|| {
-            crate::errors::Error::UnprocessableEntity("No available IPs in network".into())
-        })?;
-    networks::allocate_ip(pool, network_id, &ip, Some(vm_id)).await?;
+    let ip = allocate_network_ip_tx(tx, pool, vm_id, network_id, None).await?;
     let net = crate::model::vms::NewVmNetwork {
         id: "net0".to_string(),
         network_id: Some(network_id),
         ip: Some(ip),
         ..Default::default()
     };
-    let mut tx = pool.begin().await?;
-    network_interfaces::create(&mut tx, vm_id, &net).await?;
-    tx.commit().await?;
+    network_interfaces::create(tx, vm_id, &net).await?;
+
     Ok(())
 }
 
 /// Helper to register explicitly provided static IPs in IPAM during VM creation.
-async fn register_static_ips(
+async fn register_static_ips_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     pool: &sqlx::PgPool,
     vm_id: Uuid,
     networks: Option<&[crate::model::vms::NewVmNetwork]>,
 ) -> Result<()> {
     for net in networks.unwrap_or(&[]) {
         if let (Some(net_id), Some(ip)) = (net.network_id, &net.ip) {
-            networks::allocate_ip(pool, net_id, ip, Some(vm_id)).await?;
+            allocate_network_ip_tx(tx, pool, vm_id, net_id, Some(ip)).await?;
         }
     }
     Ok(())
@@ -1084,32 +1246,49 @@ pub(crate) async fn start_vm_internal(env: &App, vm_id: Uuid) -> Result<Uuid> {
     if let Some(architecture) = persisted_vm_architecture(&vm) {
         ensure_host_matches_architecture(&host, &architecture)?;
     }
+    ensure_vm_disk_attachments_can_start(env.pool(), vm_id).await?;
 
     // Set VM status to Pending to prevent double-start
     vms::update_status(env.pool(), vm_id, VmStatus::Pending).await?;
 
-    // Build create request eagerly (before spawning) so we can return errors synchronously
-    let create_req = if original_status == VmStatus::Created {
-        Some(build_create_vm_request(env, &vm).await.map_err(|e| {
-            tracing::error!("Failed to build CreateVmRequest for {}: {}", vm_id, e);
-            e
-        })?)
-    } else {
-        None
-    };
+    let start_setup: Result<(Option<CreateVmRequest>, Uuid)> = async {
+        let create_req = if original_status == VmStatus::Created {
+            Some(build_create_vm_request(env, &vm).await.map_err(|e| {
+                tracing::error!("Failed to build CreateVmRequest for {}: {}", vm_id, e);
+                e
+            })?)
+        } else {
+            None
+        };
 
-    // Create job record
-    let job = jobs::create(
-        env.pool(),
-        NewJob {
-            job_type: JobType::VmStart,
-            description: Some(format!("Starting VM {}", vm.name)),
-            resource_id: Some(vm_id),
-            resource_type: Some(jobs::resource_types::VM.to_string()),
-        },
-    )
-    .await?;
-    let job_id = job.id;
+        let job = jobs::create(
+            env.pool(),
+            NewJob {
+                job_type: JobType::VmStart,
+                description: Some(format!("Starting VM {}", vm.name)),
+                resource_id: Some(vm_id),
+                resource_type: Some(jobs::resource_types::VM.to_string()),
+            },
+        )
+        .await?;
+
+        Ok((create_req, job.id))
+    }
+    .await;
+
+    let (create_req, job_id) = match start_setup {
+        Ok(values) => values,
+        Err(err) => {
+            if let Err(revert_err) = vms::update_status(env.pool(), vm_id, original_status).await {
+                error!(
+                    vm_id = %vm_id,
+                    error = %revert_err,
+                    "Failed to restore VM status after start preflight failure"
+                );
+            }
+            return Err(err);
+        }
+    };
 
     let db_pool = env.pool_arc();
 
@@ -1216,7 +1395,11 @@ async fn ensure_vm_start_allowed(
         }
         Ok(_) => Ok(()),
         Err(e) => Err(format!("failed to reload sandbox before start: {e}")),
-    }
+    }?;
+
+    ensure_vm_disk_attachments_can_start(pool, vm_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[utoipa::path(
@@ -1722,21 +1905,6 @@ pub async fn delete(
     // Release any allocated GPUs before deleting
     if let Err(e) = host_gpus::deallocate_by_vm(env.pool(), vm_id).await {
         warn!("Failed to deallocate GPUs for VM {}: {}", vm_id, e);
-    }
-
-    // Release IP allocations so they can be reused
-    match networks::list_allocations_by_vm(env.pool(), vm_id).await {
-        Ok(allocs) => {
-            for alloc in allocs {
-                if let Err(e) = networks::release_ip(env.pool(), alloc.id).await {
-                    warn!(
-                        "Failed to release IP allocation {} for VM {}: {}",
-                        alloc.id, vm_id, e
-                    );
-                }
-            }
-        }
-        Err(e) => warn!("Failed to list IP allocations for VM {}: {}", vm_id, e),
     }
 
     // Only call delete_vm on the node if the VM was ever provisioned there
@@ -2428,7 +2596,22 @@ pub async fn attach_disk(
     // For Running/Shutdown VMs the disk is applied immediately via gRPC, so the
     // VM's host must already have the pool. For Created VMs the disk is only
     // recorded in the DB and the check is deferred to VM start time.
-    let obj = storage_objects::get(env.pool(), req.storage_object_id).await?;
+    let existing = vm_disks::list_by_vm(env.pool(), vm_id).await?;
+    let logical_name = match req.logical_name.clone() {
+        Some(name) => name,
+        None => next_disk_id(&existing),
+    };
+    let boot_order = req.boot_order.unwrap_or_else(|| {
+        existing
+            .iter()
+            .filter_map(|d| d.boot_order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0)
+    });
+
+    let mut tx = env.pool().begin().await?;
+    let obj = storage_objects::get_for_update(&mut tx, req.storage_object_id).await?;
     let pool = storage_pools::get(env.pool(), obj.storage_pool_id).await?;
     if pool.pool_type == storage_pools::StoragePoolType::Local
         && matches!(vm.status, VmStatus::Running | VmStatus::Shutdown)
@@ -2446,30 +2629,7 @@ pub async fn attach_disk(
             )));
         }
     }
-
-    let existing = vm_disks::list_by_vm(env.pool(), vm_id).await?;
-    if existing
-        .iter()
-        .any(|d| d.storage_object_id == Some(req.storage_object_id))
-    {
-        return Err(crate::errors::Error::Conflict(format!(
-            "Storage object {} is already attached to this VM",
-            req.storage_object_id
-        )));
-    }
-
-    let logical_name = match req.logical_name.clone() {
-        Some(name) => name,
-        None => next_disk_id(&existing),
-    };
-    let boot_order = req.boot_order.unwrap_or_else(|| {
-        existing
-            .iter()
-            .filter_map(|d| d.boot_order)
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
-    });
+    ensure_storage_object_can_be_attached_tx(&mut tx, env.pool(), &obj, &pool, Some(vm_id)).await?;
     let disk_record = NewVmDisk {
         vm_id,
         storage_object_id: Some(req.storage_object_id),
@@ -2480,7 +2640,8 @@ pub async fn attach_disk(
         ..Default::default()
     };
 
-    let id = vm_disks::create(env.pool(), &disk_record).await?;
+    let id = vm_disks::create_tx(&mut tx, &disk_record).await?;
+    tx.commit().await?;
     let disk = vm_disks::get(env.pool(), id).await?;
 
     // If the VM is running or shutdown, apply the disk via gRPC immediately.
@@ -2798,36 +2959,29 @@ pub async fn add_nic(
         )));
     }
 
-    // IP allocation for managed networking
-    let req = if let Some(network_id) = req.network_id {
-        if req.ip.is_none() {
-            let ip = networks::next_available_ip(env.pool(), network_id)
-                .await?
-                .ok_or_else(|| {
-                    crate::errors::Error::UnprocessableEntity("No available IPs in network".into())
-                })?;
-            networks::allocate_ip(env.pool(), network_id, &ip, Some(vm_id)).await?;
+    let nic_id: Uuid = {
+        let mut tx = env.pool().begin().await?;
+        let requested_ip = req.ip.clone();
+        let req = if let Some(network_id) = req.network_id {
+            let ip = allocate_network_ip_tx(
+                &mut tx,
+                env.pool(),
+                vm_id,
+                network_id,
+                requested_ip.as_deref(),
+            )
+            .await?;
             NewVmNetwork {
                 ip: Some(ip),
                 ..req
             }
         } else {
-            networks::allocate_ip(
-                env.pool(),
-                network_id,
-                req.ip.as_deref().unwrap(),
-                Some(vm_id),
-            )
-            .await?;
             req
-        }
-    } else {
-        req
+        };
+        let nic_id = network_interfaces::create(&mut tx, vm_id, &req).await?;
+        tx.commit().await?;
+        nic_id
     };
-
-    let mut tx = env.pool().begin().await?;
-    let nic_id = network_interfaces::create(&mut tx, vm_id, &req).await?;
-    tx.commit().await?;
 
     let nic = network_interfaces::get(env.pool(), nic_id).await?;
 
@@ -2839,7 +2993,7 @@ pub async fn add_nic(
             .await
         {
             error!("Failed to hotplug NIC to running VM {}: {}", vm_id, e);
-            if let Err(delete_err) = network_interfaces::delete(env.pool(), nic.id).await {
+            if let Err(delete_err) = delete_nic_and_release_ip(env.pool(), &nic).await {
                 error!(
                     "Failed to clean up network_interface record {} after hotplug failure: {}",
                     nic.id, delete_err
@@ -2930,7 +3084,7 @@ pub async fn remove_nic(
             })?;
     }
 
-    network_interfaces::delete(env.pool(), nic.id).await?;
+    delete_nic_and_release_ip(env.pool(), &nic).await?;
 
     Ok(ApiResponse {
         data: (),

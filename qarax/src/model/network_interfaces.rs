@@ -283,6 +283,14 @@ pub async fn delete(pool: &PgPool, interface_id: Uuid) -> Result<(), sqlx::Error
     Ok(())
 }
 
+pub async fn delete_tx(tx: &mut PgTransaction<'_>, interface_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM network_interfaces WHERE id = $1")
+        .bind(interface_id)
+        .execute(tx.as_mut())
+        .await?;
+    Ok(())
+}
+
 pub async fn get_by_device_id(
     pool: &PgPool,
     vm_id: Uuid,

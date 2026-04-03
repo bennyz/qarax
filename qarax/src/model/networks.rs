@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Type};
+use sqlx::{PgPool, Postgres, Transaction, Type};
 use strum_macros::{Display, EnumString};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -99,6 +99,8 @@ impl From<IpAllocationRow> for IpAllocation {
         }
     }
 }
+
+pub type PgTransaction<'a> = Transaction<'a, Postgres>;
 
 // CRUD
 
@@ -260,6 +262,29 @@ RETURNING id, network_id, ip_address::text, vm_id, allocated_at
     Ok(row.into())
 }
 
+pub async fn try_allocate_ip_tx(
+    tx: &mut PgTransaction<'_>,
+    network_id: Uuid,
+    ip_address: &str,
+    vm_id: Option<Uuid>,
+) -> Result<Option<IpAllocation>, sqlx::Error> {
+    let row = sqlx::query_as::<_, IpAllocationRow>(
+        r#"
+INSERT INTO ip_allocations (network_id, ip_address, vm_id)
+VALUES ($1, $2::inet, $3)
+ON CONFLICT (network_id, ip_address) DO NOTHING
+RETURNING id, network_id, ip_address::text, vm_id, allocated_at
+        "#,
+    )
+    .bind(network_id)
+    .bind(ip_address)
+    .bind(vm_id)
+    .fetch_optional(tx.as_mut())
+    .await?;
+
+    Ok(row.map(Into::into))
+}
+
 pub async fn list_allocations_by_vm(
     pool: &PgPool,
     vm_id: Uuid,
@@ -278,6 +303,26 @@ WHERE vm_id = $1
     Ok(rows.into_iter().map(|r| r.into()).collect())
 }
 
+pub async fn get_allocation(
+    pool: &PgPool,
+    network_id: Uuid,
+    ip_address: &str,
+) -> Result<Option<IpAllocation>, sqlx::Error> {
+    let row = sqlx::query_as::<_, IpAllocationRow>(
+        r#"
+SELECT id, network_id, ip_address::text, vm_id, allocated_at
+FROM ip_allocations
+WHERE network_id = $1 AND ip_address = $2::inet
+        "#,
+    )
+    .bind(network_id)
+    .bind(ip_address)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(Into::into))
+}
+
 pub async fn release_ip(pool: &PgPool, allocation_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM ip_allocations WHERE id = $1")
         .bind(allocation_id)
@@ -285,6 +330,36 @@ pub async fn release_ip(pool: &PgPool, allocation_id: Uuid) -> Result<(), sqlx::
         .await?;
 
     Ok(())
+}
+
+pub async fn release_ip_by_network_and_address(
+    pool: &PgPool,
+    network_id: Uuid,
+    ip_address: &str,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM ip_allocations WHERE network_id = $1 AND ip_address = $2::inet")
+            .bind(network_id)
+            .bind(ip_address)
+            .execute(pool)
+            .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn release_ip_by_network_and_address_tx(
+    tx: &mut PgTransaction<'_>,
+    network_id: Uuid,
+    ip_address: &str,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM ip_allocations WHERE network_id = $1 AND ip_address = $2::inet")
+            .bind(network_id)
+            .bind(ip_address)
+            .execute(tx.as_mut())
+            .await?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn list_allocations(

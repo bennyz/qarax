@@ -58,12 +58,12 @@ ensure_stack() {
 
 # Print the path to the qarax CLI binary, searching PATH then the cargo build tree.
 find_qarax_bin() {
-	if command -v qarax &>/dev/null; then
-		echo "qarax"
-	elif [[ -x "${REPO_ROOT}/target/${MUSL_TARGET}/debug/qarax" ]]; then
+	if [[ -x "${REPO_ROOT}/target/${MUSL_TARGET}/debug/qarax" ]]; then
 		echo "${REPO_ROOT}/target/${MUSL_TARGET}/debug/qarax"
 	elif [[ -x "${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax" ]]; then
 		echo "${REPO_ROOT}/target/${MUSL_TARGET}/release/qarax"
+	elif command -v qarax &>/dev/null; then
+		echo "qarax"
 	else
 		echo ""
 	fi

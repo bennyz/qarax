@@ -1,0 +1,65 @@
+name: Nightly
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  OTEL_CARGO_FEATURES: "qarax/otel qarax-node/otel"
+  TARGET_TRIPLE: x86_64-unknown-linux-musl
+
+jobs:
+  nightly:
+    name: Build and Publish Nightly Artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools protobuf-compiler
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --features "${OTEL_CARGO_FEATURES}"
+        env:
+          SQLX_OFFLINE: true
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/${TARGET_TRIPLE}/release/qarax-server artifacts/
+          cp target/${TARGET_TRIPLE}/release/qarax-node artifacts/
+          cp target/${TARGET_TRIPLE}/release/qarax-init artifacts/
+          cp target/${TARGET_TRIPLE}/release/qarax artifacts/
+
+      - name: Delete existing nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete nightly --yes --cleanup-tag || true
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create nightly \
+            --prerelease \
+            --title "Nightly $(date -u +%Y-%m-%d)" \
+            --notes "Nightly build from \`master\` branch.
+
+          **Commit:** \`${{ github.sha }}\`
+          **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          These are static musl binaries for \`${TARGET_TRIPLE}\`." \
+            artifacts/qarax-server \
+            artifacts/qarax-node \
+            artifacts/qarax-init \
+            artifacts/qarax

@@ -100,6 +100,8 @@ services:
       VM_CMDLINE: ${VM_CMDLINE:-console=ttyS0 reboot=k panic=1}
       VM_ROOTFS: ${PRODUCTION_ROOTFS:-}
       VM_FIRMWARE: ${VM_FIRMWARE:-/usr/share/cloud-hypervisor/CLOUDHV.fd}
+      # Reduce disk headroom for CI — runners have limited free disk
+      SCHEDULING_DISK_HEADROOM_BYTES: ${SCHEDULING_DISK_HEADROOM_BYTES:-1073741824}
     ports:
       - "8000:8000"
     depends_on:

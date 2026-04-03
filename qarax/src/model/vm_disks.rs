@@ -218,6 +218,78 @@ ORDER BY boot_order NULLS LAST, device_path
     Ok(vm_disks)
 }
 
+pub async fn list_by_storage_object(
+    pool: &PgPool,
+    storage_object_id: Uuid,
+) -> Result<Vec<VmDisk>, sqlx::Error> {
+    let vm_disks: Vec<VmDiskRow> = sqlx::query_as::<_, VmDiskRow>(
+        r#"
+SELECT id,
+        vm_id,
+        storage_object_id,
+        logical_name,
+        device_path,
+        boot_order,
+        read_only,
+        direct,
+        vhost_user,
+        vhost_socket,
+        num_queues,
+        queue_size,
+        rate_limiter,
+        rate_limit_group,
+        pci_segment,
+        serial_number,
+        config,
+        upper_storage_object_id
+FROM vm_disks
+WHERE storage_object_id = $1
+ORDER BY vm_id, boot_order NULLS LAST, device_path
+        "#,
+    )
+    .bind(storage_object_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(vm_disks.into_iter().map(Into::into).collect())
+}
+
+pub async fn list_by_storage_object_tx(
+    tx: &mut PgTransaction<'_>,
+    storage_object_id: Uuid,
+) -> Result<Vec<VmDisk>, sqlx::Error> {
+    let vm_disks: Vec<VmDiskRow> = sqlx::query_as::<_, VmDiskRow>(
+        r#"
+SELECT id,
+       vm_id,
+       storage_object_id,
+       logical_name,
+       device_path,
+       boot_order,
+       read_only,
+       direct,
+       vhost_user,
+       vhost_socket,
+       num_queues,
+       queue_size,
+       rate_limiter,
+       rate_limit_group,
+       pci_segment,
+       serial_number,
+       config,
+       upper_storage_object_id
+FROM vm_disks
+WHERE storage_object_id = $1
+ORDER BY vm_id, boot_order NULLS LAST, device_path
+        "#,
+    )
+    .bind(storage_object_id)
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    Ok(vm_disks.into_iter().map(Into::into).collect())
+}
+
 pub async fn create(pool: &PgPool, disk: &NewVmDisk) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::new_v4();
 
