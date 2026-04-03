@@ -558,6 +558,14 @@ if [[ -n "${REBUILD}" ]]; then
 	compose_cmd build --no-cache "${BUILD_SERVICES[@]}"
 fi
 force_remove_nfs_container
+
+# Preflight: ensure port 5432 is free before starting postgres
+if ss -tlnp 2>/dev/null | grep -q ':5432 ' || lsof -i :5432 -sTCP:LISTEN -t 2>/dev/null | grep -q .; then
+	echo -e "${RED}ERROR: Port 5432 is already in use.${NC}" >&2
+	echo "Stop the conflicting process first (e.g. 'docker stop qarax-test-postgres') then retry." >&2
+	exit 1
+fi
+
 compose_cmd up -d --build "${UP_SERVICES[@]}"
 compose_cmd up -d --force-recreate "${FORCE_RECREATE_SERVICES[@]}"
 

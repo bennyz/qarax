@@ -18,7 +18,6 @@ class VmImagePreflightResponse:
     """
     Attributes:
         architecture (str):
-        backend (str):
         bootable (bool):
         checks (list[VmImagePreflightCheck]):
         host_id (UUID):
@@ -27,7 +26,6 @@ class VmImagePreflightResponse:
     """
 
     architecture: str
-    backend: str
     bootable: bool
     checks: list[VmImagePreflightCheck]
     host_id: UUID
@@ -37,8 +35,6 @@ class VmImagePreflightResponse:
 
     def to_dict(self) -> dict[str, Any]:
         architecture = self.architecture
-
-        backend = self.backend
 
         bootable = self.bootable
 
@@ -58,7 +54,6 @@ class VmImagePreflightResponse:
         field_dict.update(
             {
                 "architecture": architecture,
-                "backend": backend,
                 "bootable": bootable,
                 "checks": checks,
                 "host_id": host_id,
@@ -75,8 +70,6 @@ class VmImagePreflightResponse:
 
         d = dict(src_dict)
         architecture = d.pop("architecture")
-
-        backend = d.pop("backend")
 
         bootable = d.pop("bootable")
 
@@ -95,7 +88,6 @@ class VmImagePreflightResponse:
 
         vm_image_preflight_response = cls(
             architecture=architecture,
-            backend=backend,
             bootable=bootable,
             checks=checks,
             host_id=host_id,

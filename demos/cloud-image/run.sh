@@ -37,7 +37,7 @@ POOL_PATH="/var/lib/qarax/cloud-image-pool"
 DISK_NAME="ubuntu-22.04-cloud"
 IMAGE_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
 VCPUS=2
-MEMORY_MIB=1024
+MEMORY_GIB=1
 SERVER="${QARAX_SERVER:-http://localhost:8000}"
 SSH_PUB_KEY="${SSH_PUB_KEY:-$(cat ~/.ssh/id_rsa.pub 2>/dev/null || echo '')}"
 PREALLOCATE=false
@@ -74,7 +74,7 @@ while [[ $# -gt 0 ]]; do
 		shift 2
 		;;
 	--memory)
-		MEMORY_MIB="$2"
+		MEMORY_GIB="$2"
 		shift 2
 		;;
 	--ssh-key)
@@ -113,6 +113,7 @@ echo "=== Cloud Image VM Demo ==="
 echo "  Image URL:  $IMAGE_URL"
 echo "  VM name:    $VM_NAME"
 echo "  Pool:       $POOL_NAME ($POOL_PATH)"
+echo "  Memory:     ${MEMORY_GIB} GiB"
 echo "  Preallocate: $PREALLOCATE"
 echo ""
 
@@ -164,12 +165,16 @@ growpart:
   devices: ['/']
 resize_rootfs: true"
 
+USER_DATA_FILE="$(mktemp /tmp/qarax-cloud-init-XXXXXX.yaml)"
+trap 'rm -f "$USER_DATA_FILE"' EXIT
+printf '%s\n' "$USER_DATA" >"$USER_DATA_FILE"
+
 VM_ID=$($QARAX vm create \
 	--name "$VM_NAME" \
 	--vcpus "$VCPUS" \
-	--memory "${MEMORY_MIB}MiB" \
+	--memory "${MEMORY_GIB}GiB" \
 	--root-disk "$DISK_NAME" \
-	--cloud-init-user-data "$USER_DATA" \
+	--cloud-init-user-data "$USER_DATA_FILE" \
 	--output json | jq -r '.vm_id')
 
 echo "  VM: $VM_ID"

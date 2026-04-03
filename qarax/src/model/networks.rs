@@ -260,6 +260,24 @@ RETURNING id, network_id, ip_address::text, vm_id, allocated_at
     Ok(row.into())
 }
 
+pub async fn list_allocations_by_vm(
+    pool: &PgPool,
+    vm_id: Uuid,
+) -> Result<Vec<IpAllocation>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, IpAllocationRow>(
+        r#"
+SELECT id, network_id, ip_address::text, vm_id, allocated_at
+FROM ip_allocations
+WHERE vm_id = $1
+        "#,
+    )
+    .bind(vm_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| r.into()).collect())
+}
+
 pub async fn release_ip(pool: &PgPool, allocation_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM ip_allocations WHERE id = $1")
         .bind(allocation_id)

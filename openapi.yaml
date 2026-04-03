@@ -896,12 +896,29 @@ paths:
       parameters:
       - name: name
         in: query
-        description: Optional name filter for list queries
+        description: Optional name filter
         required: false
         schema:
           type:
           - string
           - 'null'
+      - name: pool_id
+        in: query
+        description: Filter by storage pool UUID
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      - name: object_type
+        in: query
+        description: Filter by object type
+        required: false
+        schema:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/StorageObjectType'
       responses:
         '200':
           description: List all storage objects
@@ -1759,6 +1776,31 @@ paths:
         '500':
           description: Internal server error
   /vms/{vm_id}/nics:
+    get:
+      tags:
+      - vms
+      operationId: list_nics
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: List of NICs attached to the VM
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NetworkInterface'
+        '404':
+          description: VM not found
+        '500':
+          description: Internal server error
     post:
       tags:
       - vms
@@ -2111,7 +2153,7 @@ components:
         storage_object_id:
           type: string
           format: uuid
-          description: Storage object ID (must be `oci_image` type).
+          description: 'Storage object ID (any type: disk, oci_image, iso, etc.).'
     AttachHostRequest:
       type: object
       required:

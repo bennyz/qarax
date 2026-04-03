@@ -111,6 +111,7 @@ pub struct StorageObjectListQuery {
         vm::handler::console_attach,
         vm::handler::attach_disk,
         vm::handler::remove_disk,
+        vm::handler::list_nics,
         vm::handler::add_nic,
         vm::handler::remove_nic,
         vm::handler::resize_vm,
@@ -388,7 +389,10 @@ fn vms() -> Router {
             "/vms/{vm_id}/disks/{device_id}",
             axum::routing::delete(vm::handler::remove_disk),
         )
-        .route("/vms/{vm_id}/nics", post(vm::handler::add_nic))
+        .route(
+            "/vms/{vm_id}/nics",
+            get(vm::handler::list_nics).post(vm::handler::add_nic),
+        )
         .route(
             "/vms/{vm_id}/nics/{device_id}",
             axum::routing::delete(vm::handler::remove_nic),

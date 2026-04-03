@@ -1724,6 +1724,21 @@ pub async fn delete(
         warn!("Failed to deallocate GPUs for VM {}: {}", vm_id, e);
     }
 
+    // Release IP allocations so they can be reused
+    match networks::list_allocations_by_vm(env.pool(), vm_id).await {
+        Ok(allocs) => {
+            for alloc in allocs {
+                if let Err(e) = networks::release_ip(env.pool(), alloc.id).await {
+                    warn!(
+                        "Failed to release IP allocation {} for VM {}: {}",
+                        alloc.id, vm_id, e
+                    );
+                }
+            }
+        }
+        Err(e) => warn!("Failed to list IP allocations for VM {}: {}", vm_id, e),
+    }
+
     // Only call delete_vm on the node if the VM was ever provisioned there
     if vm.status != VmStatus::Created
         && vm.status != VmStatus::Pending
@@ -2017,15 +2032,25 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         }
     }
 
-    // Populate bridge field from host_networks if the VM has a host and network interfaces
+    // Populate bridge field from host_networks if the VM has a host and network interfaces.
+    // Return an error if a managed network is not attached to the scheduled host.
     if let Some(host_id) = vm.host_id {
         for (i, db_net) in db_networks.iter().enumerate() {
-            if let Some(net_id) = db_net.network_id
-                && let Ok(Some(bridge_name)) =
-                    networks::get_host_bridge(env.pool(), host_id, net_id).await
-                && let Some(net_config) = networks.get_mut(i)
-            {
-                net_config.bridge = Some(bridge_name);
+            if let Some(net_id) = db_net.network_id {
+                match networks::get_host_bridge(env.pool(), host_id, net_id).await {
+                    Ok(Some(bridge_name)) => {
+                        if let Some(net_config) = networks.get_mut(i) {
+                            net_config.bridge = Some(bridge_name);
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(crate::errors::Error::UnprocessableEntity(format!(
+                            "Network {} is not attached to host {}. Run 'network attach-host' first.",
+                            net_id, host_id
+                        )));
+                    }
+                    Err(e) => return Err(crate::errors::Error::Sqlx(e)),
+                }
             }
         }
     }
@@ -2353,7 +2378,7 @@ fn next_disk_id(existing: &[vm_disks::VmDisk]) -> String {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AttachDiskRequest {
-    /// Storage object ID (must be `oci_image` type).
+    /// Storage object ID (any type: disk, oci_image, iso, etc.).
     pub storage_object_id: Uuid,
     /// Logical device name inside the VM (e.g. "vda"); auto-generated if omitted.
     pub logical_name: Option<String>,
@@ -2829,6 +2854,32 @@ pub async fn add_nic(
         code: StatusCode::CREATED,
     }
     .into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/vms/{vm_id}/nics",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    responses(
+        (status = 200, description = "List of NICs attached to the VM", body = Vec<crate::model::network_interfaces::NetworkInterface>),
+        (status = 404, description = "VM not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env))]
+pub async fn list_nics(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+) -> Result<ApiResponse<Vec<network_interfaces::NetworkInterface>>> {
+    vms::get(env.pool(), vm_id).await?; // 404 if VM not found
+    let nics = network_interfaces::list_by_vm(env.pool(), vm_id).await?;
+    Ok(ApiResponse {
+        data: nics,
+        code: StatusCode::OK,
+    })
 }
 
 #[utoipa::path(
