@@ -1,4 +1,4 @@
-name: Nightly
+name: Latest
 
 on:
   push:
@@ -11,8 +11,8 @@ env:
   TARGET_TRIPLE: x86_64-unknown-linux-musl
 
 jobs:
-  nightly:
-    name: Build and Publish Nightly Artifacts
+  latest:
+    name: Build and Publish Latest Artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,19 +41,19 @@ jobs:
           cp target/${TARGET_TRIPLE}/release/qarax-init artifacts/
           cp target/${TARGET_TRIPLE}/release/qarax artifacts/
 
-      - name: Delete existing nightly release
+      - name: Delete existing latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete nightly --yes --cleanup-tag || true
+        run: gh release delete latest --yes --cleanup-tag || true
 
-      - name: Publish nightly release
+      - name: Publish latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create nightly \
+          gh release create latest \
             --prerelease \
-            --title "Nightly $(date -u +%Y-%m-%d)" \
-            --notes "Nightly build from \`master\` branch.
+            --title "Latest $(date -u +%Y-%m-%d)" \
+            --notes "Latest build from \`master\` branch.
 
           **Commit:** \`${{ github.sha }}\`
           **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
