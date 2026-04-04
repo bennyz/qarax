@@ -48,7 +48,7 @@ from qarax_api_client.models.new_sandbox import NewSandbox
 from qarax_api_client.models.sandbox_status import SandboxStatus
 
 QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
-SANDBOX_READY_TIMEOUT = int(os.getenv("SANDBOX_READY_TIMEOUT", "60"))
+SANDBOX_READY_TIMEOUT = int(os.getenv("SANDBOX_READY_TIMEOUT", "120"))
 TRANSFER_TIMEOUT = 30
 
 
