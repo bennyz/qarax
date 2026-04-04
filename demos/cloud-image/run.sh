@@ -34,10 +34,15 @@ VM_NAME="demo-cloud-image-vm"
 HOST_NAME="${QARAX_HOST:-local-node}"
 POOL_NAME="demo-cloud-image-pool"
 POOL_PATH="/var/lib/qarax/cloud-image-pool"
+NETWORK_NAME="demo-cloud-image-net"
+NETWORK_SUBNET="10.97.0.0/24"
+NETWORK_GATEWAY="10.97.0.1"
+BRIDGE_NAME="qci0"
+PARENT_INTERFACE=""
 DISK_NAME="ubuntu-22.04-cloud"
-IMAGE_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img"
 VCPUS=2
-MEMORY_MIB=1024
+MEMORY_GIB=1
 SERVER="${QARAX_SERVER:-http://localhost:8000}"
 SSH_PUB_KEY="${SSH_PUB_KEY:-$(cat ~/.ssh/id_rsa.pub 2>/dev/null || echo '')}"
 PREALLOCATE=false
@@ -57,6 +62,26 @@ while [[ $# -gt 0 ]]; do
 		POOL_PATH="$2"
 		shift 2
 		;;
+	--network-name)
+		NETWORK_NAME="$2"
+		shift 2
+		;;
+	--subnet)
+		NETWORK_SUBNET="$2"
+		shift 2
+		;;
+	--gateway)
+		NETWORK_GATEWAY="$2"
+		shift 2
+		;;
+	--bridge-name)
+		BRIDGE_NAME="$2"
+		shift 2
+		;;
+	--parent-interface)
+		PARENT_INTERFACE="$2"
+		shift 2
+		;;
 	--disk-name)
 		DISK_NAME="$2"
 		shift 2
@@ -74,7 +99,7 @@ while [[ $# -gt 0 ]]; do
 		shift 2
 		;;
 	--memory)
-		MEMORY_MIB="$2"
+		MEMORY_GIB="$2"
 		shift 2
 		;;
 	--ssh-key)
@@ -104,6 +129,33 @@ QARAX="$QARAX_BIN --server $SERVER"
 
 ensure_stack "$SERVER"
 
+wait_for_job() {
+	local job_id="$1"
+	local label="$2"
+
+	while true; do
+		local job_json status progress
+		job_json=$($QARAX job get "$job_id" --output json)
+		status=$(jq -r '.status' <<<"$job_json")
+		case "$status" in
+		completed)
+			echo "  ${label}: completed"
+			return 0
+			;;
+		failed)
+			echo "  ${label}: failed" >&2
+			jq -r '.error // "unknown error"' <<<"$job_json" >&2
+			return 1
+			;;
+		*)
+			progress=$(jq -r '.progress // 0' <<<"$job_json")
+			echo -ne "\r  ${label}: [${status}] ${progress}%   "
+			sleep 2
+			;;
+		esac
+	done
+}
+
 if [[ -z "$SSH_PUB_KEY" ]]; then
 	echo "Error: no SSH public key found. Set SSH_PUB_KEY or ensure ~/.ssh/id_rsa.pub exists." >&2
 	exit 1
@@ -113,6 +165,8 @@ echo "=== Cloud Image VM Demo ==="
 echo "  Image URL:  $IMAGE_URL"
 echo "  VM name:    $VM_NAME"
 echo "  Pool:       $POOL_NAME ($POOL_PATH)"
+echo "  Network:    $NETWORK_NAME ($NETWORK_SUBNET)"
+echo "  Memory:     ${MEMORY_GIB} GiB"
 echo "  Preallocate: $PREALLOCATE"
 echo ""
 
@@ -122,14 +176,40 @@ echo "→ Creating storage pool '$POOL_NAME'..."
 POOL_ID=$($QARAX storage-pool create \
 	--name "$POOL_NAME" \
 	--pool-type local \
-	--config "{\"path\":\"$POOL_PATH\"}" \
+	--path "$POOL_PATH" \
 	--host "$HOST_NAME" \
 	--output json | jq -r '.pool_id' 2>/dev/null ||
 	$QARAX storage-pool list --output json | jq -r ".[] | select(.name==\"$POOL_NAME\") | .id")
 
 echo "  Pool: $POOL_ID"
 
-# ── Step 2: Download cloud image into the pool ────────────────────────────────
+# ── Step 2: Network ────────────────────────────────────────────────────────────
+
+echo "→ Creating network '$NETWORK_NAME'..."
+NETWORK_ID=$($QARAX network create \
+	--name "$NETWORK_NAME" \
+	--subnet "$NETWORK_SUBNET" \
+	--gateway "$NETWORK_GATEWAY" \
+	--output json | jq -r '.network_id' 2>/dev/null ||
+	$QARAX network list --output json | jq -r ".[] | select(.name==\"$NETWORK_NAME\") | .id")
+
+echo "  Network: $NETWORK_ID"
+
+echo "→ Attaching network to host '$HOST_NAME'..."
+if [[ -n "$PARENT_INTERFACE" ]]; then
+	$QARAX network attach-host \
+		--network "$NETWORK_NAME" \
+		--host "$HOST_NAME" \
+		--bridge-name "$BRIDGE_NAME" \
+		--parent-interface "$PARENT_INTERFACE"
+else
+	$QARAX network attach-host \
+		--network "$NETWORK_NAME" \
+		--host "$HOST_NAME" \
+		--bridge-name "$BRIDGE_NAME"
+fi
+
+# ── Step 3: Download cloud image into the pool ────────────────────────────────
 
 echo "→ Downloading cloud image into pool (this may take a few minutes)..."
 
@@ -146,9 +226,13 @@ DISK_RESULT=$($QARAX storage-pool create-disk \
 	--output json)
 
 DISK_ID=$(echo "$DISK_RESULT" | jq -r '.storage_object_id')
+DISK_JOB_ID=$(echo "$DISK_RESULT" | jq -r '.job_id // empty')
 echo "  Disk: $DISK_ID"
+if [[ -n "$DISK_JOB_ID" ]]; then
+	wait_for_job "$DISK_JOB_ID" "Disk download"
+fi
 
-# ── Step 3: Create VM with the disk as root + cloud-init ──────────────────────
+# ── Step 4: Create VM with the disk as root + cloud-init ──────────────────────
 
 echo "→ Creating VM '$VM_NAME'..."
 
@@ -157,35 +241,62 @@ users:
   - name: qarax
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
-    ssh_authorized_keys:
-      - $SSH_PUB_KEY
+     ssh_authorized_keys:
+       - $SSH_PUB_KEY
 growpart:
   mode: auto
   devices: ['/']
-resize_rootfs: true"
+resize_rootfs: true
+runcmd:
+  - [sh, -c, 'echo demo-cloud-image > /var/tmp/index.html']
+  - [sh, -c, 'nohup python3 -m http.server 8080 --directory /var/tmp >/var/log/qarax-demo-http.log 2>&1 &']"
+
+USER_DATA_FILE="$(mktemp /tmp/qarax-cloud-init-XXXXXX.yaml)"
+trap 'rm -f "$USER_DATA_FILE"' EXIT
+printf '%s\n' "$USER_DATA" >"$USER_DATA_FILE"
 
 VM_ID=$($QARAX vm create \
 	--name "$VM_NAME" \
 	--vcpus "$VCPUS" \
-	--memory "${MEMORY_MIB}MiB" \
-	--root-disk "$DISK_NAME" \
-	--cloud-init-user-data "$USER_DATA" \
+	--memory "${MEMORY_GIB}GiB" \
+	--boot-mode firmware \
+	--root-disk "$DISK_ID" \
+	--network "$NETWORK_NAME" \
+	--cloud-init-user-data "$USER_DATA_FILE" \
 	--output json | jq -r '.vm_id')
 
 echo "  VM: $VM_ID"
 
-# ── Step 4: Start VM ──────────────────────────────────────────────────────────
+# ── Step 5: Start VM ──────────────────────────────────────────────────────────
 
 echo "→ Starting VM..."
 $QARAX vm start "$VM_NAME"
+VM_IP=$($QARAX network list-ips "$NETWORK_NAME" --output json |
+	jq -r ".[] | select(.vm_id==\"$VM_ID\") | .ip_address" |
+	head -n1)
+VM_IP="${VM_IP%/32}"
 
 echo ""
 echo "=== Done ==="
 echo "VM '$VM_NAME' is booting."
-echo "cloud-init will set up the 'qarax' user with your SSH key on first boot."
+echo "cloud-init will set up the 'qarax' user with your SSH key on first boot and"
+echo "start a tiny HTTP server on port 8080."
 echo ""
-echo "Connect once the VM has an IP:"
-echo "  ssh qarax@<vm-ip>"
+if [[ -n "$VM_IP" ]]; then
+	echo "Allocated IP: $VM_IP"
+fi
 echo ""
-echo "To view the VM:"
+if [[ -n "$PARENT_INTERFACE" ]]; then
+	echo "The network is bridged to '$PARENT_INTERFACE', so the VM should be reachable"
+	echo "from your LAN once cloud-init finishes:"
+	echo "  curl http://$VM_IP:8080"
+	echo "  ssh qarax@$VM_IP"
+else
+	echo "Compose mode note: Qarax bridge networks live inside the qarax-node namespace."
+	echo "Verify reachability from the node container:"
+	echo "  docker exec e2e-qarax-node-1 bash -lc 'timeout 3 bash -lc \"</dev/tcp/$VM_IP/22\" && echo ssh-open'"
+	echo "  docker exec e2e-qarax-node-1 curl http://$VM_IP:8080"
+fi
+echo ""
+echo "To inspect the VM:"
 echo "  $QARAX vm get $VM_NAME"

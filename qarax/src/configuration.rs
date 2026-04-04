@@ -196,6 +196,19 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
             "vm_defaults.firmware",
             std::env::var("VM_FIRMWARE").ok().filter(|s| !s.is_empty()),
         )?
+        // Override scheduling settings from environment variables if set and non-empty
+        .set_override_option(
+            "scheduling.disk_headroom_bytes",
+            std::env::var("SCHEDULING_DISK_HEADROOM_BYTES")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        )?
+        .set_override_option(
+            "scheduling.memory_health_floor_bytes",
+            std::env::var("SCHEDULING_MEMORY_HEALTH_FLOOR_BYTES")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        )?
         // Override telemetry settings from environment variables
         .set_override_option(
             "telemetry.otel_enabled",

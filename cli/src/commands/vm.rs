@@ -56,8 +56,8 @@ enum VmCommand {
         /// Maximum vCPUs (defaults to --vcpus)
         #[arg(long)]
         max_vcpus: Option<i32>,
-        /// Memory size in bytes
-        #[arg(long)]
+        /// Memory size (e.g. 2GiB, 512MiB, 1073741824)
+        #[arg(long, value_parser = super::parse_size)]
         memory: Option<i64>,
         /// VM template name or ID
         #[arg(long)]
@@ -83,7 +83,9 @@ enum VmCommand {
         /// OCI image reference (triggers async creation)
         #[arg(long)]
         image_ref: Option<String>,
-        /// Boot mode: kernel (default) or firmware
+        /// Boot mode: 'kernel' (direct Linux boot via kernel+initramfs, default) or
+        /// 'firmware' (UEFI/EDK2 — required for cloud images, Windows, or any disk
+        /// with its own EFI bootloader; use with --root-disk pointing to a UEFI image).
         #[arg(long, default_value = "kernel")]
         boot_mode: String,
         /// Network name or ID to attach the VM to (allocates an IP automatically)
@@ -153,7 +155,7 @@ enum VmCommand {
         /// Optional target architecture
         #[arg(long)]
         architecture: Option<String>,
-        /// Boot mode: kernel (default) or firmware
+        /// Boot mode: 'kernel' (direct Linux boot, default) or 'firmware' (UEFI/EDK2).
         #[arg(long, default_value = "kernel")]
         boot_mode: String,
     },
@@ -199,7 +201,7 @@ enum VmCommand {
         /// VM name or ID
         vm: String,
     },
-    /// Attach an OverlayBD storage object as a disk on a VM
+    /// Attach a storage object as a disk on a VM (local, NFS, or OverlayBD)
     AttachDisk {
         /// VM name or ID
         vm: String,
@@ -279,8 +281,8 @@ enum VmCommand {
         /// Target vCPU count (must be within [boot_vcpus, max_vcpus])
         #[arg(long)]
         vcpus: Option<i32>,
-        /// Target memory size in bytes (must be within [memory_size, memory_size + hotplug_size])
-        #[arg(long)]
+        /// Target memory size (e.g. 4GiB; must be within [memory_size, memory_size + hotplug_size])
+        #[arg(long, value_parser = super::parse_size)]
         ram: Option<i64>,
     },
     /// Live-migrate a running VM to another host (NFS-backed storage only)
@@ -430,6 +432,11 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
                 }
                 if !vm.tags.is_empty() {
                     println!("Tags:        {}", vm.tags.join(", "));
+                }
+                let nics = api::vms::list_nics(client, id).await.unwrap_or_default();
+                for nic in &nics {
+                    let ip = nic.ip_address.as_deref().unwrap_or("-");
+                    println!("NIC:         {} ip={}", nic.device_id, ip);
                 }
             }
         }

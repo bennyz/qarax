@@ -15,7 +15,7 @@ T = TypeVar("T", bound="AttachDiskRequest")
 class AttachDiskRequest:
     """
     Attributes:
-        storage_object_id (UUID): Storage object ID (must be `oci_image` type).
+        storage_object_id (UUID): Storage object ID (any type: disk, oci_image, iso, etc.).
         boot_order (int | None | Unset): Boot priority — lower is higher priority (default: `0`).
         logical_name (None | str | Unset): Logical device name inside the VM (e.g. "vda"); auto-generated if omitted.
     """

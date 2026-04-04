@@ -119,6 +119,10 @@ pub async fn remove_nic(client: &Client, vm_id: Uuid, device_id: &str) -> anyhow
         .await
 }
 
+pub async fn list_nics(client: &Client, vm_id: Uuid) -> anyhow::Result<Vec<NetworkInterface>> {
+    client.get(&format!("/vms/{vm_id}/nics")).await
+}
+
 pub async fn create_snapshot(
     client: &Client,
     vm_id: Uuid,

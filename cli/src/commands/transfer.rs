@@ -126,9 +126,11 @@ pub async fn run(args: TransferArgs, client: &Client, output: OutputFormat) -> a
                 object_type,
             };
             let transfer = api::transfers::create(client, pool_id, &new_transfer).await?;
-            if wait {
-                crate::wait::wait_for_transfer(client, pool_id, transfer.id).await?;
-            }
+            let transfer = if wait {
+                crate::wait::wait_for_transfer(client, pool_id, transfer.id).await?
+            } else {
+                transfer
+            };
             if !matches!(output, OutputFormat::Table) {
                 print_output(&transfer, output)?;
             } else {

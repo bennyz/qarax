@@ -6,6 +6,8 @@ from .attach_host_request import AttachHostRequest
 from .attach_pool_host_request import AttachPoolHostRequest
 from .boot_mode import BootMode
 from .boot_source import BootSource
+from .commit_vm_request import CommitVmRequest
+from .commit_vm_response import CommitVmResponse
 from .create_disk_request import CreateDiskRequest
 from .create_disk_response import CreateDiskResponse
 from .create_sandbox_response import CreateSandboxResponse
@@ -47,7 +49,6 @@ from .new_storage_object import NewStorageObject
 from .new_storage_pool import NewStoragePool
 from .new_transfer import NewTransfer
 from .new_vm import NewVm
-from .new_vm_filesystem import NewVmFilesystem
 from .new_vm_network import NewVmNetwork
 from .new_vm_template import NewVmTemplate
 from .rate_limiter_config import RateLimiterConfig
@@ -71,7 +72,6 @@ from .update_lifecycle_hook import UpdateLifecycleHook
 from .vhost_mode import VhostMode
 from .vm import Vm
 from .vm_disk import VmDisk
-from .vm_filesystem import VmFilesystem
 from .vm_image_preflight_check import VmImagePreflightCheck
 from .vm_image_preflight_request import VmImagePreflightRequest
 from .vm_image_preflight_response import VmImagePreflightResponse
@@ -92,6 +92,8 @@ __all__ = (
     "AttachPoolHostRequest",
     "BootMode",
     "BootSource",
+    "CommitVmRequest",
+    "CommitVmResponse",
     "CreateDiskRequest",
     "CreateDiskResponse",
     "CreateSandboxResponse",
@@ -133,7 +135,6 @@ __all__ = (
     "NewStoragePool",
     "NewTransfer",
     "NewVm",
-    "NewVmFilesystem",
     "NewVmNetwork",
     "NewVmTemplate",
     "RateLimiterConfig",
@@ -157,7 +158,6 @@ __all__ = (
     "VhostMode",
     "Vm",
     "VmDisk",
-    "VmFilesystem",
     "VmImagePreflightCheck",
     "VmImagePreflightRequest",
     "VmImagePreflightResponse",

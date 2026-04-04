@@ -245,6 +245,10 @@ pub async fn run(args: HostArgs, client: &Client, output: OutputFormat) -> anyho
                 print_output(&serde_json::json!({ "host_id": id }), output)?;
             } else {
                 println!("Added host: {}", new_host.name);
+                println!(
+                    "Next: run 'qarax host init {}' to connect via gRPC and mark it UP.",
+                    new_host.name
+                );
             }
         }
 

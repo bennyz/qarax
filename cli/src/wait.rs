@@ -4,7 +4,10 @@ use anyhow::anyhow;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
-use crate::{api, client::Client};
+use crate::{
+    api::{self, models::Transfer},
+    client::Client,
+};
 
 /// Poll a transfer until it reaches `completed` or `failed`.
 ///
@@ -13,14 +16,14 @@ pub async fn wait_for_transfer(
     client: &Client,
     pool_id: Uuid,
     transfer_id: Uuid,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Transfer> {
     use std::io::Write as _;
     loop {
         let t = api::transfers::get(client, pool_id, transfer_id).await?;
         match t.status.as_str() {
             "completed" => {
                 eprintln!("\r[completed]                        ");
-                return Ok(());
+                return Ok(t);
             }
             "failed" => {
                 return Err(anyhow!(

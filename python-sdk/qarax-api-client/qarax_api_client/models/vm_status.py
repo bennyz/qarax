@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class VmStatus(str, Enum):
+    COMMITTING = "committing"
     CREATED = "created"
     MIGRATING = "migrating"
     PAUSED = "paused"

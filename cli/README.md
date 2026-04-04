@@ -86,7 +86,8 @@ Pool types: `local`, `nfs`, `overlaybd`
 
 ```bash
 # Local pool (host-specific, must specify --host)
-qarax storage-pool create --name local-images --pool-type local --host node-01
+qarax storage-pool create --name local-images --pool-type local \
+  --path /var/lib/qarax/local-images --host node-01
 
 # Shared pools (nfs, overlaybd) auto-attach all UP hosts
 qarax storage-pool create --name shared-pool --pool-type nfs \
@@ -167,6 +168,11 @@ qarax vm create --name my-vm --vcpus 2 --memory 536870912 \
 # With a storage-backed root disk
 qarax vm create --name my-vm --vcpus 2 --memory 536870912 \
   --boot-source linux-6.1 --root-disk my-disk-object
+
+# Disk-backed cloud image (UEFI/firmware boot)
+qarax vm create --name jammy-vm --vcpus 2 --memory 1073741824 \
+  --boot-mode firmware --root-disk ubuntu-22.04-cloud \
+  --network lan-vms --cloud-init-user-data ./user-data.yaml
 
 # OCI image (async, polls until ready)
 qarax vm create --name my-oci-vm --vcpus 2 --memory 536870912 \
@@ -272,7 +278,8 @@ qarax host add --name node-01 --address 192.168.1.10 --user root --password secr
 qarax host init node-01
 
 # 2. Create a local storage pool on the host
-qarax storage-pool create --name local-pool --pool-type local --host node-01
+qarax storage-pool create --name local-pool --pool-type local \
+  --path /var/lib/qarax/local-pool --host node-01
 
 # 3. Transfer a kernel and initrd
 qarax transfer create --pool local-pool --name vmlinux \

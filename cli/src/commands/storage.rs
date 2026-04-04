@@ -76,9 +76,18 @@ enum StoragePoolCommand {
         /// Capacity in bytes
         #[arg(long)]
         capacity: Option<i64>,
-        /// Pool config as JSON (e.g. '{"url":"http://registry:5000"}' for overlaybd)
-        #[arg(long, value_name = "JSON")]
+        /// Pool config as JSON (e.g. '{"url":"http://registry:5000"}' for overlaybd).
+        /// Use --path or --url instead for a simpler interface.
+        #[arg(long, value_name = "JSON", conflicts_with_all = ["path", "url"])]
         config: Option<String>,
+        /// Filesystem path on the host for a local pool (e.g. /var/lib/qarax/images).
+        /// Shorthand for --config '{"path":"..."}' with --pool-type local.
+        #[arg(long, conflicts_with = "config")]
+        path: Option<String>,
+        /// Remote URL for an NFS or OverlayBD pool (e.g. nfs://server/export or http://registry:5000).
+        /// Shorthand for --config '{"url":"..."}' with --pool-type nfs or overlaybd.
+        #[arg(long, conflicts_with = "config")]
+        url: Option<String>,
         /// Host to attach this pool to (name or ID). Required for local pools.
         #[arg(long, required_if_eq("pool_type", "local"))]
         host: Option<String>,
@@ -215,12 +224,16 @@ pub async fn run_pool(
             pool_type,
             capacity,
             config,
+            path,
+            url,
             host,
         } => {
-            let config = match config {
-                Some(s) => serde_json::from_str(&s)
+            let config = match (config, path, url) {
+                (Some(s), _, _) => serde_json::from_str(&s)
                     .map_err(|e| anyhow::anyhow!("Invalid JSON for --config: {e}"))?,
-                None => serde_json::json!({}),
+                (_, Some(p), _) => serde_json::json!({ "path": p }),
+                (_, _, Some(u)) => serde_json::json!({ "url": u }),
+                (None, None, None) => serde_json::json!({}),
             };
             let new_pool = NewStoragePool {
                 name,

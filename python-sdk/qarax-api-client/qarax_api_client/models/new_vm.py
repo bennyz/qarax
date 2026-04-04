@@ -43,8 +43,8 @@ class NewVm:
         hypervisor (Hypervisor | None | Unset):
         image_ref (None | str | Unset): OCI image reference to use as root filesystem (e.g.
             "docker.io/library/ubuntu:22.04").
-            When set, the handler will check whether the selected host has an OverlayBD storage pool.
-            If so, the image is served via lazy block loading (virtio-blk); otherwise via virtiofs.
+            When set, the handler will check whether the selected host has an OverlayBD storage pool
+            and the image is served via lazy block loading (virtio-blk).
         instance_type_id (None | Unset | UUID):
         kvm_hyperv (bool | None | Unset):
         max_vcpus (int | None | Unset):
