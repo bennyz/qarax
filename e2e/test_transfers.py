@@ -30,6 +30,7 @@ from qarax_api_client.api.transfers import (
     list_ as list_transfers,
 )
 from qarax_api_client.models import (
+    HostStatus,
     NewStoragePool,
     StoragePoolType,
     NewTransfer,
@@ -49,6 +50,10 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
+def _up_hosts(hosts):
+    return [h for h in (hosts or []) if h.status == HostStatus.UP]
+
+
 @pytest.mark.asyncio
 async def test_local_copy_transfer(client):
     """Test submitting a local file copy transfer and verifying completion."""
@@ -56,8 +61,8 @@ async def test_local_copy_transfer(client):
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
         # 1. Find the e2e-node host
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts is not None and len(hosts) > 0, "No hosts registered"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts registered"
         host = hosts[0]
 
         # 2. Create a storage pool and attach the host

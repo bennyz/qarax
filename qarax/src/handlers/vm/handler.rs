@@ -2496,6 +2496,7 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         rng,
         serial: serial_override,
         console: console_override,
+        hypervisor: vm.hypervisor.clone(),
     })
 }
 
@@ -3342,6 +3343,7 @@ pub async fn migrate(
         // for the destination host.
         let vm_config = crate::grpc_client::node::VmConfig {
             vm_id: vm_id.to_string(),
+            hypervisor: crate::grpc_client::node::HypervisorType::CloudHv as i32,
             cpus: Some(crate::grpc_client::node::CpusConfig {
                 boot_vcpus: create_req.boot_vcpus,
                 max_vcpus: create_req.max_vcpus,

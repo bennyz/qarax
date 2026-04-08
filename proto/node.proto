@@ -23,6 +23,11 @@ message CloudInitConfig {
   string network_config = 3;   // cloud-init network-config (optional YAML)
 }
 
+enum HypervisorType {
+  HYPERVISOR_TYPE_CLOUD_HV = 0;      // default, backward compatible
+  HYPERVISOR_TYPE_FIRECRACKER = 1;
+}
+
 message VmConfig {
   string vm_id = 1;
 
@@ -60,6 +65,9 @@ message VmConfig {
 
   // NUMA placement (optional; set by control plane for GPU-local or explicit NUMA pinning)
   optional NumaPlacement numa_placement = 15;
+
+  // Hypervisor type (default CLOUD_HV for backward compatibility)
+  HypervisorType hypervisor = 16;
 }
 
 message VsockConfig {

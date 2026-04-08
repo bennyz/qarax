@@ -77,13 +77,14 @@ use node::{
     AddDiskDeviceRequest, AddNetworkDeviceRequest, AttachNetworkRequest, AttachStoragePoolRequest,
     BlankDiskSource, CloudInitConfig, ConsoleConfig, ConsoleInput, ConsoleLogResponse,
     CopyFileRequest, CpusConfig, CreateDiskRequest, DetachNetworkRequest, DetachStoragePoolRequest,
-    DiskConfig, DownloadFileRequest, ExecVmRequest, ExecVmResponse, ImportOverlayBdRequest,
-    ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo, NumaPlacement, OverlayBdDiskSource,
-    PayloadConfig, PreflightImageRequest, PreflightImageResponse, ReceiveMigrationRequest,
-    RemoveDeviceRequest, ResizeDiskRequest, ResizeVmRequest, RestoreVmRequest,
-    SendMigrationRequest, SnapshotVmRequest, StoragePoolKind, TransferResponse, UrlDiskSource,
-    VfioDeviceConfig, VmConfig, VmCounters, VmId, VmState, VsockConfig,
-    file_transfer_service_client::FileTransferServiceClient, vm_service_client::VmServiceClient,
+    DiskConfig, DownloadFileRequest, ExecVmRequest, ExecVmResponse, HypervisorType,
+    ImportOverlayBdRequest, ImportOverlayBdResponse, MemoryConfig, NetConfig, NodeInfo,
+    NumaPlacement, OverlayBdDiskSource, PayloadConfig, PreflightImageRequest,
+    PreflightImageResponse, ReceiveMigrationRequest, RemoveDeviceRequest, ResizeDiskRequest,
+    ResizeVmRequest, RestoreVmRequest, SendMigrationRequest, SnapshotVmRequest, StoragePoolKind,
+    TransferResponse, UrlDiskSource, VfioDeviceConfig, VmConfig, VmCounters, VmId, VmState,
+    VsockConfig, file_transfer_service_client::FileTransferServiceClient,
+    vm_service_client::VmServiceClient,
 };
 
 /// Client for communicating with qarax-node via gRPC
@@ -129,6 +130,8 @@ pub struct CreateVmRequest {
     pub serial: Option<node::ConsoleConfig>,
     /// Console device override (None = disabled)
     pub console: Option<node::ConsoleConfig>,
+    /// Hypervisor backend to use
+    pub hypervisor: crate::model::vms::Hypervisor,
 }
 
 /// Convert DB network interfaces to proto NetConfig for the node.
@@ -290,6 +293,7 @@ impl NodeClient {
             rng,
             serial,
             console,
+            hypervisor,
         } = req;
         debug!("Creating VM {} on node {}", vm_id, self.address);
 
@@ -332,8 +336,14 @@ impl NodeClient {
             iommu: None,
         });
 
+        let proto_hypervisor = match hypervisor {
+            crate::model::vms::Hypervisor::Firecracker => HypervisorType::Firecracker as i32,
+            _ => HypervisorType::CloudHv as i32,
+        };
+
         let config = VmConfig {
             vm_id: vm_id.to_string(),
+            hypervisor: proto_hypervisor,
             cpus: Some(CpusConfig {
                 boot_vcpus,
                 max_vcpus,

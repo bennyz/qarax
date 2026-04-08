@@ -1,4 +1,6 @@
 pub mod cloud_hypervisor;
+pub mod cloud_init;
+pub mod firecracker;
 pub mod image_preflight;
 pub mod networking;
 pub mod oci_config;
@@ -6,3 +8,4 @@ pub mod overlaybd;
 pub mod rpc;
 pub mod services;
 pub mod storage;
+pub mod vmm;

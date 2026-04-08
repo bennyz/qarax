@@ -38,7 +38,7 @@ from qarax_api_client.api.vms import (
 from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
-from qarax_api_client.models import Hypervisor, NewStoragePool, NewVm, StoragePoolType, VmStatus
+from qarax_api_client.models import HostStatus, Hypervisor, NewStoragePool, NewVm, StoragePoolType, VmStatus
 from qarax_api_client.models.attach_pool_host_request import AttachPoolHostRequest
 from qarax_api_client.models.create_snapshot_request import CreateSnapshotRequest
 from qarax_api_client.models.restore_request import RestoreRequest
@@ -57,14 +57,15 @@ def client():
 def snapshot_storage_pool():
     """Create a local storage pool for snapshot tests and attach it to the host."""
     with Client(base_url=QARAX_URL) as c:
-        hosts = list_hosts.sync(client=c)
-        assert hosts and len(hosts) > 0, "No hosts registered"
+        hosts = [h for h in (list_hosts.sync(client=c) or []) if h.status == HostStatus.UP]
+        assert hosts and len(hosts) > 0, "No UP hosts registered"
         host_id = hosts[0].id
 
+        import uuid
         pool_id_raw = create_pool.sync(
             client=c,
             body=NewStoragePool(
-                name="e2e-snapshot-pool",
+                name=f"e2e-snapshot-pool-{uuid.uuid4().hex[:8]}",
                 pool_type=StoragePoolType.LOCAL,
                 config={"path": "/var/lib/qarax/snapshots"},
             ),

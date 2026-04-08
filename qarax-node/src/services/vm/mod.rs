@@ -6,29 +6,77 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cloud_hypervisor::VmManager;
+use crate::firecracker::FirecrackerManager;
 use crate::rpc::node::{
     AddDeviceRequest, AddDiskDeviceRequest, AddNetworkDeviceRequest, AttachNetworkRequest,
     AttachNetworkResponse, AttachStoragePoolRequest, AttachStoragePoolResponse, ConsoleInput,
     ConsoleLogResponse, ConsoleOutput, ConsolePtyPathResponse, DetachNetworkRequest,
     DetachNetworkResponse, DetachStoragePoolRequest, DeviceCounters, ExecVmRequest, ExecVmResponse,
-    GpuInfo, ImportOverlayBdRequest, ImportOverlayBdResponse, NodeInfo, NumaNode, PreflightCheck,
-    PreflightImageRequest, PreflightImageResponse, ReceiveMigrationRequest,
+    GpuInfo, HypervisorType, ImportOverlayBdRequest, ImportOverlayBdResponse, NodeInfo, NumaNode,
+    PreflightCheck, PreflightImageRequest, PreflightImageResponse, ReceiveMigrationRequest,
     ReceiveMigrationResponse, RemoveDeviceRequest, ResizeDiskRequest, ResizeVmRequest,
     RestoreVmRequest, SendMigrationRequest, SnapshotVmRequest, StoragePoolKind, VmConfig,
     VmCounters, VmId, VmList, VmState, vm_service_server::VmService,
 };
+use crate::vmm::{VmmError, VmmManager};
 use common::cpu_list::expand_cpu_list;
 
-/// Implementation of VmService using Cloud Hypervisor
+/// Implementation of VmService supporting multiple hypervisor backends.
 #[derive(Clone)]
 pub struct VmServiceImpl {
-    manager: Arc<VmManager>,
+    /// Direct reference to the Cloud Hypervisor manager for infrastructure
+    /// operations (storage, OverlayBD, networking, node info, console PTY).
+    ch_manager: Arc<VmManager>,
+    /// Firecracker manager (None if the binary is not configured / not found).
+    fc_manager: Option<Arc<FirecrackerManager>>,
 }
 
 impl VmServiceImpl {
-    /// Create a new VmServiceImpl from a VmManager
-    pub fn from_manager(manager: Arc<VmManager>) -> Self {
-        Self { manager }
+    /// Create a VmServiceImpl with only Cloud Hypervisor support.
+    pub fn from_manager(ch_manager: Arc<VmManager>) -> Self {
+        Self {
+            ch_manager,
+            fc_manager: None,
+        }
+    }
+
+    /// Create a VmServiceImpl with both CH and FC support.
+    pub fn new(ch_manager: Arc<VmManager>, fc_manager: Option<Arc<FirecrackerManager>>) -> Self {
+        Self {
+            ch_manager,
+            fc_manager,
+        }
+    }
+
+    /// Return the correct manager for a `create_vm` call based on the
+    /// `hypervisor` field in the config.
+    #[allow(clippy::result_large_err)]
+    fn manager_for_create(&self, hypervisor: i32) -> Result<Arc<dyn VmmManager>, Status> {
+        match HypervisorType::try_from(hypervisor).unwrap_or(HypervisorType::CloudHv) {
+            HypervisorType::Firecracker => self
+                .fc_manager
+                .as_ref()
+                .map(|m| m.clone() as Arc<dyn VmmManager>)
+                .ok_or_else(|| {
+                    Status::unavailable(
+                        "Firecracker is not configured on this node (binary not found)",
+                    )
+                }),
+            _ => Ok(self.ch_manager.clone() as Arc<dyn VmmManager>),
+        }
+    }
+
+    /// Find which manager currently owns the given VM, trying CH first then FC.
+    async fn find_manager(&self, vm_id: &str) -> Option<Arc<dyn VmmManager>> {
+        if self.ch_manager.get_vm_info(vm_id).await.is_ok() {
+            return Some(self.ch_manager.clone() as Arc<dyn VmmManager>);
+        }
+        if let Some(fc) = &self.fc_manager
+            && fc.get_vm_info(vm_id).await.is_ok()
+        {
+            return Some(fc.clone() as Arc<dyn VmmManager>);
+        }
+        None
     }
 
     /// Run a unit-returning VM operation, logging start/success/failure uniformly.
@@ -40,7 +88,7 @@ impl VmServiceImpl {
     ) -> Result<Response<()>, Status>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<(), crate::cloud_hypervisor::VmManagerError>>,
+        Fut: std::future::Future<Output = Result<(), VmmError>>,
     {
         info!("{} VM: {}", op_name, vm_id);
         match f().await {
@@ -50,7 +98,7 @@ impl VmServiceImpl {
             }
             Err(e) => {
                 error!("Failed to {} VM {}: {}", op_name.to_lowercase(), vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -61,51 +109,71 @@ impl VmService for VmServiceImpl {
     async fn create_vm(&self, request: Request<VmConfig>) -> Result<Response<VmState>, Status> {
         let config = request.into_inner();
         let vm_id = config.vm_id.clone();
+        let hypervisor = config.hypervisor;
 
-        info!("Creating VM: {}", vm_id);
+        info!("Creating VM: {} (hypervisor={})", vm_id, hypervisor);
         debug!("VM config: {:?}", config);
 
-        match self.manager.create_vm(config).await {
+        let manager = self.manager_for_create(hypervisor)?;
+        match manager.create_vm(config).await {
             Ok(state) => {
                 info!("VM {} created successfully", vm_id);
                 Ok(Response::new(state))
             }
             Err(e) => {
                 error!("Failed to create VM {}: {}", vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
 
     async fn start_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("Start", vm_id.clone(), || self.manager.start_vm(&vm_id))
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("Start", vm_id.clone(), || manager.start_vm(&vm_id))
             .await
     }
 
     async fn stop_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("Stop", vm_id.clone(), || self.manager.stop_vm(&vm_id))
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("Stop", vm_id.clone(), || manager.stop_vm(&vm_id))
             .await
     }
 
     async fn force_stop_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("ForceStop", vm_id.clone(), || {
-            self.manager.force_stop_vm(&vm_id)
-        })
-        .await
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("ForceStop", vm_id.clone(), || manager.force_stop_vm(&vm_id))
+            .await
     }
 
     async fn pause_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("Pause", vm_id.clone(), || self.manager.pause_vm(&vm_id))
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("Pause", vm_id.clone(), || manager.pause_vm(&vm_id))
             .await
     }
 
     async fn resume_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("Resume", vm_id.clone(), || self.manager.resume_vm(&vm_id))
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("Resume", vm_id.clone(), || manager.resume_vm(&vm_id))
             .await
     }
 
@@ -115,18 +183,18 @@ impl VmService for VmServiceImpl {
     ) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         info!("Snapshotting VM: {}", req.vm_id);
-        match self
-            .manager
-            .snapshot_vm(&req.vm_id, &req.snapshot_url)
+        let manager = self
+            .find_manager(&req.vm_id)
             .await
-        {
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.snapshot_vm(&req.vm_id, &req.snapshot_url).await {
             Ok(()) => {
                 info!("VM {} snapshotted successfully", req.vm_id);
                 Ok(Response::new(()))
             }
             Err(e) => {
                 error!("Failed to snapshot VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -134,21 +202,46 @@ impl VmService for VmServiceImpl {
     async fn restore_vm(&self, request: Request<RestoreVmRequest>) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         info!("Restoring VM: {}", req.vm_id);
-        match self.manager.restore_vm(&req.vm_id, &req.source_url).await {
+        // For restore, try CH first (default). The VM may not be in the manager yet.
+        match self
+            .ch_manager
+            .restore_vm(&req.vm_id, &req.source_url)
+            .await
+        {
             Ok(()) => {
                 info!("VM {} restored successfully", req.vm_id);
                 Ok(Response::new(()))
             }
+            Err(crate::cloud_hypervisor::VmManagerError::VmNotFound(_)) => {
+                // Try FC if available
+                if let Some(fc) = &self.fc_manager {
+                    match fc.restore_vm(&req.vm_id, &req.source_url).await {
+                        Ok(()) => {
+                            info!("VM {} restored via FC successfully", req.vm_id);
+                            return Ok(Response::new(()));
+                        }
+                        Err(e) => {
+                            error!("Failed to restore VM {} via FC: {}", req.vm_id, e);
+                            return Err(map_vmm_error(e));
+                        }
+                    }
+                }
+                Err(Status::not_found(format!("VM {} not found", req.vm_id)))
+            }
             Err(e) => {
                 error!("Failed to restore VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e.into()))
             }
         }
     }
 
     async fn delete_vm(&self, request: Request<VmId>) -> Result<Response<()>, Status> {
         let vm_id = request.into_inner().id;
-        self.run_vm_op("Delete", vm_id.clone(), || self.manager.delete_vm(&vm_id))
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        self.run_vm_op("Delete", vm_id.clone(), || manager.delete_vm(&vm_id))
             .await
     }
 
@@ -156,11 +249,15 @@ impl VmService for VmServiceImpl {
         let vm_id = request.into_inner().id;
         info!("Getting VM info: {}", vm_id);
 
-        match self.manager.get_vm_info(&vm_id).await {
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        match manager.get_vm_info(&vm_id).await {
             Ok(state) => Ok(Response::new(state)),
             Err(e) => {
                 error!("Failed to get VM info {}: {}", vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -168,7 +265,10 @@ impl VmService for VmServiceImpl {
     async fn list_vms(&self, _request: Request<()>) -> Result<Response<VmList>, Status> {
         info!("Listing VMs");
 
-        let vms = self.manager.list_vms().await;
+        let mut vms = self.ch_manager.list_vms().await;
+        if let Some(fc) = &self.fc_manager {
+            vms.extend(fc.list_vms().await);
+        }
         info!("Found {} VMs", vms.len());
         Ok(Response::new(VmList { vms }))
     }
@@ -180,7 +280,11 @@ impl VmService for VmServiceImpl {
         let vm_id = request.into_inner().id;
         info!("Getting VM counters: {}", vm_id);
 
-        match self.manager.get_vm_counters(&vm_id).await {
+        let manager = self
+            .find_manager(&vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", vm_id)))?;
+        match manager.get_vm_counters(&vm_id).await {
             Ok(counters) => {
                 let proto_counters = counters
                     .into_iter()
@@ -192,7 +296,7 @@ impl VmService for VmServiceImpl {
             }
             Err(e) => {
                 error!("Failed to get VM counters {}: {}", vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -204,15 +308,18 @@ impl VmService for VmServiceImpl {
         let req = request.into_inner();
         info!("Executing command inside VM: {}", req.vm_id);
 
-        match self
-            .manager
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager
             .exec_vm(&req.vm_id, req.command, req.timeout_secs)
             .await
         {
             Ok(response) => Ok(Response::new(response)),
             Err(e) => {
                 error!("Failed to exec command in VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -228,14 +335,18 @@ impl VmService for VmServiceImpl {
             .config
             .ok_or_else(|| Status::invalid_argument("Missing network config"))?;
 
-        match self.manager.add_network_device(&req.vm_id, &config).await {
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.add_network_device(&req.vm_id, &config).await {
             Ok(()) => {
                 info!("Network device added to VM {}", req.vm_id);
                 Ok(Response::new(()))
             }
             Err(e) => {
                 error!("Failed to add network device to VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -250,8 +361,11 @@ impl VmService for VmServiceImpl {
             req.device_id, req.vm_id
         );
 
-        match self
-            .manager
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager
             .remove_network_device(&req.vm_id, &req.device_id)
             .await
         {
@@ -267,7 +381,7 @@ impl VmService for VmServiceImpl {
                     "Failed to remove network device {} from VM {}: {}",
                     req.device_id, req.vm_id, e
                 );
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -283,14 +397,18 @@ impl VmService for VmServiceImpl {
             .config
             .ok_or_else(|| Status::invalid_argument("Missing disk config"))?;
 
-        match self.manager.add_disk_device(&req.vm_id, &config).await {
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.add_disk_device(&req.vm_id, &config).await {
             Ok(()) => {
                 info!("Disk device added to VM {}", req.vm_id);
                 Ok(Response::new(()))
             }
             Err(e) => {
                 error!("Failed to add disk device to VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -305,11 +423,11 @@ impl VmService for VmServiceImpl {
             req.device_id, req.vm_id
         );
 
-        match self
-            .manager
-            .remove_disk_device(&req.vm_id, &req.device_id)
+        let manager = self
+            .find_manager(&req.vm_id)
             .await
-        {
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.remove_disk_device(&req.vm_id, &req.device_id).await {
             Ok(()) => {
                 info!(
                     "Disk device {} removed from VM {}",
@@ -322,7 +440,7 @@ impl VmService for VmServiceImpl {
                     "Failed to remove disk device {} from VM {}: {}",
                     req.device_id, req.vm_id, e
                 );
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -334,7 +452,11 @@ impl VmService for VmServiceImpl {
             .ok_or_else(|| Status::invalid_argument("config is required"))?;
         info!("Adding VFIO device {} to VM: {}", config.id, req.vm_id);
 
-        match self.manager.add_device(&req.vm_id, &config).await {
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.add_device(&req.vm_id, &config).await {
             Ok(()) => {
                 info!("VFIO device {} added to VM {}", config.id, req.vm_id);
                 Ok(Response::new(()))
@@ -344,7 +466,7 @@ impl VmService for VmServiceImpl {
                     "Failed to add VFIO device {} to VM {}: {}",
                     config.id, req.vm_id, e
                 );
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -359,7 +481,11 @@ impl VmService for VmServiceImpl {
             req.device_id, req.vm_id
         );
 
-        match self.manager.remove_device(&req.vm_id, &req.device_id).await {
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager.remove_device(&req.vm_id, &req.device_id).await {
             Ok(()) => {
                 info!(
                     "VFIO device {} removed from VM {}",
@@ -372,7 +498,7 @@ impl VmService for VmServiceImpl {
                     "Failed to remove VFIO device {} from VM {}: {}",
                     req.device_id, req.vm_id, e
                 );
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -387,8 +513,11 @@ impl VmService for VmServiceImpl {
             req.disk_id, req.vm_id, req.path, req.new_size
         );
 
-        match self
-            .manager
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager
             .resize_disk(&req.vm_id, &req.disk_id, &req.path, req.new_size)
             .await
         {
@@ -398,7 +527,7 @@ impl VmService for VmServiceImpl {
             }
             Err(e) => {
                 error!("Failed to resize disk {}: {}", req.disk_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -410,8 +539,11 @@ impl VmService for VmServiceImpl {
             req.vm_id, req.desired_vcpus, req.desired_ram
         );
 
-        match self
-            .manager
+        let manager = self
+            .find_manager(&req.vm_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("VM {} not found", req.vm_id)))?;
+        match manager
             .resize_vm(&req.vm_id, req.desired_vcpus, req.desired_ram)
             .await
         {
@@ -421,7 +553,7 @@ impl VmService for VmServiceImpl {
             }
             Err(e) => {
                 error!("Failed to resize VM {}: {}", req.vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e))
             }
         }
     }
@@ -461,7 +593,7 @@ impl VmService for VmServiceImpl {
         }
 
         let manager = self
-            .manager
+            .ch_manager
             .overlaybd_manager()
             .ok_or_else(|| Status::unimplemented("OverlayBD not configured on this node"))?;
 
@@ -471,7 +603,7 @@ impl VmService for VmServiceImpl {
                 &req.registry_url,
                 &architecture,
                 boot_mode,
-                self.manager.qarax_init_binary(),
+                self.ch_manager.qarax_init_binary(),
             )
             .await
         {
@@ -502,7 +634,7 @@ impl VmService for VmServiceImpl {
         );
 
         let obd_manager = self
-            .manager
+            .ch_manager
             .overlaybd_manager()
             .ok_or_else(|| Status::unimplemented("OverlayBD not configured on this node"))?;
 
@@ -537,7 +669,7 @@ impl VmService for VmServiceImpl {
         info!("Reading console log for VM: {}", vm_id);
 
         let log_path = self
-            .manager
+            .ch_manager
             .runtime_dir()
             .join(format!("{}.console.log", vm_id));
 
@@ -569,7 +701,7 @@ impl VmService for VmServiceImpl {
         let architecture = detect_architecture().await;
 
         // Get Cloud Hypervisor version
-        let ch_version = match tokio::process::Command::new(self.manager.ch_binary())
+        let ch_version = match tokio::process::Command::new(self.ch_manager.ch_binary())
             .arg("--version")
             .output()
             .await
@@ -597,7 +729,7 @@ impl VmService for VmServiceImpl {
 
         let load_average_1m = parse_loadavg().await;
 
-        let (disk_total_bytes, disk_available_bytes) = disk_usage(self.manager.runtime_dir());
+        let (disk_total_bytes, disk_available_bytes) = disk_usage(self.ch_manager.runtime_dir());
 
         let gpus = discover_gpus().await;
         let numa_nodes = discover_numa_topology("/sys/devices/system/node").await;
@@ -639,12 +771,12 @@ impl VmService for VmServiceImpl {
 
         // Get PTY path from VM manager
         let pty_path = self
-            .manager
+            .ch_manager
             .get_serial_pty_path(&vm_id)
             .await
             .map_err(|e| {
                 error!("Failed to get PTY path for VM {}: {}", vm_id, e);
-                map_manager_error(e)
+                map_vmm_error(e.into())
             })?
             .ok_or_else(|| {
                 Status::failed_precondition("VM console is not configured for PTY mode")
@@ -656,7 +788,7 @@ impl VmService for VmServiceImpl {
         // When the Cloud Hypervisor process exits, the kernel removes the PTY
         // slave device, but we may still have the path cached.
         if !std::path::Path::new(&pty_path).exists() {
-            let is_running = self.manager.is_vm_process_alive(&vm_id).await;
+            let is_running = self.ch_manager.is_vm_process_alive(&vm_id).await;
             error!(
                 "PTY {} for VM {} does not exist (process alive: {})",
                 pty_path, vm_id, is_running
@@ -808,7 +940,7 @@ impl VmService for VmServiceImpl {
         let vm_id = request.into_inner().id;
         info!("Getting console PTY path for VM: {}", vm_id);
 
-        match self.manager.get_serial_pty_path(&vm_id).await {
+        match self.ch_manager.get_serial_pty_path(&vm_id).await {
             Ok(Some(pty_path)) => Ok(Response::new(ConsolePtyPathResponse {
                 pty_path,
                 available: true,
@@ -819,7 +951,7 @@ impl VmService for VmServiceImpl {
             })),
             Err(e) => {
                 error!("Failed to get PTY path for VM {}: {}", vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e.into()))
             }
         }
     }
@@ -833,7 +965,7 @@ impl VmService for VmServiceImpl {
         let kind = StoragePoolKind::try_from(req.pool_kind).unwrap_or(StoragePoolKind::Local);
         info!("Attaching storage pool {} (kind={:?})", pool_id, kind);
 
-        let backend = self.manager.storage_backend(kind).ok_or_else(|| {
+        let backend = self.ch_manager.storage_backend(kind).ok_or_else(|| {
             Status::unimplemented(format!("{:?} storage backend not configured", kind))
         })?;
 
@@ -950,7 +1082,7 @@ impl VmService for VmServiceImpl {
         let kind = StoragePoolKind::try_from(req.pool_kind).unwrap_or(StoragePoolKind::Local);
         info!("Detaching storage pool {} (kind={:?})", pool_id, kind);
 
-        let backend = self.manager.storage_backend(kind).ok_or_else(|| {
+        let backend = self.ch_manager.storage_backend(kind).ok_or_else(|| {
             Status::unimplemented(format!("{:?} storage backend not configured", kind))
         })?;
 
@@ -975,7 +1107,11 @@ impl VmService for VmServiceImpl {
             .ok_or_else(|| Status::invalid_argument("Missing VM config for receive_migration"))?;
         let port = req.migration_port as u16;
 
-        match self.manager.receive_migration(&vm_id, config, port).await {
+        match self
+            .ch_manager
+            .receive_migration(&vm_id, config, port)
+            .await
+        {
             Ok(receiver_url) => {
                 info!(
                     "VM {} ready to receive migration at {}",
@@ -988,7 +1124,7 @@ impl VmService for VmServiceImpl {
                     "Failed to prepare receive migration for VM {}: {}",
                     vm_id, e
                 );
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e.into()))
             }
         }
     }
@@ -1005,7 +1141,7 @@ impl VmService for VmServiceImpl {
         );
 
         match self
-            .manager
+            .ch_manager
             .send_migration(&vm_id, &req.destination_url)
             .await
         {
@@ -1015,7 +1151,7 @@ impl VmService for VmServiceImpl {
             }
             Err(e) => {
                 error!("Failed to send migration for VM {}: {}", vm_id, e);
-                Err(map_manager_error(e))
+                Err(map_vmm_error(e.into()))
             }
         }
     }
@@ -1294,32 +1430,29 @@ fn disk_usage(path: &std::path::Path) -> (i64, i64) {
     }
 }
 
-fn map_manager_error(e: crate::cloud_hypervisor::VmManagerError) -> Status {
-    use crate::cloud_hypervisor::VmManagerError;
-
+fn map_vmm_error(e: VmmError) -> Status {
     match e {
-        VmManagerError::VmNotFound(id) => Status::not_found(format!("VM {} not found", id)),
-        VmManagerError::VmAlreadyExists(id) => {
+        VmmError::VmNotFound(id) => Status::not_found(format!("VM {} not found", id)),
+        VmmError::VmAlreadyExists(id) => {
             Status::already_exists(format!("VM {} already exists", id))
         }
-        VmManagerError::InvalidConfig(msg) => Status::invalid_argument(msg),
-        VmManagerError::SpawnError(e) => Status::internal(format!("Failed to spawn CH: {}", e)),
-        VmManagerError::SdkError(e) => {
-            Status::internal(format!("Cloud Hypervisor SDK error: {}", e))
-        }
-        VmManagerError::ProcessError(msg) => Status::internal(msg),
-        VmManagerError::TapError(msg) => Status::internal(format!("TAP device error: {}", msg)),
-        VmManagerError::OverlayBdError(e) => Status::internal(format!("OverlayBD error: {}", e)),
-        VmManagerError::MigrationError(msg) => {
-            Status::internal(format!("Migration error: {}", msg))
-        }
-        VmManagerError::StorageError(msg) => Status::internal(format!("Storage error: {}", msg)),
-        VmManagerError::ExecUnavailable(msg) => Status::failed_precondition(msg),
-        VmManagerError::ExecInvalid(msg) => Status::invalid_argument(msg),
-        VmManagerError::ExecError(msg) => Status::internal(msg),
-        VmManagerError::ExecTimeout(secs) => {
+        VmmError::InvalidConfig(msg) => Status::invalid_argument(msg),
+        VmmError::SpawnError(e) => Status::internal(format!("Failed to spawn VMM: {}", e)),
+        VmmError::ProcessError(msg) => Status::internal(msg),
+        VmmError::TapError(msg) => Status::internal(format!("TAP device error: {}", msg)),
+        VmmError::OverlayBdError(msg) => Status::internal(format!("OverlayBD error: {}", msg)),
+        VmmError::MigrationError(msg) => Status::internal(format!("Migration error: {}", msg)),
+        VmmError::StorageError(msg) => Status::internal(format!("Storage error: {}", msg)),
+        VmmError::ExecUnavailable(msg) => Status::failed_precondition(msg),
+        VmmError::ExecInvalid(msg) => Status::invalid_argument(msg),
+        VmmError::ExecError(msg) => Status::internal(msg),
+        VmmError::ExecTimeout(secs) => {
             Status::deadline_exceeded(format!("guest exec timed out after {}s", secs))
         }
+        VmmError::Unsupported(op) => Status::unimplemented(format!(
+            "Operation not supported by this hypervisor: {}",
+            op
+        )),
     }
 }
 

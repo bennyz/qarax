@@ -24,6 +24,7 @@ Prerequisites (handled by run_e2e_tests.sh):
 """
 
 import os
+import socket
 import time
 import uuid
 
@@ -55,6 +56,18 @@ HOST_POLL_INTERVAL_SECONDS = 5
 
 # How long to wait for the bootc VM to become reachable after compose up.
 VM_BOOT_TIMEOUT_SECONDS = 600
+
+
+def _is_truthy(value: str | None) -> bool:
+    return (value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _tcp_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def get_host(client: Client, host_id: uuid.UUID):
@@ -100,6 +113,14 @@ def upgrade_host_id():
     Waits for the VM's gRPC port to become reachable (it may still be booting
     when the test suite starts) then inits the host so node_version is populated.
     """
+    if not _is_truthy(os.getenv("ENABLE_BOOTC_UPGRADE_E2E")):
+        pytest.skip("bootc upgrade e2e disabled (set ENABLE_BOOTC_UPGRADE_E2E=1 to run)")
+
+    if not _tcp_reachable(UPGRADE_TEST_NODE_HOST, UPGRADE_TEST_NODE_PORT):
+        pytest.skip(
+            f"upgrade node {UPGRADE_TEST_NODE_HOST}:{UPGRADE_TEST_NODE_PORT} is not reachable"
+        )
+
     client = Client(base_url=QARAX_URL)
     host_name = f"bootc-vm-{uuid.uuid4().hex[:8]}"
 

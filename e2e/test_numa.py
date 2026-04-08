@@ -21,7 +21,7 @@ from qarax_api_client.api.vms import (
     get as get_vm,
     start as start_vm,
 )
-from qarax_api_client.models import NewVm, Hypervisor, VmStatus
+from qarax_api_client.models import HostStatus, NewVm, Hypervisor, VmStatus
 
 QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 VM_OPERATION_TIMEOUT = 60
@@ -41,6 +41,10 @@ async def call_api(endpoint_module, **kwargs):
         response = await detailed_fn(**kwargs)
         return response.parsed
     raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
+
+
+def _up_hosts(hosts):
+    return [h for h in (hosts or []) if h.status == HostStatus.UP]
 
 
 async def wait_for_vm_status(
@@ -66,8 +70,8 @@ async def wait_for_vm_status(
 async def test_host_numa_topology_discovered(client):
     """After host init the control plane should have at least one NUMA node stored."""
     async with client as c:
-        hosts = await call_api(list_hosts, client=c)
-        assert hosts, "No hosts registered — run conftest ensure_host_registered first"
+        hosts = _up_hosts(await call_api(list_hosts, client=c))
+        assert hosts, "No UP hosts registered — run conftest ensure_host_registered first"
 
         host_id = hosts[0].id
         nodes = await call_api(list_numa_nodes, client=c, host_id=host_id)
