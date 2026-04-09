@@ -173,7 +173,6 @@ runcmd:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="FC restore is currently unstable in e2e", strict=False)
 async def test_fc_vm_snapshot_restore(client):
     """Snapshot a paused FC VM and restore it."""
     async with client as c:

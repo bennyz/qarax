@@ -392,6 +392,12 @@ impl VmmManager for FirecrackerManager {
             .get(vm_id)
             .ok_or_else(|| VmmError::VmNotFound(vm_id.to_string()))?;
 
+        // Trust explicit Shutdown — the FC process may still be responding on
+        // the socket briefly after stop_vm (e.g. paused VM sent Ctrl+Alt+Del).
+        if instance.status == VmStatus::Shutdown {
+            return Ok(instance.to_vm_state());
+        }
+
         let mut state = instance.to_vm_state();
 
         // Try to get live status from the Firecracker instance-info endpoint.
@@ -418,16 +424,22 @@ impl VmmManager for FirecrackerManager {
     async fn snapshot_vm(&self, vm_id: &str, destination_url: &str) -> Result<(), VmmError> {
         info!("FC: Snapshotting VM {} to {}", vm_id, destination_url);
 
-        let socket_path = {
+        let (socket_path, already_paused) = {
             let vms = self.vms.lock().await;
             let instance = vms
                 .get(vm_id)
                 .ok_or_else(|| VmmError::VmNotFound(vm_id.to_string()))?;
-            instance.socket_path.clone()
+            (
+                instance.socket_path.clone(),
+                instance.status == VmStatus::Paused,
+            )
         };
 
         // Firecracker requires the VM to be paused before taking a snapshot.
-        self.pause_vm(vm_id).await?;
+        // Skip if the caller already paused it to avoid a 400 from FC.
+        if !already_paused {
+            self.pause_vm(vm_id).await?;
+        }
 
         let dest = destination_url
             .strip_prefix("file://")

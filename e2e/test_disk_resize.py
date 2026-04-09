@@ -13,6 +13,7 @@ file at /var/lib/qarax/images/test-initramfs.gz (the same file used by hotplug
 tests as a stand-in raw block device).
 """
 
+import os
 import subprocess
 import uuid
 from uuid import UUID
@@ -22,20 +23,36 @@ from qarax_api_client import Client
 from qarax_api_client.api.hosts import list_ as list_hosts
 from qarax_api_client.api.storage_objects import (
     create as create_storage_object,
+)
+from qarax_api_client.api.storage_objects import (
     delete as delete_storage_object,
 )
 from qarax_api_client.api.storage_pools import (
     attach_host as attach_pool_host,
+)
+from qarax_api_client.api.storage_pools import (
     create as create_pool,
+)
+from qarax_api_client.api.storage_pools import (
     delete as delete_pool,
 )
 from qarax_api_client.api.vms import (
     attach_disk,
-    create as create_vm,
-    delete as delete_vm,
-    get as get_vm,
     resize_disk,
+)
+from qarax_api_client.api.vms import (
+    create as create_vm,
+)
+from qarax_api_client.api.vms import (
+    delete as delete_vm,
+)
+from qarax_api_client.api.vms import (
+    get as get_vm,
+)
+from qarax_api_client.api.vms import (
     start as start_vm,
+)
+from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
 from qarax_api_client.models import (
@@ -51,7 +68,8 @@ from qarax_api_client.models.disk_resize_request import DiskResizeRequest
 from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
-from helpers import QARAX_URL, up_hosts as _up_hosts, wait_for_status
+from helpers import QARAX_URL, wait_for_status
+from helpers import up_hosts as _up_hosts
 
 VM_OPERATION_TIMEOUT = 30
 

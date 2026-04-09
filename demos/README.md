@@ -12,6 +12,7 @@ Each demo lives in its own directory with a `run.sh` and a `README.md`.
 | [gpu-passthrough/](gpu-passthrough/) | GPU passthrough via VFIO to an OCI-booted VM | `make run-local` + VFIO GPU |
 | [hyperconverged/](hyperconverged/) | Control plane running inside a Cloud Hypervisor VM on bare metal (defaults to `passt` for workload VMs) | KVM + podman + root |
 | [sandbox/](sandbox/) | Ephemeral VMs from templates with idle-timeout auto-reap | `./hack/run-local.sh` |
+| [firecracker/](firecracker/) | Firecracker backend lifecycle demo (create/start/pause/resume/stop/delete) | `./hack/run-local.sh` |
 
 ## Quick start
 
@@ -24,6 +25,9 @@ Each demo lives in its own directory with a `run.sh` and a `README.md`.
 
 # Run the hooks demo
 ./demos/hooks/run.sh
+
+# Run the Firecracker backend demo
+./demos/firecracker/run.sh
 ```
 
 Networking note:
