@@ -392,8 +392,9 @@ message SnapshotVmRequest {
 }
 
 message RestoreVmRequest {
-  string vm_id      = 1;
-  string source_url = 2;
+  string vm_id         = 1;
+  string source_url    = 2;
+  HypervisorType hypervisor = 3; // defaults to CLOUD_HV (0) for backward compatibility
 }
 
 // ReceiveMigrationRequest is sent to the *destination* node to prepare it for

@@ -202,35 +202,15 @@ impl VmService for VmServiceImpl {
     async fn restore_vm(&self, request: Request<RestoreVmRequest>) -> Result<Response<()>, Status> {
         let req = request.into_inner();
         info!("Restoring VM: {}", req.vm_id);
-        // For restore, try CH first (default). The VM may not be in the manager yet.
-        match self
-            .ch_manager
-            .restore_vm(&req.vm_id, &req.source_url)
-            .await
-        {
+        let manager = self.manager_for_create(req.hypervisor)?;
+        match manager.restore_vm(&req.vm_id, &req.source_url).await {
             Ok(()) => {
                 info!("VM {} restored successfully", req.vm_id);
                 Ok(Response::new(()))
             }
-            Err(crate::cloud_hypervisor::VmManagerError::VmNotFound(_)) => {
-                // Try FC if available
-                if let Some(fc) = &self.fc_manager {
-                    match fc.restore_vm(&req.vm_id, &req.source_url).await {
-                        Ok(()) => {
-                            info!("VM {} restored via FC successfully", req.vm_id);
-                            return Ok(Response::new(()));
-                        }
-                        Err(e) => {
-                            error!("Failed to restore VM {} via FC: {}", req.vm_id, e);
-                            return Err(map_vmm_error(e));
-                        }
-                    }
-                }
-                Err(Status::not_found(format!("VM {} not found", req.vm_id)))
-            }
             Err(e) => {
                 error!("Failed to restore VM {}: {}", req.vm_id, e);
-                Err(map_vmm_error(e.into()))
+                Err(map_vmm_error(e))
             }
         }
     }

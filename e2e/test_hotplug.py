@@ -19,9 +19,7 @@ Prerequisites for running-VM tests:
   - /var/lib/qarax/images/test-initramfs.gz present on every node (used as a raw block device)
 """
 
-import asyncio
 import os
-import time
 import uuid
 from uuid import UUID
 
@@ -70,42 +68,15 @@ from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.new_vm_network import NewVmNetwork
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 NFS_SERVER_HOST = os.getenv("NFS_SERVER_HOST", "nfs-server")
 NFS_EXPORT_PATH = os.getenv("NFS_EXPORT_PATH", "/nfs-export")
-VM_OPERATION_TIMEOUT = 30
+
+from helpers import QARAX_URL, call_api, up_hosts as _up_hosts, wait_for_status
 
 
 @pytest.fixture
 def client():
     return Client(base_url=QARAX_URL)
-
-
-async def call_api(endpoint_module, **kwargs):
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        return (await detailed_fn(**kwargs)).parsed
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
-
-
-def _up_hosts(hosts):
-    return [h for h in (hosts or []) if h.status == HostStatus.UP]
-
-
-async def wait_for_status(c, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
 
 
 async def _make_nfs_pool(c, test_id, hosts):

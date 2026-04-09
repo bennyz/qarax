@@ -1855,7 +1855,10 @@ pub async fn restore(
 
     // The node handles the full restore flow: kills any existing CH process,
     // spawns a fresh one, and calls vm.restore directly (no vm.create needed).
-    if let Err(e) = node_client.restore_vm(vm_id, &snapshot_url).await {
+    if let Err(e) = node_client
+        .restore_vm(vm_id, &snapshot_url, &vm.hypervisor)
+        .await
+    {
         let msg = format!("restore_vm failed: {:#}", e);
         tracing::error!(vm_id = %vm_id, error = %msg);
         let _ = vms::update_status(env.pool(), vm_id, VmStatus::Unknown).await;

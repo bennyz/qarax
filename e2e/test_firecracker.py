@@ -15,9 +15,6 @@ Prerequisites:
 - The same vmlinux and test-initramfs used by Cloud Hypervisor tests are reused.
 """
 
-import asyncio
-import os
-import time
 import uuid
 
 import pytest
@@ -45,54 +42,13 @@ from qarax_api_client.models import (
     VmStatus,
 )
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
-VM_OPERATION_TIMEOUT = 30
+from helpers import QARAX_URL, call_api, call_api_detailed, wait_for_status
 
 
 @pytest.fixture
 def client():
     """Create a qarax API client."""
     return Client(base_url=QARAX_URL)
-
-
-async def call_api(endpoint_module, **kwargs):
-    """Call generated SDK endpoint in a version-tolerant way."""
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        response = await detailed_fn(**kwargs)
-        return response.parsed
-
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
-
-
-async def call_api_detailed(endpoint_module, **kwargs):
-    """Call generated SDK endpoint and return the full response."""
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        return await detailed_fn(**kwargs)
-    raise AttributeError(f"{endpoint_module.__name__} has no asyncio_detailed entrypoint")
-
-
-async def wait_for_status(
-    client, vm_id: str, expected_status: VmStatus, timeout: int = VM_OPERATION_TIMEOUT
-):
-    """Wait for a VM to reach the expected status."""
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        vm = await call_api(get_vm, client=client, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-
-    vm = await call_api(get_vm, client=client, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach status {expected_status} within {timeout}s. "
-        f"Current status: {vm.status}"
-    )
 
 
 def new_fc_vm(name: str, **kwargs) -> NewVm:

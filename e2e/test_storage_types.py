@@ -34,7 +34,7 @@ from qarax_api_client.api.vms import (
     get as get_vm,
     resize_disk,
 )
-from qarax_api_client.models import Hypervisor, HostStatus, NewStoragePool, NewVm, StoragePoolType
+from qarax_api_client.models import Hypervisor, NewStoragePool, NewVm, StoragePoolType
 from qarax_api_client.models.attach_pool_host_request import AttachPoolHostRequest
 from qarax_api_client.models.create_vm_response import CreateVmResponse
 from qarax_api_client.models.disk_resize_request import DiskResizeRequest
@@ -75,8 +75,7 @@ async def wait_for_job(c, job_id, timeout=JOB_TIMEOUT):
     raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
 
 
-def _up_hosts(hosts):
-    return [h for h in (hosts or []) if h.status == HostStatus.UP]
+from helpers import up_hosts as _up_hosts
 
 
 async def _create_pool(c, name, pool_type, config):

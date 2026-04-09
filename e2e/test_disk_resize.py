@@ -13,10 +13,7 @@ file at /var/lib/qarax/images/test-initramfs.gz (the same file used by hotplug
 tests as a stand-in raw block device).
 """
 
-import asyncio
-import os
 import subprocess
-import time
 import uuid
 from uuid import UUID
 
@@ -42,7 +39,6 @@ from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
 from qarax_api_client.models import (
-    HostStatus,
     Hypervisor,
     NewStoragePool,
     NewVm,
@@ -55,7 +51,8 @@ from qarax_api_client.models.disk_resize_request import DiskResizeRequest
 from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
+from helpers import QARAX_URL, up_hosts as _up_hosts, wait_for_status
+
 VM_OPERATION_TIMEOUT = 30
 
 MIB = 1024 * 1024
@@ -107,19 +104,6 @@ def _remove_disk_from_nodes(path):
         )
 
 
-async def wait_for_status(c, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
-
-
 async def _make_vm(c, test_id):
     vm_id_raw = await create_vm.asyncio(
         client=c,
@@ -132,10 +116,6 @@ async def _make_vm(c, test_id):
         ),
     )
     return UUID(str(vm_id_raw).strip('"'))
-
-
-def _up_hosts(hosts):
-    return [h for h in (hosts or []) if h.status == HostStatus.UP]
 
 
 async def _make_local_pool(c, test_id, hosts):

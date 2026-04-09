@@ -525,12 +525,22 @@ impl NodeClient {
 
     /// Restore a VM on the qarax-node from a snapshot
     #[instrument(skip(self))]
-    pub async fn restore_vm(&self, vm_id: Uuid, source_url: &str) -> Result<()> {
+    pub async fn restore_vm(
+        &self,
+        vm_id: Uuid,
+        source_url: &str,
+        hypervisor: &crate::model::vms::Hypervisor,
+    ) -> Result<()> {
+        let proto_hypervisor = match hypervisor {
+            crate::model::vms::Hypervisor::Firecracker => HypervisorType::Firecracker as i32,
+            _ => HypervisorType::CloudHv as i32,
+        };
         let mut client = self.connect_vm_service().await?;
         client
             .restore_vm(RestoreVmRequest {
                 vm_id: vm_id.to_string(),
                 source_url: source_url.to_string(),
+                hypervisor: proto_hypervisor,
             })
             .await
             .context("Failed to restore VM on qarax-node")?;

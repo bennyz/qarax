@@ -15,9 +15,6 @@ Prerequisites for running-VM tests:
   - VM must be created with max_vcpus > 1 and memory_hotplug_size > 0
 """
 
-import asyncio
-import os
-import time
 import uuid
 from uuid import UUID
 
@@ -35,7 +32,8 @@ from qarax_api_client.api.vms import (
 from qarax_api_client.models import Hypervisor, NewVm, VmStatus
 from qarax_api_client.models.vm_resize_request import VmResizeRequest
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
+from helpers import QARAX_URL, wait_for_status
+
 VM_OPERATION_TIMEOUT = 30
 
 # VM config for resize tests: 1 boot vCPU, 4 max vCPUs, 256 MiB base + 256 MiB hotplug
@@ -48,19 +46,6 @@ MEMORY_HOTPLUG_SIZE = 256 * 1024 * 1024
 @pytest.fixture
 def client():
     return Client(base_url=QARAX_URL)
-
-
-async def wait_for_status(c, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
 
 
 async def _make_resize_vm(c, test_id):

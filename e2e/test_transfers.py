@@ -9,7 +9,6 @@ Tests verify the transfer lifecycle:
 """
 
 import asyncio
-import os
 import time
 
 import pytest
@@ -30,7 +29,6 @@ from qarax_api_client.api.transfers import (
     list_ as list_transfers,
 )
 from qarax_api_client.models import (
-    HostStatus,
     NewStoragePool,
     StoragePoolType,
     NewTransfer,
@@ -40,18 +38,15 @@ from qarax_api_client.models import (
 from qarax_api_client.models.attach_host_request import AttachHostRequest
 
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 TRANSFER_TIMEOUT = 30
+
+from helpers import QARAX_URL, up_hosts as _up_hosts
 
 
 @pytest.fixture
 def client():
     """Create a qarax API client."""
     return Client(base_url=QARAX_URL)
-
-
-def _up_hosts(hosts):
-    return [h for h in (hosts or []) if h.status == HostStatus.UP]
 
 
 @pytest.mark.asyncio
