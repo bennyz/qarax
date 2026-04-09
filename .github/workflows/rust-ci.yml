@@ -212,7 +212,7 @@ jobs:
             python-sdk/uv.lock
 
       - name: Install e2e dependencies
-        run: sudo apt-get install -y qemu-utils
+        run: sudo apt-get update && sudo apt-get install -y qemu-utils
 
       - name: Run E2E tests
         run: SKIP_BUILD=1 ENABLE_OTEL=1 CLOUD_HYPERVISOR_VERSION=$(cat versions/cloud-hypervisor-version | tr -d '\n') bash e2e/run_e2e_tests.sh

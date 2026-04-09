@@ -19,6 +19,10 @@ import uuid
 
 import pytest
 from qarax_api_client import Client
+from qarax_api_client.api.hosts import list_ as list_hosts
+from qarax_api_client.api.storage_pools import attach_host as attach_pool_host
+from qarax_api_client.api.storage_pools import create as create_pool
+from qarax_api_client.api.storage_pools import delete as delete_pool
 from qarax_api_client.api.vms import (
     list_ as list_vms,
     create as create_vm,
@@ -35,10 +39,14 @@ from qarax_api_client.api.vms import (
 )
 from qarax_api_client.models import (
     AttachDiskRequest,
+    AttachPoolHostRequest,
     CreateSnapshotRequest,
+    HostStatus,
     Hypervisor,
+    NewStoragePool,
     NewVm,
     RestoreRequest,
+    StoragePoolType,
     VmStatus,
 )
 
@@ -49,6 +57,36 @@ from helpers import QARAX_URL, call_api, call_api_detailed, wait_for_status
 def client():
     """Create a qarax API client."""
     return Client(base_url=QARAX_URL)
+
+
+@pytest.fixture(scope="module")
+def fc_snapshot_storage_pool():
+    """Create a local storage pool for FC snapshot tests and attach it to a UP host."""
+    with Client(base_url=QARAX_URL) as c:
+        hosts = [h for h in (list_hosts.sync(client=c) or []) if h.status == HostStatus.UP]
+        assert hosts, "No UP hosts registered"
+        host_id = hosts[0].id
+
+        pool_id_raw = create_pool.sync(
+            client=c,
+            body=NewStoragePool(
+                name=f"e2e-fc-snapshot-pool-{uuid.uuid4().hex[:8]}",
+                pool_type=StoragePoolType.LOCAL,
+                config={"path": "/var/lib/qarax/snapshots"},
+            ),
+        )
+        assert pool_id_raw is not None, "Failed to create FC snapshot storage pool"
+        pool_id = uuid.UUID(str(pool_id_raw).strip('"'))
+
+        attach_pool_host.sync_detailed(
+            client=c,
+            pool_id=pool_id,
+            body=AttachPoolHostRequest(host_id=host_id),
+        )
+
+        yield pool_id
+
+        delete_pool.sync_detailed(client=c, pool_id=pool_id)
 
 
 def new_fc_vm(name: str, **kwargs) -> NewVm:
@@ -173,7 +211,7 @@ runcmd:
 
 
 @pytest.mark.asyncio
-async def test_fc_vm_snapshot_restore(client):
+async def test_fc_vm_snapshot_restore(client, fc_snapshot_storage_pool):
     """Snapshot a paused FC VM and restore it."""
     async with client as c:
         new_vm = new_fc_vm("e2e-fc-snapshot")
