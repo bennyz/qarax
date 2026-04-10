@@ -9,7 +9,6 @@ Tests verify the transfer lifecycle:
 """
 
 import asyncio
-import os
 import time
 
 import pytest
@@ -39,8 +38,9 @@ from qarax_api_client.models import (
 from qarax_api_client.models.attach_host_request import AttachHostRequest
 
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 TRANSFER_TIMEOUT = 30
+
+from helpers import QARAX_URL, up_hosts as _up_hosts
 
 
 @pytest.fixture
@@ -56,8 +56,8 @@ async def test_local_copy_transfer(client):
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
         # 1. Find the e2e-node host
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts is not None and len(hosts) > 0, "No hosts registered"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts registered"
         host = hosts[0]
 
         # 2. Create a storage pool and attach the host

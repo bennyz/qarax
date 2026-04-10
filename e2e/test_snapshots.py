@@ -8,8 +8,6 @@ These tests verify snapshot lifecycle against a real Cloud Hypervisor VM:
 - Listing snapshots for an unknown VM returns 404
 """
 
-import os
-import time
 import uuid
 
 import pytest
@@ -38,14 +36,15 @@ from qarax_api_client.api.vms import (
 from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
-from qarax_api_client.models import Hypervisor, NewStoragePool, NewVm, StoragePoolType, VmStatus
+from qarax_api_client.models import HostStatus, Hypervisor, NewStoragePool, NewVm, StoragePoolType, VmStatus
 from qarax_api_client.models.attach_pool_host_request import AttachPoolHostRequest
 from qarax_api_client.models.create_snapshot_request import CreateSnapshotRequest
 from qarax_api_client.models.restore_request import RestoreRequest
 from qarax_api_client.models.snapshot_status import SnapshotStatus
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 VM_OPERATION_TIMEOUT = 60
+
+from helpers import QARAX_URL, wait_for_status
 
 
 @pytest.fixture
@@ -57,14 +56,15 @@ def client():
 def snapshot_storage_pool():
     """Create a local storage pool for snapshot tests and attach it to the host."""
     with Client(base_url=QARAX_URL) as c:
-        hosts = list_hosts.sync(client=c)
-        assert hosts and len(hosts) > 0, "No hosts registered"
+        hosts = [h for h in (list_hosts.sync(client=c) or []) if h.status == HostStatus.UP]
+        assert hosts and len(hosts) > 0, "No UP hosts registered"
         host_id = hosts[0].id
 
+        import uuid
         pool_id_raw = create_pool.sync(
             client=c,
             body=NewStoragePool(
-                name="e2e-snapshot-pool",
+                name=f"e2e-snapshot-pool-{uuid.uuid4().hex[:8]}",
                 pool_type=StoragePoolType.LOCAL,
                 config={"path": "/var/lib/qarax/snapshots"},
             ),
@@ -81,26 +81,6 @@ def snapshot_storage_pool():
         yield pool_id
 
         delete_pool.sync_detailed(client=c, pool_id=pool_id)
-
-
-async def wait_for_status(
-    client,
-    vm_id: uuid.UUID,
-    expected_status: VmStatus,
-    timeout: int = VM_OPERATION_TIMEOUT,
-):
-    import asyncio
-
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=client, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=client, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
 
 
 @pytest.mark.asyncio
@@ -162,7 +142,7 @@ async def test_snapshot_full_lifecycle(client, snapshot_storage_pool):
         try:
             # Start the VM and wait for RUNNING
             await start_vm.asyncio_detailed(client=c, vm_id=vm_id)
-            await wait_for_status(c, vm_id, VmStatus.RUNNING)
+            await wait_for_status(c, vm_id, VmStatus.RUNNING, timeout=VM_OPERATION_TIMEOUT)
 
             # Create a snapshot
             snapshot = await create_snapshot.asyncio(client=c, vm_id=vm_id, body=CreateSnapshotRequest())
@@ -211,7 +191,7 @@ async def test_snapshot_restore(client, snapshot_storage_pool):
         try:
             # Start the VM and wait for RUNNING
             await start_vm.asyncio_detailed(client=c, vm_id=vm_id)
-            await wait_for_status(c, vm_id, VmStatus.RUNNING)
+            await wait_for_status(c, vm_id, VmStatus.RUNNING, timeout=VM_OPERATION_TIMEOUT)
 
             # Create a snapshot
             snapshot = await create_snapshot.asyncio(client=c, vm_id=vm_id, body=CreateSnapshotRequest())
@@ -220,7 +200,7 @@ async def test_snapshot_restore(client, snapshot_storage_pool):
 
             # Stop the VM
             await stop_vm.asyncio_detailed(client=c, vm_id=vm_id)
-            await wait_for_status(c, vm_id, VmStatus.SHUTDOWN)
+            await wait_for_status(c, vm_id, VmStatus.SHUTDOWN, timeout=VM_OPERATION_TIMEOUT)
 
             # Restore from snapshot
             restored_vm = await restore.asyncio(

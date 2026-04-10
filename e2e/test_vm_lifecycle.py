@@ -11,8 +11,6 @@ These tests verify the full VM lifecycle with real Cloud Hypervisor VMs:
 """
 
 import asyncio
-import os
-import time
 
 import pytest
 from qarax_api_client import Client
@@ -30,54 +28,15 @@ from qarax_api_client.api.vms import (
 from qarax_api_client.models import NewVm, Hypervisor, VmStatus
 
 
-# Base URL for the qarax API (can be overridden via environment variable)
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
-
-# Timeout for VM operations (real VMs take time to boot/stop)
 VM_OPERATION_TIMEOUT = 30
+
+from helpers import QARAX_URL, call_api, wait_for_status
 
 
 @pytest.fixture
 def client():
     """Create a qarax API client."""
     return Client(base_url=QARAX_URL)
-
-
-async def call_api(endpoint_module, **kwargs):
-    """
-    Call generated SDK endpoint in a version-tolerant way.
-
-    Some generated endpoints expose only `asyncio_detailed` (no `asyncio`) when
-    the operation has no parsed response body.
-    """
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        response = await detailed_fn(**kwargs)
-        return response.parsed
-
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
-
-
-async def wait_for_status(
-    client, vm_id: str, expected_status: VmStatus, timeout: int = VM_OPERATION_TIMEOUT
-):
-    """Wait for a VM to reach the expected status."""
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        vm = await call_api(get_vm, client=client, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-
-    # Get final state for error message
-    vm = await call_api(get_vm, client=client, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach status {expected_status} within {timeout}s. Current status: {vm.status}"
-    )
 
 
 @pytest.mark.asyncio

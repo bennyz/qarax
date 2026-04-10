@@ -13,10 +13,8 @@ file at /var/lib/qarax/images/test-initramfs.gz (the same file used by hotplug
 tests as a stand-in raw block device).
 """
 
-import asyncio
 import os
 import subprocess
-import time
 import uuid
 from uuid import UUID
 
@@ -25,20 +23,36 @@ from qarax_api_client import Client
 from qarax_api_client.api.hosts import list_ as list_hosts
 from qarax_api_client.api.storage_objects import (
     create as create_storage_object,
+)
+from qarax_api_client.api.storage_objects import (
     delete as delete_storage_object,
 )
 from qarax_api_client.api.storage_pools import (
     attach_host as attach_pool_host,
+)
+from qarax_api_client.api.storage_pools import (
     create as create_pool,
+)
+from qarax_api_client.api.storage_pools import (
     delete as delete_pool,
 )
 from qarax_api_client.api.vms import (
     attach_disk,
-    create as create_vm,
-    delete as delete_vm,
-    get as get_vm,
     resize_disk,
+)
+from qarax_api_client.api.vms import (
+    create as create_vm,
+)
+from qarax_api_client.api.vms import (
+    delete as delete_vm,
+)
+from qarax_api_client.api.vms import (
+    get as get_vm,
+)
+from qarax_api_client.api.vms import (
     start as start_vm,
+)
+from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
 from qarax_api_client.models import (
@@ -54,7 +68,9 @@ from qarax_api_client.models.disk_resize_request import DiskResizeRequest
 from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
+from helpers import QARAX_URL, wait_for_status
+from helpers import up_hosts as _up_hosts
+
 VM_OPERATION_TIMEOUT = 30
 
 MIB = 1024 * 1024
@@ -106,19 +122,6 @@ def _remove_disk_from_nodes(path):
         )
 
 
-async def wait_for_status(c, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
-
-
 async def _make_vm(c, test_id):
     vm_id_raw = await create_vm.asyncio(
         client=c,
@@ -134,7 +137,7 @@ async def _make_vm(c, test_id):
 
 
 async def _make_local_pool(c, test_id, hosts):
-    """Create a local storage pool attached to all hosts, return pool_id."""
+    """Create a local storage pool attached to all UP hosts, return pool_id."""
     pool_id_raw = await create_pool.asyncio(
         client=c,
         body=NewStoragePool(
@@ -144,7 +147,7 @@ async def _make_local_pool(c, test_id, hosts):
         ),
     )
     pool_id = UUID(str(pool_id_raw).strip('"'))
-    for host in hosts:
+    for host in _up_hosts(hosts):
         await attach_pool_host.asyncio_detailed(
             client=c,
             pool_id=pool_id,
@@ -197,8 +200,8 @@ async def test_resize_disk_size_too_small_returns_422(client):
     """Requesting a new size <= current size returns 422."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             pool_id = await _make_local_pool(c, test_id, hosts)
@@ -235,8 +238,8 @@ async def test_resize_disk_not_mib_aligned_returns_422(client):
     """Requesting a new size not aligned to 1 MiB returns 422."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             pool_id = await _make_local_pool(c, test_id, hosts)
@@ -273,8 +276,8 @@ async def test_resize_disk_running_vm_returns_422(client):
     """Resizing a disk while the VM is Running returns 422."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             pool_id = await _make_local_pool(c, test_id, hosts)
@@ -330,8 +333,8 @@ async def test_resize_disk_shutdown_vm(client):
     """
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         disk_path = f"/var/lib/qarax/e2e-drs-{test_id}/resize-disk.raw"
         try:

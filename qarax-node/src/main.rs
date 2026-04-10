@@ -11,6 +11,7 @@ use tracing::info;
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use qarax_node::cloud_hypervisor::VmManager;
+use qarax_node::firecracker::FirecrackerManager;
 use qarax_node::overlaybd::OverlayBdManager;
 use qarax_node::rpc::node::StoragePoolKind;
 use qarax_node::rpc::node::file_transfer_service_server::FileTransferServiceServer;
@@ -21,6 +22,7 @@ use qarax_node::storage::StorageBackendRegistry;
 use qarax_node::storage::local::LocalBackend;
 use qarax_node::storage::nfs::NfsBackend;
 use qarax_node::storage::overlaybd::OverlayBdBackend;
+use qarax_node::vmm::VmmManager;
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -53,6 +55,10 @@ pub struct Args {
     /// Directory for OverlayBD cache and per-VM config files
     #[clap(long, default_value = "/var/lib/qarax/overlaybd")]
     overlaybd_cache_dir: PathBuf,
+
+    /// Path to firecracker binary (enables Firecracker backend when present)
+    #[clap(long, default_value = "/usr/local/bin/firecracker")]
+    firecracker_binary: PathBuf,
 
     /// Enable OpenTelemetry export
     #[clap(long, default_value = "false", env = "OTEL_ENABLED")]
@@ -178,8 +184,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     vm_manager.recover_vms().await;
 
-    // Create the VM service from the manager
-    let vm_service = VmServiceImpl::from_manager(vm_manager);
+    // Build Firecracker manager if the binary is available
+    let fc_manager = if args.firecracker_binary.exists() {
+        info!(
+            "Firecracker binary found at {} — Firecracker backend enabled",
+            args.firecracker_binary.display()
+        );
+        let mgr = Arc::new(FirecrackerManager::new(
+            &args.runtime_dir,
+            &args.firecracker_binary,
+        ));
+        mgr.recover_vms().await;
+        Some(mgr)
+    } else {
+        info!(
+            "Firecracker binary not found at {} — Firecracker backend disabled",
+            args.firecracker_binary.display()
+        );
+        None
+    };
+
+    // Create the VM service with all available backends
+    let vm_service = VmServiceImpl::new(vm_manager, fc_manager);
 
     info!("Starting gRPC server with Cloud Hypervisor backend");
 

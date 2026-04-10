@@ -125,29 +125,7 @@ def http_client():
     return httpx.Client(base_url=QARAX_URL)
 
 
-async def call_api(endpoint_module, **kwargs):
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        response = await detailed_fn(**kwargs)
-        return response.parsed
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
-
-
-async def wait_for_status(client, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        vm = await call_api(get_vm, client=client, vm_id=vm_id)
-        if vm is not None and vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await call_api(get_vm, client=client, vm_id=vm_id)
-    status = vm.status if vm is not None else "unknown (VM not found)"
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} in {timeout}s. Got: {status}"
-    )
+from helpers import call_api, wait_for_status
 
 
 # ---------------------------------------------------------------------------

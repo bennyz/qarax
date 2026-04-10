@@ -255,6 +255,29 @@ pub async fn init(
     .await?;
 
     hosts::update_status(env.pool(), host_id, HostStatus::Up).await?;
+    let numa_discoveries: Vec<host_numa::NumaNodeDiscovery> = node_info
+        .numa_nodes
+        .iter()
+        .map(|n| host_numa::NumaNodeDiscovery {
+            node_id: n.id,
+            cpu_list: n
+                .cpus
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            memory_bytes: if n.memory_bytes > 0 {
+                Some(n.memory_bytes)
+            } else {
+                None
+            },
+            distances: n.distances.clone(),
+        })
+        .collect();
+
+    if let Err(e) = host_numa::sync_numa_nodes(env.pool(), host_id, &numa_discoveries).await {
+        warn!(host_id = %host_id, error = %e, "Failed to sync NUMA nodes");
+    }
 
     let updated_host = hosts::require_by_id(env.pool(), host_id).await?;
 

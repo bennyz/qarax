@@ -19,9 +19,7 @@ Prerequisites for running-VM tests:
   - /var/lib/qarax/images/test-initramfs.gz present on every node (used as a raw block device)
 """
 
-import asyncio
 import os
-import time
 import uuid
 from uuid import UUID
 
@@ -55,6 +53,7 @@ from qarax_api_client.api.vms import (
     stop as stop_vm,
 )
 from qarax_api_client.models import (
+    HostStatus,
     Hypervisor,
     NewNetwork,
     NewStoragePool,
@@ -69,10 +68,10 @@ from qarax_api_client.models.new_storage_object import NewStorageObject
 from qarax_api_client.models.new_vm_network import NewVmNetwork
 from qarax_api_client.models.storage_object_type import StorageObjectType
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 NFS_SERVER_HOST = os.getenv("NFS_SERVER_HOST", "nfs-server")
 NFS_EXPORT_PATH = os.getenv("NFS_EXPORT_PATH", "/nfs-export")
-VM_OPERATION_TIMEOUT = 30
+
+from helpers import QARAX_URL, call_api, up_hosts as _up_hosts, wait_for_status
 
 
 @pytest.fixture
@@ -80,31 +79,8 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
-async def call_api(endpoint_module, **kwargs):
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        return (await detailed_fn(**kwargs)).parsed
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
-
-
-async def wait_for_status(c, vm_id, expected_status, timeout=VM_OPERATION_TIMEOUT):
-    start = time.time()
-    while time.time() - start < timeout:
-        vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-        if vm.status == expected_status:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=c, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected_status} within {timeout}s. Current: {vm.status}"
-    )
-
-
 async def _make_nfs_pool(c, test_id, hosts):
-    """Create an NFS storage pool, attach it to the first host, return pool_id."""
+    """Create an NFS storage pool, attach it to the first UP host, return pool_id."""
     pool_id_raw = await create_pool.asyncio(
         client=c,
         body=NewStoragePool(
@@ -114,10 +90,12 @@ async def _make_nfs_pool(c, test_id, hosts):
         ),
     )
     pool_id = UUID(str(pool_id_raw).strip('"'))
+    up_hosts = _up_hosts(hosts)
+    assert up_hosts, "No UP hosts available"
     await attach_pool_host.asyncio_detailed(
         client=c,
         pool_id=pool_id,
-        body=AttachPoolHostRequest(host_id=hosts[0].id),
+        body=AttachPoolHostRequest(host_id=up_hosts[0].id),
     )
     return pool_id
 
@@ -159,8 +137,8 @@ async def test_attach_disk_to_created_vm(client):
     """Attach a disk to a Created VM — recorded in DB only, not hotplugged."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             pool_id = await _make_nfs_pool(c, test_id, hosts)
@@ -194,8 +172,8 @@ async def test_remove_disk_from_created_vm(client):
     """Remove a disk from a Created VM — DB-only deletion, no gRPC call."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             pool_id = await _make_nfs_pool(c, test_id, hosts)
@@ -280,8 +258,8 @@ async def test_attach_remove_disk_shutdown_vm(client):
     """Attach and remove a disk on a Shutdown VM — applied to CH immediately."""
     test_id = uuid.uuid4().hex[:8]
     async with client as c:
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "No hosts available"
+        hosts = _up_hosts(await list_hosts.asyncio(client=c))
+        assert hosts, "No UP hosts available"
         pool_id = disk_id = vm_id = None
         try:
             # Use a local pool so the disk can be resolved on the node
@@ -294,7 +272,7 @@ async def test_attach_remove_disk_shutdown_vm(client):
                 ),
             )
             pool_id = UUID(str(pool_id_raw).strip('"'))
-            for host in hosts:
+            for host in _up_hosts(hosts):
                 await attach_pool_host.asyncio_detailed(
                     client=c,
                     pool_id=pool_id,
@@ -434,8 +412,8 @@ async def test_disk_hotplug_running_vm(client):
     pool_id = disk_id = vm_id = None
     async with client as c:
         try:
-            hosts = await list_hosts.asyncio(client=c)
-            assert hosts, "No hosts available"
+            hosts = _up_hosts(await list_hosts.asyncio(client=c))
+            assert hosts, "No UP hosts available"
 
             # Create a local pool and attach it to ALL hosts. The local-pool validation
             # in attach_disk requires the VM's host to have the pool attached, so we
@@ -449,7 +427,7 @@ async def test_disk_hotplug_running_vm(client):
                 ),
             )
             pool_id = UUID(str(pool_id_raw).strip('"'))
-            for host in hosts:
+            for host in _up_hosts(hosts):
                 await attach_pool_host.asyncio_detailed(
                     client=c,
                     pool_id=pool_id,
@@ -533,8 +511,8 @@ async def test_nic_hotplug_running_vm(client):
     net_id_str = host_id_str = vm_id = None
     async with client as c:
         try:
-            hosts = await list_hosts.asyncio(client=c)
-            assert hosts, "No hosts available"
+            hosts = _up_hosts(await list_hosts.asyncio(client=c))
+            assert hosts, "No UP hosts available"
             host_id_str = str(hosts[0].id)
 
             # Create an isolated network for the hotplugged NIC

@@ -9,6 +9,11 @@
       "matchPackageNames": ["cloud-hypervisor-sdk"],
       "groupName": "cloud-hypervisor-sdk",
       "automerge": false
+    },
+    {
+      "matchPackageNames": ["firecracker-rust-sdk"],
+      "groupName": "firecracker-rust-sdk",
+      "automerge": false
     }
   ]
 }

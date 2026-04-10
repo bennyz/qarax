@@ -8,7 +8,6 @@ They verify:
 """
 
 import asyncio
-import os
 import time
 
 import pytest
@@ -23,24 +22,14 @@ from qarax_api_client.api.vms import (
 )
 from qarax_api_client.models import NewVm, Hypervisor, VmStatus
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
 VM_OPERATION_TIMEOUT = 60
+
+from helpers import QARAX_URL, call_api, up_hosts as _up_hosts
 
 
 @pytest.fixture
 def client():
     return Client(base_url=QARAX_URL)
-
-
-async def call_api(endpoint_module, **kwargs):
-    asyncio_fn = getattr(endpoint_module, "asyncio", None)
-    if callable(asyncio_fn):
-        return await asyncio_fn(**kwargs)
-    detailed_fn = getattr(endpoint_module, "asyncio_detailed", None)
-    if callable(detailed_fn):
-        response = await detailed_fn(**kwargs)
-        return response.parsed
-    raise AttributeError(f"{endpoint_module.__name__} has no async entrypoint")
 
 
 async def wait_for_vm_status(
@@ -66,8 +55,8 @@ async def wait_for_vm_status(
 async def test_host_numa_topology_discovered(client):
     """After host init the control plane should have at least one NUMA node stored."""
     async with client as c:
-        hosts = await call_api(list_hosts, client=c)
-        assert hosts, "No hosts registered — run conftest ensure_host_registered first"
+        hosts = _up_hosts(await call_api(list_hosts, client=c))
+        assert hosts, "No UP hosts registered — run conftest ensure_host_registered first"
 
         host_id = hosts[0].id
         nodes = await call_api(list_numa_nodes, client=c, host_id=host_id)

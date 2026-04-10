@@ -8,10 +8,6 @@ These tests verify:
 - The seed disk is cleaned up after VM deletion (indirectly — delete succeeds)
 """
 
-import asyncio
-import os
-import time
-
 import pytest
 from qarax_api_client import Client
 from qarax_api_client.api.vms import (
@@ -23,7 +19,8 @@ from qarax_api_client.api.vms import (
 )
 from qarax_api_client.models import Hypervisor, NewVm, VmStatus
 
-QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
+from helpers import QARAX_URL, wait_for_status
+
 VM_OPERATION_TIMEOUT = 30
 
 MINIMAL_USER_DATA = """\
@@ -53,20 +50,6 @@ config:
 @pytest.fixture
 def client():
     return Client(base_url=QARAX_URL)
-
-
-async def wait_for_status(client, vm_id: str, expected: VmStatus, timeout: int = VM_OPERATION_TIMEOUT):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        vm = await get_vm.asyncio(client=client, vm_id=vm_id)
-        if vm.status == expected:
-            return vm
-        await asyncio.sleep(0.5)
-    vm = await get_vm.asyncio(client=client, vm_id=vm_id)
-    raise TimeoutError(
-        f"VM {vm_id} did not reach {expected} within {timeout}s. "
-        f"Current status: {vm.status}"
-    )
 
 
 @pytest.mark.asyncio
