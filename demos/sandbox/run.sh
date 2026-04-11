@@ -137,7 +137,9 @@ QARAX_BIN="$(find_qarax_bin)"
 [[ -n "$QARAX_BIN" ]] || die "qarax CLI not found even after build"
 QARAX="$QARAX_BIN --server $SERVER"
 
-ensure_stack "$SERVER"
+if [[ "$CLEANUP_ONLY" -eq 0 ]]; then
+	ensure_stack "$SERVER"
+fi
 
 cleanup() {
 	echo

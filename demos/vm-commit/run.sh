@@ -75,10 +75,12 @@ fi
 [[ -n "$QARAX_BIN" ]] || die "qarax CLI not found even after build"
 QARAX="$QARAX_BIN --server $SERVER"
 
-# ── Cleanup mode ─────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--cleanup" ]]; then
 	banner "Cleaning up demo-commit resources"
-	ensure_stack "$SERVER"
+	if ! curl -sf --max-time 3 "${SERVER}/" >/dev/null 2>&1; then
+		echo "  Stack not running — nothing to clean up."
+		exit 0
+	fi
 
 	step "Deleting VM '${VM_NAME}'"
 	$QARAX vm delete "$VM_NAME" 2>/dev/null && echo "  Deleted." || echo "  Not found, skipping."

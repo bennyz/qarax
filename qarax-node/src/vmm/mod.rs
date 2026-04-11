@@ -14,8 +14,6 @@ use crate::rpc::node::{
     VfioDeviceConfig as ProtoVfioDeviceConfig, VmConfig as ProtoVmConfig, VmState,
 };
 
-// ── Error type ──────────────────────────────────────────────────────────────
-
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {
     #[error("VM {0} not found")]
@@ -83,8 +81,6 @@ impl From<crate::cloud_hypervisor::VmManagerError> for VmmError {
     }
 }
 
-// ── Trait ────────────────────────────────────────────────────────────────────
-
 /// Core VM lifecycle operations that all hypervisor backends must implement.
 ///
 /// Infrastructure concerns (storage backends, OverlayBD, networking, node info)
@@ -100,8 +96,6 @@ pub trait VmmManager: Send + Sync + 'static {
     async fn pause_vm(&self, vm_id: &str) -> Result<(), VmmError>;
     async fn resume_vm(&self, vm_id: &str) -> Result<(), VmmError>;
     async fn delete_vm(&self, vm_id: &str) -> Result<(), VmmError>;
-
-    // ── Query ───────────────────────────────────────────────────────────────
 
     async fn get_vm_info(&self, vm_id: &str) -> Result<VmState, VmmError>;
     async fn list_vms(&self) -> Vec<VmState>;

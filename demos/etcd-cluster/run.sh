@@ -66,8 +66,6 @@ QARAX_BIN="$(find_qarax_bin)"
 [[ -n "$QARAX_BIN" ]] || die "qarax CLI not found even after build"
 QARAX="$QARAX_BIN --server $SERVER"
 
-ensure_stack "$SERVER"
-
 # Cleanup
 
 cleanup() {
@@ -94,6 +92,8 @@ if [[ "${1:-}" == "--cleanup" ]]; then
 	cleanup
 	exit 0
 fi
+
+ensure_stack "$SERVER"
 
 # Preflight
 
