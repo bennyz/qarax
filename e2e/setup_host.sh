@@ -35,6 +35,20 @@ fi
 
 QARAX="$QARAX_BIN --server $QARAX_URL"
 
+resolve_existing_host_name() {
+	$QARAX host list -o json 2>/dev/null | python3 -c '
+import json, sys
+wanted_name, wanted_address, wanted_port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+for host in json.load(sys.stdin):
+    if host.get("name") == wanted_name:
+        print(wanted_name)
+        raise SystemExit(0)
+    if host.get("address") == wanted_address and int(host.get("port", 0)) == wanted_port:
+        print(host.get("name", ""))
+        raise SystemExit(0)
+' "$HOST_NAME" "$QARAX_NODE_HOST" "$QARAX_NODE_PORT"
+}
+
 echo "Registering host (${QARAX_NODE_HOST}:${QARAX_NODE_PORT})..."
 
 add_attempts=10
@@ -53,10 +67,15 @@ for add_attempt in $(seq 1 "$add_attempts"); do
 		break
 	fi
 
-	# Uniqueness conflict: host already exists from a previous run — continue to init.
+	# Uniqueness conflict: host already exists from a previous run — reuse it.
 	if echo "$add_output" | grep -qi "already exists\|conflict\|unique"; then
-		echo "Host already exists, continuing with init." >&2
-		break
+		resolved_name="$(resolve_existing_host_name || true)"
+		if [[ -n "$resolved_name" ]]; then
+			HOST_NAME="$resolved_name"
+			echo "Host already exists as '${HOST_NAME}', continuing with init." >&2
+			break
+		fi
+		echo "Host already exists, but could not resolve its canonical name." >&2
 	fi
 
 	echo "Host add attempt ${add_attempt}/${add_attempts} failed: ${add_output}" >&2

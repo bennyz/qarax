@@ -5,14 +5,13 @@
 # Sandboxes are ephemeral VMs spun up from a VM template and automatically
 # reaped after an idle timeout.  This demo shows the full lifecycle:
 #
-#   1. Create (or reuse) a VM template backed by a boot source with initramfs
-#   2. Create a sandbox from the template
-#   3. Poll until the sandbox is ready
-#   4. Execute a command inside the sandbox
-#   5. Inspect the sandbox (status, IP, idle timeout)
-#   6. Create a second sandbox — demonstrating rapid provisioning from the same template
-#   7. Delete one sandbox manually
-#   8. Watch the remaining sandbox auto-expire after its short idle timeout
+#   1. Create Firecracker + Cloud Hypervisor templates backed by one boot source
+#   2. Create one sandbox from each template and measure time-to-ready
+#   3. Inspect the Firecracker sandbox (default managed backend)
+#   4. Execute a command inside the Firecracker sandbox
+#   5. Create a second Firecracker sandbox — demonstrating rapid provisioning
+#   6. Delete one sandbox manually
+#   7. Watch the remaining sandbox auto-expire after its short idle timeout
 #
 # Each sandbox creates its own underlying VM automatically; no manual VM
 # lifecycle management is required.
@@ -37,6 +36,7 @@ source "${REPO_ROOT}/demos/lib.sh"
 SERVER="${QARAX_SERVER:-http://localhost:8000}"
 IDLE_TIMEOUT="${SANDBOX_IDLE_TIMEOUT:-90}"
 TEMPLATE_NAME="sandbox-demo-template"
+CLOUDHV_TEMPLATE_NAME="sandbox-demo-template-cloudhv"
 BOOT_SOURCE_NAME="sandbox-demo-boot"
 HOST_NAME="${QARAX_HOST:-local-node}"
 POOL_NAME="sandbox-demo-pool"
@@ -48,29 +48,39 @@ INITRAMFS_NAME="sandbox-demo-initramfs"
 SANDBOX_NAME_PREFIX="sandbox-demo"
 SANDBOX1_NAME=""
 SANDBOX2_NAME=""
+CLOUDHV_SANDBOX_NAME=""
 DEFAULT_TEMPLATE_NAME="$TEMPLATE_NAME"
+DEFAULT_CLOUDHV_TEMPLATE_NAME="$CLOUDHV_TEMPLATE_NAME"
 MANAGED_TEMPLATE_PREFIX="sandbox-demo-template"
+MANAGED_CLOUDHV_TEMPLATE_PREFIX="sandbox-demo-template-cloudhv"
 MANAGED_BOOT_SOURCE_PREFIX="sandbox-demo-boot"
 MANAGED_KERNEL_PREFIX="sandbox-demo-kernel"
 MANAGED_INITRAMFS_PREFIX="sandbox-demo-initramfs"
 
 SANDBOX1_ID=""
 SANDBOX2_ID=""
+CLOUDHV_SANDBOX_ID=""
 TEMPLATE_ID=""
+CLOUDHV_TEMPLATE_ID=""
 TEMPLATE_CREATED=0
+CLOUDHV_TEMPLATE_CREATED=0
 BOOT_SOURCE_CREATED=0
 KERNEL_CREATED=0
 INITRAMFS_CREATED=0
 MANAGE_TEMPLATE_ASSETS=1
 CLEANUP_ONLY=0
+FC_READY_MS=""
+CH_READY_MS=""
 RUN_SUFFIX="$(date +%s)-$$"
 
 TEMPLATE_NAME="${MANAGED_TEMPLATE_PREFIX}-${RUN_SUFFIX}"
+CLOUDHV_TEMPLATE_NAME="${MANAGED_CLOUDHV_TEMPLATE_PREFIX}-${RUN_SUFFIX}"
 BOOT_SOURCE_NAME="${MANAGED_BOOT_SOURCE_PREFIX}-${RUN_SUFFIX}"
 KERNEL_NAME="${MANAGED_KERNEL_PREFIX}-${RUN_SUFFIX}"
 INITRAMFS_NAME="${MANAGED_INITRAMFS_PREFIX}-${RUN_SUFFIX}"
 SANDBOX1_NAME="${SANDBOX_NAME_PREFIX}-1-${RUN_SUFFIX}"
 SANDBOX2_NAME="${SANDBOX_NAME_PREFIX}-2-${RUN_SUFFIX}"
+CLOUDHV_SANDBOX_NAME="${SANDBOX_NAME_PREFIX}-ch-${RUN_SUFFIX}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -150,8 +160,14 @@ cleanup() {
 	if [[ -n "$SANDBOX2_ID" ]]; then
 		$QARAX sandbox delete "$SANDBOX2_ID" 2>/dev/null || true
 	fi
+	if [[ -n "$CLOUDHV_SANDBOX_ID" ]]; then
+		$QARAX sandbox delete "$CLOUDHV_SANDBOX_ID" 2>/dev/null || true
+	fi
 	if [[ "$TEMPLATE_CREATED" -eq 1 ]]; then
 		$QARAX vm-template delete "$TEMPLATE_NAME" 2>/dev/null || true
+	fi
+	if [[ "$CLOUDHV_TEMPLATE_CREATED" -eq 1 ]]; then
+		$QARAX vm-template delete "$CLOUDHV_TEMPLATE_NAME" 2>/dev/null || true
 	fi
 	if [[ "$BOOT_SOURCE_CREATED" -eq 1 ]]; then
 		$QARAX boot-source delete "$BOOT_SOURCE_NAME" 2>/dev/null || true
@@ -274,6 +290,7 @@ ensure_clean_demo_state() {
 	fi
 	if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
 		delete_matching_names vm-template "$MANAGED_TEMPLATE_PREFIX-"
+		delete_matching_names vm-template "$MANAGED_CLOUDHV_TEMPLATE_PREFIX-"
 		delete_matching_names boot-source "$MANAGED_BOOT_SOURCE_PREFIX-"
 		delete_matching_names storage-object "$MANAGED_KERNEL_PREFIX-"
 		delete_matching_names storage-object "$MANAGED_INITRAMFS_PREFIX-"
@@ -286,11 +303,16 @@ cleanup_demo_resources() {
 	info "Demo resources removed (if any)."
 }
 
+now_ms() {
+	python3 -c 'import time; print(time.perf_counter_ns() // 1_000_000)'
+}
+
 create_sandbox() {
-	local name="$1"
+	local template_name="$1"
+	local name="$2"
 	local output
 	if ! output=$("$QARAX_BIN" --server "$SERVER" sandbox create \
-		--template "$TEMPLATE_NAME" \
+		--template "$template_name" \
 		--name "$name" \
 		--idle-timeout "$IDLE_TIMEOUT" -o json); then
 		return 1
@@ -318,16 +340,13 @@ else
 	info "Using caller-managed template '$TEMPLATE_NAME'."
 fi
 
-banner "Step 1 — VM Template"
+banner "Step 1 — VM Templates"
 
 cleanup_demo_resources
 echo ""
 
-if $QARAX vm-template get "$TEMPLATE_NAME" >/dev/null 2>&1; then
-	info "Template '$TEMPLATE_NAME' already exists — reusing it."
-	TEMPLATE_ID=$($QARAX vm-template get "$TEMPLATE_NAME" -o json | json_field "id" 2>/dev/null)
-else
-	step "Creating storage pool and boot source for the template..."
+if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
+	step "Creating storage pool and boot source for the sandbox templates..."
 
 	if ! $QARAX storage-pool get "$POOL_NAME" >/dev/null 2>&1; then
 		run $QARAX storage-pool create \
@@ -383,28 +402,81 @@ else
 		info "Boot source '$BOOT_SOURCE_NAME' already exists."
 	fi
 
-	step "Creating VM template '$TEMPLATE_NAME'..."
+	step "Creating Firecracker default sandbox template '$TEMPLATE_NAME'..."
 	echo ""
 	run $QARAX vm-template create \
 		--name "$TEMPLATE_NAME" \
+		--hypervisor firecracker \
 		--boot-source "$BOOT_SOURCE_NAME" \
 		--vcpus 1 \
 		--memory 268435456 \
 		--boot-mode kernel
 	echo ""
-
 	TEMPLATE_ID=$($QARAX vm-template get "$TEMPLATE_NAME" -o json | json_field "id" 2>/dev/null)
 	TEMPLATE_CREATED=1
-	info "Template '$TEMPLATE_NAME' created (id=${TEMPLATE_ID})"
+	info "Firecracker template '$TEMPLATE_NAME' created (id=${TEMPLATE_ID})"
+
+	step "Creating Cloud Hypervisor comparison template '$CLOUDHV_TEMPLATE_NAME'..."
+	echo ""
+	run $QARAX vm-template create \
+		--name "$CLOUDHV_TEMPLATE_NAME" \
+		--hypervisor cloud_hv \
+		--boot-source "$BOOT_SOURCE_NAME" \
+		--vcpus 1 \
+		--memory 268435456 \
+		--boot-mode kernel
+	echo ""
+	CLOUDHV_TEMPLATE_ID=$($QARAX vm-template get "$CLOUDHV_TEMPLATE_NAME" -o json | json_field "id" 2>/dev/null)
+	CLOUDHV_TEMPLATE_CREATED=1
+	info "Cloud Hypervisor comparison template '$CLOUDHV_TEMPLATE_NAME' created (id=${CLOUDHV_TEMPLATE_ID})"
+else
+	$QARAX vm-template get "$TEMPLATE_NAME" >/dev/null 2>&1 || die "Template '$TEMPLATE_NAME' not found"
+	TEMPLATE_ID=$($QARAX vm-template get "$TEMPLATE_NAME" -o json | json_field "id" 2>/dev/null)
+	info "Using caller-managed template '$TEMPLATE_NAME' (id=${TEMPLATE_ID})."
 fi
 
-banner "Step 2 — Create Sandbox"
+if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
+	banner "Step 2 — Provisioning Benchmark"
+	info "Benchmarking time-to-ready with identical guest artifacts."
+	echo ""
 
-step "Creating sandbox from template '$TEMPLATE_NAME' (idle timeout: ${IDLE_TIMEOUT}s)..."
-echo ""
-SANDBOX1_ID=$(create_sandbox "$SANDBOX1_NAME")
-wait_for_sandbox_status "$SANDBOX1_ID" ready || die "Sandbox $SANDBOX1_ID failed to become ready"
-echo ""
+	step "Creating Firecracker sandbox #1 (default backend)..."
+	echo ""
+	start_ms=$(now_ms)
+	SANDBOX1_ID=$(create_sandbox "$TEMPLATE_NAME" "$SANDBOX1_NAME")
+	wait_for_sandbox_status "$SANDBOX1_ID" ready || die "Sandbox $SANDBOX1_ID failed to become ready"
+	FC_READY_MS=$(( $(now_ms) - start_ms ))
+	echo ""
+	info "Firecracker sandbox ready in ${FC_READY_MS} ms"
+	echo ""
+
+	step "Creating Cloud Hypervisor comparison sandbox..."
+	echo ""
+	start_ms=$(now_ms)
+	CLOUDHV_SANDBOX_ID=$(create_sandbox "$CLOUDHV_TEMPLATE_NAME" "$CLOUDHV_SANDBOX_NAME")
+	wait_for_sandbox_status "$CLOUDHV_SANDBOX_ID" ready || die "Sandbox $CLOUDHV_SANDBOX_ID failed to become ready"
+	CH_READY_MS=$(( $(now_ms) - start_ms ))
+	echo ""
+	info "Cloud Hypervisor sandbox ready in ${CH_READY_MS} ms"
+	echo ""
+
+	if (( FC_READY_MS < CH_READY_MS )); then
+		info "In this run, Firecracker reached READY $((CH_READY_MS - FC_READY_MS)) ms faster than Cloud Hypervisor."
+	elif (( CH_READY_MS < FC_READY_MS )); then
+		info "In this run, Cloud Hypervisor reached READY $((FC_READY_MS - CH_READY_MS)) ms faster than Firecracker."
+	else
+		info "In this run, Firecracker and Cloud Hypervisor reached READY in the same time."
+	fi
+
+	banner "Step 3 — Inspect Firecracker Sandbox"
+else
+	banner "Step 2 — Create Sandbox"
+	step "Creating sandbox from template '$TEMPLATE_NAME' (idle timeout: ${IDLE_TIMEOUT}s)..."
+	echo ""
+	SANDBOX1_ID=$(create_sandbox "$TEMPLATE_NAME" "$SANDBOX1_NAME")
+	wait_for_sandbox_status "$SANDBOX1_ID" ready || die "Sandbox $SANDBOX1_ID failed to become ready"
+	echo ""
+fi
 
 [[ -n "$SANDBOX1_ID" ]] || die "Could not determine sandbox ID from list"
 info "Sandbox 1 ID: $SANDBOX1_ID"
@@ -414,21 +486,36 @@ step "Sandbox 1 details:"
 run $QARAX sandbox get "$SANDBOX1_ID"
 echo ""
 
-banner "Step 3 — Execute Inside Sandbox"
+if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
+	banner "Step 4 — Execute Inside Firecracker Sandbox"
+	step "Running a command inside sandbox #1..."
+	echo ""
+	run $QARAX sandbox exec "$SANDBOX1_ID" -- /bin/sh -c 'printf sandbox-demo && uname -s'
+	echo ""
 
-step "Running a command inside sandbox #1..."
-echo ""
-run $QARAX sandbox exec "$SANDBOX1_ID" -- /bin/sh -c 'printf sandbox-demo && uname -s'
-echo ""
+	step "Deleting the Cloud Hypervisor comparison sandbox..."
+	echo ""
+	run $QARAX sandbox delete "$CLOUDHV_SANDBOX_ID"
+	CLOUDHV_SANDBOX_ID=""
+	echo ""
 
-banner "Step 4 — Rapid Provisioning (second sandbox)"
+	banner "Step 5 — Rapid Provisioning (second Firecracker sandbox)"
+else
+	banner "Step 3 — Execute Inside Sandbox"
+	step "Running a command inside sandbox #1..."
+	echo ""
+	run $QARAX sandbox exec "$SANDBOX1_ID" -- /bin/sh -c 'printf sandbox-demo && uname -s'
+	echo ""
+
+	banner "Step 4 — Rapid Provisioning (second sandbox)"
+fi
 
 info "Demonstrating that multiple sandboxes can be provisioned from the same template concurrently."
 echo ""
 
 step "Creating sandbox #2..."
 echo ""
-SANDBOX2_ID=$(create_sandbox "$SANDBOX2_NAME")
+SANDBOX2_ID=$(create_sandbox "$TEMPLATE_NAME" "$SANDBOX2_NAME")
 wait_for_sandbox_status "$SANDBOX2_ID" ready || die "Sandbox $SANDBOX2_ID failed to become ready"
 echo ""
 
@@ -440,7 +527,11 @@ step "All sandboxes:"
 run $QARAX sandbox list
 echo ""
 
-banner "Step 5 — Manual Delete"
+if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
+	banner "Step 6 — Manual Delete"
+else
+	banner "Step 5 — Manual Delete"
+fi
 
 step "Deleting sandbox #1 (${SANDBOX1_ID::8}...) manually..."
 echo ""
@@ -452,7 +543,11 @@ step "Remaining sandboxes:"
 run $QARAX sandbox list
 echo ""
 
-banner "Step 6 — Auto-Reap via Idle Timeout"
+if [[ "$MANAGE_TEMPLATE_ASSETS" -eq 1 ]]; then
+	banner "Step 7 — Auto-Reap via Idle Timeout"
+else
+	banner "Step 6 — Auto-Reap via Idle Timeout"
+fi
 
 info "Sandbox #2 has an idle timeout of ${IDLE_TIMEOUT}s."
 info "The sandbox reaper checks every 15s and will destroy it once the timeout expires."
@@ -483,14 +578,21 @@ echo ""
 banner "Demo Complete"
 
 echo -e "${GREEN}What we demonstrated:${NC}"
-echo "  ✓ Create a VM template from a boot source"
-echo "  ✓ Spin up an ephemeral sandbox from that template"
-echo "  ✓ Poll the sandbox until it is ready"
+echo "  ✓ Create sandbox templates from a shared boot source"
+echo "  ✓ Default managed sandboxes to Firecracker"
+echo "  ✓ Benchmark Firecracker vs Cloud Hypervisor time-to-ready"
+echo "  ✓ Inspect a running Firecracker sandbox"
 echo "  ✓ Execute a command inside the sandbox over the guest agent"
-echo "  ✓ Provision a second sandbox concurrently from the same template"
+echo "  ✓ Provision a second sandbox from the same template"
 echo "  ✓ Delete a sandbox manually"
 echo "  ✓ Watch idle-timeout auto-reap kick in"
 echo ""
+if [[ -n "$FC_READY_MS" && -n "$CH_READY_MS" ]]; then
+	echo "Measured performance in this run:"
+	echo "  Firecracker ready time:      ${FC_READY_MS} ms"
+	echo "  Cloud Hypervisor ready time: ${CH_READY_MS} ms"
+	echo ""
+fi
 echo "Useful commands:"
 echo "  qarax sandbox list                 # list all sandboxes"
 echo "  qarax sandbox get <id>             # inspect a sandbox"

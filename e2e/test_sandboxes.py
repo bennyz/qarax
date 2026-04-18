@@ -57,155 +57,165 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
-@pytest.fixture
-async def sandbox_template():
-    """Create an explicitly bootable VM template for sandbox tests."""
-    async with Client(base_url=QARAX_URL) as c:
-        test_id = uuid.uuid4().hex[:8]
-        hosts = await list_hosts.asyncio(client=c)
-        assert hosts, "Expected at least one registered host"
+async def create_bootable_sandbox_template(client, hypervisor: str | None):
+    """Create a bootable sandbox template and return (template_id, cleanup_resources)."""
+    test_id = uuid.uuid4().hex[:8]
+    hosts = await list_hosts.asyncio(client=client)
+    assert hosts, "Expected at least one registered host"
 
-        host = next((h for h in hosts if h.status == HostStatus.UP), hosts[0])
+    host = next((h for h in hosts if h.status == HostStatus.UP), hosts[0])
 
-        pool_name = f"e2e-sandbox-pool-{test_id}"
-        pool_id_raw = await create_storage_pool.asyncio(
-            client=c,
-            body=NewStoragePool(
-                name=pool_name,
-                pool_type=StoragePoolType.LOCAL,
-                config={"path": f"/var/lib/qarax/e2e-sandbox-{test_id}"},
-            ),
-        )
-        assert pool_id_raw is not None
-        pool_id = uuid.UUID(str(pool_id_raw).strip('"'))
+    pool_name = f"e2e-sandbox-pool-{test_id}"
+    pool_id_raw = await create_storage_pool.asyncio(
+        client=client,
+        body=NewStoragePool(
+            name=pool_name,
+            pool_type=StoragePoolType.LOCAL,
+            config={"path": f"/var/lib/qarax/e2e-sandbox-{test_id}"},
+        ),
+    )
+    assert pool_id_raw is not None
+    pool_id = uuid.UUID(str(pool_id_raw).strip('"'))
 
-        await attach_pool_host.asyncio_detailed(
-            client=c,
-            pool_id=pool_id,
-            body=AttachPoolHostRequest(host_id=host.id),
-        )
+    await attach_pool_host.asyncio_detailed(
+        client=client,
+        pool_id=pool_id,
+        body=AttachPoolHostRequest(host_id=host.id),
+    )
 
-        transfer = await create_transfer.asyncio(
-            client=c,
-            pool_id=pool_id,
-            body=NewTransfer(
-                name=f"e2e-sandbox-kernel-{test_id}",
-                source="/var/lib/qarax/images/vmlinux",
-                object_type=StorageObjectType.KERNEL,
-            ),
+    transfer = await create_transfer.asyncio(
+        client=client,
+        pool_id=pool_id,
+        body=NewTransfer(
+            name=f"e2e-sandbox-kernel-{test_id}",
+            source="/var/lib/qarax/images/vmlinux",
+            object_type=StorageObjectType.KERNEL,
+        ),
+    )
+    assert transfer is not None
+
+    deadline = time.time() + TRANSFER_TIMEOUT
+    while time.time() < deadline:
+        transfer = await get_transfer.asyncio(
+            client=client, pool_id=pool_id, transfer_id=transfer.id
         )
         assert transfer is not None
+        if transfer.status == TransferStatus.COMPLETED:
+            break
+        if transfer.status == TransferStatus.FAILED:
+            raise AssertionError(f"Kernel transfer failed: {transfer.error_message}")
+        await asyncio.sleep(0.5)
+    else:
+        raise TimeoutError("Kernel transfer did not complete in time")
 
-        deadline = time.time() + TRANSFER_TIMEOUT
-        while time.time() < deadline:
-            transfer = await get_transfer.asyncio(
-                client=c, pool_id=pool_id, transfer_id=transfer.id
-            )
-            assert transfer is not None
-            if transfer.status == TransferStatus.COMPLETED:
-                break
-            if transfer.status == TransferStatus.FAILED:
-                raise AssertionError(
-                    f"Kernel transfer failed: {transfer.error_message}"
-                )
-            await asyncio.sleep(0.5)
-        else:
-            raise TimeoutError("Kernel transfer did not complete in time")
+    assert transfer.storage_object_id is not None
 
-        assert transfer.storage_object_id is not None
+    initrd_transfer = await create_transfer.asyncio(
+        client=client,
+        pool_id=pool_id,
+        body=NewTransfer(
+            name=f"e2e-sandbox-initrd-{test_id}",
+            source="/var/lib/qarax/images/test-initramfs.gz",
+            object_type=StorageObjectType.INITRD,
+        ),
+    )
+    assert initrd_transfer is not None
+    objects = await list_storage_objects.asyncio(
+        client=client, name=f"e2e-sandbox-kernel-{test_id}"
+    )
+    assert objects is not None
+    kernel = next((obj for obj in objects if obj.id == transfer.storage_object_id), None)
+    assert kernel is not None, "Expected transferred kernel storage object"
 
-        initrd_transfer = await create_transfer.asyncio(
-            client=c,
-            pool_id=pool_id,
-            body=NewTransfer(
-                name=f"e2e-sandbox-initrd-{test_id}",
-                source="/var/lib/qarax/images/test-initramfs.gz",
-                object_type=StorageObjectType.INITRD,
-            ),
+    initrd_deadline = time.time() + TRANSFER_TIMEOUT
+    while time.time() < initrd_deadline:
+        initrd_transfer = await get_transfer.asyncio(
+            client=client, pool_id=pool_id, transfer_id=initrd_transfer.id
         )
         assert initrd_transfer is not None
-        objects = await list_storage_objects.asyncio(
-            client=c, name=f"e2e-sandbox-kernel-{test_id}"
+        if initrd_transfer.status == TransferStatus.COMPLETED:
+            break
+        if initrd_transfer.status == TransferStatus.FAILED:
+            raise AssertionError(f"Initrd transfer failed: {initrd_transfer.error_message}")
+        await asyncio.sleep(0.5)
+    else:
+        raise TimeoutError("Initrd transfer did not complete in time")
+
+    assert initrd_transfer.storage_object_id is not None
+
+    boot_source_name = f"e2e-sandbox-boot-{uuid.uuid4().hex[:8]}"
+    boot_source_id_raw = await create_boot_source.asyncio(
+        client=client,
+        body=NewBootSource(
+            name=boot_source_name,
+            kernel_image_id=kernel.id,
+            kernel_params="console=ttyS0",
+            initrd_image_id=initrd_transfer.storage_object_id,
+        ),
+    )
+    assert boot_source_id_raw is not None
+    boot_source_id = uuid.UUID(boot_source_id_raw.strip('"'))
+
+    new_template = NewVmTemplate(
+        name=f"e2e-sandbox-template-{uuid.uuid4().hex[:8]}",
+        hypervisor=hypervisor,
+        boot_vcpus=1,
+        max_vcpus=1,
+        memory_size=256 * 1024 * 1024,
+        boot_source_id=boot_source_id,
+        boot_mode="kernel",
+    )
+    template_id_str = await create_template.asyncio(client=client, body=new_template)
+    assert template_id_str is not None
+    template_id = uuid.UUID(template_id_str.strip('"'))
+
+    return template_id, {
+        "template_id": template_id,
+        "boot_source_id": boot_source_id,
+        "kernel_object_id": transfer.storage_object_id,
+        "initrd_object_id": initrd_transfer.storage_object_id,
+        "pool_id": pool_id,
+    }
+
+
+async def cleanup_bootable_sandbox_template(client, resources):
+    try:
+        await delete_template.asyncio_detailed(
+            client=client, vm_template_id=resources["template_id"]
         )
-        assert objects is not None
-        kernel = next(
-            (obj for obj in objects if obj.id == transfer.storage_object_id), None
+    except Exception:
+        pass
+    try:
+        await delete_boot_source.asyncio_detailed(
+            client=client, boot_source_id=resources["boot_source_id"]
         )
-        assert kernel is not None, "Expected transferred kernel storage object"
-
-        initrd_deadline = time.time() + TRANSFER_TIMEOUT
-        while time.time() < initrd_deadline:
-            initrd_transfer = await get_transfer.asyncio(
-                client=c, pool_id=pool_id, transfer_id=initrd_transfer.id
-            )
-            assert initrd_transfer is not None
-            if initrd_transfer.status == TransferStatus.COMPLETED:
-                break
-            if initrd_transfer.status == TransferStatus.FAILED:
-                raise AssertionError(
-                    f"Initrd transfer failed: {initrd_transfer.error_message}"
-                )
-            await asyncio.sleep(0.5)
-        else:
-            raise TimeoutError("Initrd transfer did not complete in time")
-
-        assert initrd_transfer.storage_object_id is not None
-
-        boot_source_name = f"e2e-sandbox-boot-{uuid.uuid4().hex[:8]}"
-        boot_source_id_raw = await create_boot_source.asyncio(
-            client=c,
-            body=NewBootSource(
-                name=boot_source_name,
-                kernel_image_id=kernel.id,
-                kernel_params="console=ttyS0",
-                initrd_image_id=initrd_transfer.storage_object_id,
-            ),
+    except Exception:
+        pass
+    try:
+        await delete_storage_object.asyncio_detailed(
+            client=client, object_id=str(resources["kernel_object_id"])
         )
-        assert boot_source_id_raw is not None
-        boot_source_id = uuid.UUID(boot_source_id_raw.strip('"'))
-
-        new_template = NewVmTemplate(
-            name=f"e2e-sandbox-template-{uuid.uuid4().hex[:8]}",
-            hypervisor="cloud_hv",
-            boot_vcpus=1,
-            max_vcpus=1,
-            memory_size=256 * 1024 * 1024,
-            boot_source_id=boot_source_id,
-            boot_mode="kernel",
+    except Exception:
+        pass
+    try:
+        await delete_storage_object.asyncio_detailed(
+            client=client, object_id=str(resources["initrd_object_id"])
         )
-        template_id_str = await create_template.asyncio(client=c, body=new_template)
-        assert template_id_str is not None
-        template_id = uuid.UUID(template_id_str.strip('"'))
+    except Exception:
+        pass
+    try:
+        await delete_storage_pool.asyncio_detailed(client=client, pool_id=resources["pool_id"])
+    except Exception:
+        pass
 
+
+@pytest.fixture
+async def sandbox_template():
+    """Create an explicitly bootable Cloud Hypervisor template for sandbox tests."""
+    async with Client(base_url=QARAX_URL) as c:
+        template_id, resources = await create_bootable_sandbox_template(c, "cloud_hv")
         yield template_id
-
-        # Cleanup
-        try:
-            await delete_template.asyncio_detailed(client=c, vm_template_id=template_id)
-        except Exception:
-            pass
-        try:
-            await delete_boot_source.asyncio_detailed(
-                client=c, boot_source_id=boot_source_id
-            )
-        except Exception:
-            pass
-        try:
-            await delete_storage_object.asyncio_detailed(
-                client=c, object_id=str(transfer.storage_object_id)
-            )
-        except Exception:
-            pass
-        try:
-            await delete_storage_object.asyncio_detailed(
-                client=c, object_id=str(initrd_transfer.storage_object_id)
-            )
-        except Exception:
-            pass
-        try:
-            await delete_storage_pool.asyncio_detailed(client=c, pool_id=pool_id)
-        except Exception:
-            pass
+        await cleanup_bootable_sandbox_template(c, resources)
 
 
 async def wait_for_sandbox_status(
@@ -356,6 +366,53 @@ async def test_sandbox_full_lifecycle(client, sandbox_template):
 
         finally:
             await delete_sandbox.asyncio_detailed(client=c, sandbox_id=sandbox_id)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_defaults_to_firecracker_when_template_omits_hypervisor(client):
+    """Sandbox VMs default to Firecracker when the template leaves hypervisor unset."""
+    from qarax_api_client.api.vms import get as get_vm
+    from qarax_api_client.models import Hypervisor
+
+    async with client as c:
+        template_id, resources = await create_bootable_sandbox_template(c, None)
+        sandbox_id = None
+
+        try:
+            resp = await create_sandbox.asyncio(
+                client=c,
+                body=NewSandbox(
+                    name=f"e2e-sandbox-fc-default-{uuid.uuid4().hex[:8]}",
+                    vm_template_id=template_id,
+                    idle_timeout_secs=120,
+                ),
+            )
+            assert resp is not None
+            sandbox_id = resp.id
+
+            await wait_for_sandbox_status(c, sandbox_id, SandboxStatus.READY)
+            vm = await get_vm.asyncio(client=c, vm_id=resp.vm_id)
+            assert vm is not None
+            assert vm.hypervisor == Hypervisor.FIRECRACKER
+
+            result = await exec_sandbox.asyncio(
+                client=c,
+                sandbox_id=sandbox_id,
+                body=ExecSandboxRequest(
+                    command=["/bin/sh", "-c", "printf sandbox-fc-default && uname -s"],
+                    timeout_secs=15,
+                ),
+            )
+            assert result is not None
+            assert result.exit_code == 0
+            assert result.timed_out is False
+            assert "sandbox-fc-default" in result.stdout
+            assert "Linux" in result.stdout
+            assert result.stderr == ""
+        finally:
+            if sandbox_id is not None:
+                await delete_sandbox.asyncio_detailed(client=c, sandbox_id=sandbox_id)
+            await cleanup_bootable_sandbox_template(c, resources)
 
 
 @pytest.mark.asyncio

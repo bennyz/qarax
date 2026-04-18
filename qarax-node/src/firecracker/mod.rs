@@ -22,17 +22,19 @@ use std::sync::Arc;
 use firecracker_rust_sdk::machine::{Machine, MicroVm};
 use firecracker_rust_sdk::models::{
     BootSource, Drive, MachineConfiguration, MemoryBackend, NetworkInterface, SnapshotCreateParams,
-    SnapshotLoadParams, Vm, instance_info::State as FcInstanceState, memory_backend::BackendType,
-    vm::State as FcVmState,
+    SnapshotLoadParams, Vm, Vsock, instance_info::State as FcInstanceState,
+    memory_backend::BackendType, vm::State as FcVmState,
 };
 use prost::Message;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::rpc::node::ExecVmResponse;
 use crate::rpc::node::{VmConfig as ProtoVmConfig, VmState, VmStatus};
 use crate::vmm::{VmmError, VmmManager};
 
+mod exec;
 mod helpers;
 
 /// Tracks the SDK client state for a single Firecracker VM.
@@ -88,6 +90,7 @@ impl FirecrackerManager {
     /// the SDK's typed API methods.
     async fn configure_vm(
         machine: &mut Machine<'static>,
+        api_socket_path: &Path,
         config: &ProtoVmConfig,
     ) -> Result<(), VmmError> {
         let cpus = config.cpus.as_ref().map(|c| c.boot_vcpus).unwrap_or(1);
@@ -149,6 +152,23 @@ impl FirecrackerManager {
             }
         }
 
+        if let Some(vsock) = &config.vsock {
+            let guest_cid = vsock.cid.ok_or_else(|| {
+                VmmError::InvalidConfig("vsock.cid is required for Firecracker".into())
+            })?;
+            let guest_cid = i32::try_from(guest_cid).map_err(|_| {
+                VmmError::InvalidConfig(format!("vsock.cid {} exceeds i32 range", guest_cid))
+            })?;
+            let uds_path = vsock.socket.clone().ok_or_else(|| {
+                VmmError::InvalidConfig("vsock.socket is required for Firecracker".into())
+            })?;
+
+            let mut fc_vsock = Vsock::new(guest_cid, uds_path);
+            fc_vsock.vsock_id = vsock.id.clone();
+            Self::put_vsock_device(api_socket_path, &fc_vsock).await?;
+            debug!("FC vsock configured (cid={guest_cid})");
+        }
+
         Ok(())
     }
 }
@@ -206,6 +226,16 @@ impl VmmManager for FirecrackerManager {
                     tap_name, bridge_name, e
                 )));
             }
+        }
+
+        if let Some(vsock) = config.vsock.as_mut() {
+            self.resolve_vsock_config(&vm_id, vsock);
+        }
+        let vsock_socket_path = Self::vsock_socket_path_from_config(&config.vsock);
+        if let Some(path) = &vsock_socket_path
+            && path.exists()
+        {
+            let _ = tokio::fs::remove_file(path).await;
         }
 
         // Build cloud-init seed image if configured.
@@ -276,7 +306,7 @@ impl VmmManager for FirecrackerManager {
         };
 
         // Configure machine, boot source, drives, networks.
-        if let Err(e) = Self::configure_vm(&mut machine, &config).await {
+        if let Err(e) = Self::configure_vm(&mut machine, &socket_path, &config).await {
             for tap in &tap_devices {
                 Self::delete_tap_device(tap).await;
             }
@@ -451,6 +481,13 @@ impl VmmManager for FirecrackerManager {
             let _ = tokio::fs::remove_file(&seed_path).await;
         }
 
+        if let Some(vsock_socket_path) =
+            Self::vsock_socket_path_from_config(&instance.proto_config.vsock)
+            && vsock_socket_path.exists()
+        {
+            let _ = tokio::fs::remove_file(vsock_socket_path).await;
+        }
+
         for tap in &instance.tap_devices {
             Self::delete_tap_device(tap).await;
         }
@@ -617,6 +654,15 @@ impl VmmManager for FirecrackerManager {
         Ok(())
     }
 
+    async fn exec_vm(
+        &self,
+        vm_id: &str,
+        command: Vec<String>,
+        timeout_secs: Option<u64>,
+    ) -> Result<ExecVmResponse, VmmError> {
+        FirecrackerManager::exec_vm(self, vm_id, command, timeout_secs).await
+    }
+
     async fn recover_vms(&self) {
         info!(
             "FC: Scanning for surviving Firecracker processes in {:?}",
@@ -686,6 +732,10 @@ impl VmmManager for FirecrackerManager {
                 tap_devices,
                 client,
             };
+
+            if let Some(cid) = instance.proto_config.vsock.as_ref().and_then(|v| v.cid) {
+                Self::advance_vsock_cid_past(cid);
+            }
 
             let mut vms = self.vms.lock().await;
             vms.insert(vm_id.clone(), instance);
