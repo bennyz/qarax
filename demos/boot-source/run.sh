@@ -32,7 +32,7 @@ POOL_PATH="/var/lib/qarax/images"
 BOOT_SOURCE_NAME="demo-boot"
 KERNEL_PATH="/var/lib/qarax/images/vmlinux"
 KERNEL_NAME="demo-kernel"
-INITRAMFS_PATH="/var/lib/qarax/production-images/boot-initramfs.gz"
+INITRAMFS_PATH="/var/lib/qarax/images/test-initramfs.gz"
 INITRAMFS_NAME="demo-initramfs"
 CMDLINE="console=ttyS0"
 VCPUS=1
@@ -87,6 +87,10 @@ while [[ $# -gt 0 ]]; do
 		SERVER="$2"
 		shift 2
 		;;
+	--cleanup)
+		CLEANUP=1
+		shift
+		;;
 	--help | -h)
 		echo "Usage: $0 [OPTIONS]"
 		echo ""
@@ -95,13 +99,14 @@ while [[ $# -gt 0 ]]; do
 		echo "  --pool-name NAME       Storage pool name (default: demo-local-pool)"
 		echo "  --pool-path PATH       Local path on qarax-node for pool (default: /var/lib/qarax/images)"
 		echo "  --kernel PATH          Kernel path on qarax-node (default: /var/lib/qarax/images/vmlinux)"
-		echo "  --initramfs PATH       Initramfs path on qarax-node (default: boot-initramfs.gz)"
+		echo "  --initramfs PATH       Initramfs path on qarax-node (default: test-initramfs.gz)"
 		echo "  --no-initramfs         Skip initramfs"
 		echo "  --cmdline PARAMS       Kernel command line (default: console=ttyS0)"
 		echo "  --vcpus N              Number of vCPUs (default: 1)"
 		echo "  --memory MiB           Memory in MiB (default: 256)"
 		echo "  --mac ADDRESS          MAC address for the NIC (default: 52:54:00:12:34:56)"
 		echo "  --server URL           qarax API URL (default: \$QARAX_SERVER or http://localhost:8000)"
+		echo "  --cleanup              Delete demo resources and exit"
 		exit 0
 		;;
 	*)
@@ -113,6 +118,22 @@ done
 
 MEMORY_BYTES=$((MEMORY_MIB * 1024 * 1024))
 QARAX="qarax --server $SERVER"
+
+if [[ "${CLEANUP:-0}" -eq 1 ]]; then
+	if ! curl -sf --max-time 3 "${SERVER}/" >/dev/null 2>&1; then
+		echo "  Stack not running — nothing to clean up."
+		exit 0
+	fi
+	echo "=== Cleaning up boot-source demo resources ==="
+	$QARAX vm stop --wait "$VM_NAME" 2>/dev/null || true
+	$QARAX vm delete "$VM_NAME" 2>/dev/null || true
+	$QARAX boot-source delete "$BOOT_SOURCE_NAME" 2>/dev/null || true
+	$QARAX storage-object delete "$KERNEL_NAME" 2>/dev/null || true
+	$QARAX storage-object delete "$INITRAMFS_NAME" 2>/dev/null || true
+	$QARAX storage-pool delete "$POOL_NAME" 2>/dev/null || true
+	echo "Done."
+	exit 0
+fi
 
 echo "=== qarax Boot Source VM Demo ==="
 echo ""
@@ -135,18 +156,18 @@ echo ""
 
 # Step 2: Transfer kernel into the pool
 echo "--- Step 2: Transfer kernel ---"
-echo "\$ qarax transfer create --pool $POOL_NAME --name $KERNEL_NAME --source $KERNEL_PATH --object-type kernel"
+echo "\$ qarax transfer create --pool $POOL_NAME --name $KERNEL_NAME --source $KERNEL_PATH --object-type kernel --wait"
 $QARAX transfer create --pool "$POOL_NAME" --name "$KERNEL_NAME" \
-	--source "$KERNEL_PATH" --object-type kernel 2>/dev/null || echo "(kernel may already exist, continuing)"
+	--source "$KERNEL_PATH" --object-type kernel --wait 2>/dev/null || echo "(kernel may already exist, continuing)"
 echo ""
 
 # Step 3: Transfer initramfs (if provided)
 INITRAMFS_FLAG=""
 if [[ -n "$INITRAMFS_PATH" ]]; then
 	echo "--- Step 3: Transfer initramfs ---"
-	echo "\$ qarax transfer create --pool $POOL_NAME --name $INITRAMFS_NAME --source $INITRAMFS_PATH --object-type initrd"
+	echo "\$ qarax transfer create --pool $POOL_NAME --name $INITRAMFS_NAME --source $INITRAMFS_PATH --object-type initrd --wait"
 	$QARAX transfer create --pool "$POOL_NAME" --name "$INITRAMFS_NAME" \
-		--source "$INITRAMFS_PATH" --object-type initrd 2>/dev/null || echo "(initramfs may already exist, continuing)"
+		--source "$INITRAMFS_PATH" --object-type initrd --wait 2>/dev/null || echo "(initramfs may already exist, continuing)"
 	INITRAMFS_FLAG="--initrd $INITRAMFS_NAME"
 	echo ""
 fi
