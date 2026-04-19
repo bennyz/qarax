@@ -19,6 +19,9 @@ cd "$(dirname "$0")"
 #   SKIP_BUILD=1    - Skip building qarax-node binary
 #   ENABLE_OTEL=1   - Build with `otel` features and point services at a host OTLP receiver
 
+: "${CLOUD_HYPERVISOR_VERSION:=$(cat ../versions/cloud-hypervisor-version)}"
+export CLOUD_HYPERVISOR_VERSION
+
 default_webhook_host() {
 	if [ "$(uname -s)" != "Linux" ]; then
 		echo "host.docker.internal"
@@ -39,6 +42,22 @@ is_truthy() {
 	1 | true | TRUE | yes | YES | on | ON) return 0 ;;
 	*) return 1 ;;
 	esac
+}
+
+needs_bootc_vm() {
+	if is_truthy "${ENABLE_BOOTC_UPGRADE_E2E:-}"; then
+		return 0
+	fi
+
+	for arg in "$@"; do
+		case "$arg" in
+		*test_node_upgrade.py* | *test_node_upgrade.py::* )
+			return 0
+			;;
+		esac
+	done
+
+	return 1
 }
 
 docker_build_image() {
@@ -225,23 +244,35 @@ VEOF
 	echo -e "${GREEN}Bootc VM overlay created.${NC}"
 }
 
-build_bootc_vm
+BOOTC_VM_ENABLED=0
+if needs_bootc_vm "$@"; then
+	BOOTC_VM_ENABLED=1
+	build_bootc_vm
+fi
+
+SERVICES=(postgres nfs-server registry qarax-node qarax-node-2 qarax)
+if [ "$BOOTC_VM_ENABLED" -eq 1 ]; then
+	SERVICES+=(bootc-vm)
+fi
 
 # Build and start services
 echo -e "${YELLOW}Starting services...${NC}"
 if [ -n "$REBUILD" ]; then
-	docker compose build --no-cache
+	docker compose build --no-cache "${SERVICES[@]}"
 fi
-docker compose up -d --build
+docker compose up -d --build "${SERVICES[@]}"
 
 # Wait for services to be healthy
 echo -e "${YELLOW}Waiting for services to be healthy...${NC}"
 timeout=300
 elapsed=0
 while [ $elapsed -lt $timeout ]; do
-	# Check if all services are healthy
+	# Check if all requested services are healthy
 	healthy_count=$(docker compose ps 2>/dev/null | grep -c "(healthy)" || echo "0")
 	total_services=6 # nfs-server, registry, postgres, qarax, qarax-node, qarax-node-2
+	if [ "$BOOTC_VM_ENABLED" -eq 1 ]; then
+		total_services=7 # + bootc-vm
+	fi
 
 	if [ "$healthy_count" -ge "$total_services" ]; then
 		echo ""

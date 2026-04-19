@@ -2086,6 +2086,7 @@ async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model
         Ok((grpc_input_tx, mut grpc_output_rx)) => {
             // Spawn task to forward WebSocket -> gRPC
             let ws_to_grpc = tokio::spawn(async move {
+                #[allow(clippy::collapsible_match)]
                 while let Some(msg) = ws_receiver.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {

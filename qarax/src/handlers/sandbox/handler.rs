@@ -13,7 +13,8 @@ use crate::{
             self, CreateSandboxResponse, ExecSandboxRequest, ExecSandboxResponse, NewSandbox,
             Sandbox, SandboxStatus,
         },
-        vms::{self, NewVm, VmStatus},
+        vm_templates,
+        vms::{self, Hypervisor, NewVm, VmStatus},
     },
 };
 
@@ -36,14 +37,20 @@ pub async fn create(
     Json(req): Json<NewSandbox>,
 ) -> Result<axum::response::Response> {
     let idle_timeout_secs = req.idle_timeout_secs.unwrap_or(300);
+    let sandbox_hypervisor = vm_templates::get(env.pool(), req.vm_template_id)
+        .await
+        .map_err(crate::errors::Error::Sqlx)?
+        .hypervisor
+        .unwrap_or(Hypervisor::Firecracker);
 
-    // Build a NewVm from the sandbox request — template provides all defaults
+    // Build a NewVm from the sandbox request — template provides all defaults,
+    // but sandboxes default to Firecracker when the template leaves hypervisor unset.
     let new_vm = NewVm {
         name: req.name.clone(),
         tags: None,
         vm_template_id: Some(req.vm_template_id),
         instance_type_id: req.instance_type_id,
-        hypervisor: None,
+        hypervisor: Some(sandbox_hypervisor),
         architecture: None,
         boot_vcpus: None,
         max_vcpus: None,
