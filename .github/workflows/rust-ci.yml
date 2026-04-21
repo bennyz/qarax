@@ -8,6 +8,9 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+env:
+  DAGGER_VERSION: v0.20.6
+
 jobs:
   check:
     name: CI Checks (fmt + lint + test)
@@ -15,8 +18,21 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name != 'run-e2e'
     steps:
       - uses: actions/checkout@v6
+      - name: Cache Dagger engine image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-engine.tar
+          key: dagger-engine-${{ env.DAGGER_VERSION }}
       - name: Install Dagger CLI
-        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=${{ env.DAGGER_VERSION }} BIN_DIR=/usr/local/bin sh
+      - name: Load or pull Dagger engine image
+        run: |
+          if [ -f /tmp/dagger-engine.tar ]; then
+            docker load < /tmp/dagger-engine.tar
+          else
+            docker pull registry.dagger.io/engine:${{ env.DAGGER_VERSION }}
+            docker save registry.dagger.io/engine:${{ env.DAGGER_VERSION }} -o /tmp/dagger-engine.tar
+          fi
       - name: Run CI checks
         run: dagger call --mod ./ci all --src=.
 
@@ -25,8 +41,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Cache Dagger engine image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-engine.tar
+          key: dagger-engine-${{ env.DAGGER_VERSION }}
       - name: Install Dagger CLI
-        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=${{ env.DAGGER_VERSION }} BIN_DIR=/usr/local/bin sh
+      - name: Load or pull Dagger engine image
+        run: |
+          if [ -f /tmp/dagger-engine.tar ]; then
+            docker load < /tmp/dagger-engine.tar
+          else
+            docker pull registry.dagger.io/engine:${{ env.DAGGER_VERSION }}
+            docker save registry.dagger.io/engine:${{ env.DAGGER_VERSION }} -o /tmp/dagger-engine.tar
+          fi
       - name: Build release binaries
         run: |
           mkdir -p target/x86_64-unknown-linux-musl/release

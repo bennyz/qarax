@@ -134,12 +134,15 @@ func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, erro
 }
 
 // Audit runs cargo audit against Cargo.lock to detect known CVEs.
+// Ignores are configured in audit.toml at the workspace root.
 func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
 	return installBinstall(
 		dag.Container().
 			From("rust:1").
 			WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
-			WithFile("/src/Cargo.lock", src.File("Cargo.lock")).
+			WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
+				Include: []string{"Cargo.lock", "audit.toml"},
+			}).
 			WithWorkdir("/src"),
 	).
 		WithExec([]string{"cargo", "binstall", "--no-confirm", "cargo-audit"}).
