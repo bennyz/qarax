@@ -72,9 +72,12 @@ clean:
 # Linting and formatting
 lint: ruff-check
 	cargo clippy --workspace -- -D warnings
+	@cd ci && test -z "$$(gofmt -l .)" || (echo "Go files need formatting:"; gofmt -l .; exit 1)
+	@cd ci && go vet ./...
 
 fmt: ruff-fmt shfmt
 	cargo fmt
+	cd ci && gofmt -w .
 
 shfmt:
 	shfmt -w -i 0 hack/*.sh scripts/*.sh

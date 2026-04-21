@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"dagger/ci/internal/dagger"
 
@@ -111,8 +112,122 @@ func (c *Ci) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 		Stdout(ctx)
 }
 
-// All runs Fmt, Lint, and Test in parallel.
-// Use Build separately when you need release binaries.
+// installBinstall installs cargo-binstall on the given container using the
+// official release script, enabling fast prebuilt-binary installs.
+func installBinstall(ctr *dagger.Container) *dagger.Container {
+	return ctr.WithExec([]string{"sh", "-c",
+		"curl -L --proto '=https' --tlsv1.2 -sSf " +
+			"https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash"})
+}
+
+// SqlxCheck verifies that the committed .sqlx offline query cache matches the
+// actual queries in source by running cargo sqlx prepare --workspace --check
+// against a live Postgres instance.
+func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, error) {
+	pg := c.postgres()
+	return installBinstall(c.rustBase(src)).
+		WithExec([]string{"cargo", "binstall", "--no-confirm", "sqlx-cli"}).
+		WithServiceBinding("postgres", pg).
+		WithEnvVariable("DATABASE_URL", dbURL).
+		WithExec([]string{"cargo", "sqlx", "prepare", "--workspace", "--check"}).
+		Stdout(ctx)
+}
+
+// Audit runs cargo audit against Cargo.lock to detect known CVEs.
+func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
+	return installBinstall(
+		dag.Container().
+			From("rust:1").
+			WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
+			WithFile("/src/Cargo.lock", src.File("Cargo.lock")).
+			WithWorkdir("/src"),
+	).
+		WithExec([]string{"cargo", "binstall", "--no-confirm", "cargo-audit"}).
+		WithExec([]string{"cargo", "audit"}).
+		Stdout(ctx)
+}
+
+// openApiSpec generates openapi.yaml from source and returns it as a File.
+// Shared by OpenApiCheck and PythonSdkLint so the Rust build runs only once.
+func (c *Ci) openApiSpec(src *dagger.Directory) *dagger.File {
+	return c.rustBase(src).
+		WithEnvVariable("SQLX_OFFLINE", "true").
+		WithExec([]string{"cargo", "run", "-p", "qarax", "--bin", "generate-openapi"}).
+		File("/src/openapi.yaml")
+}
+
+// OpenApiCheck regenerates openapi.yaml and fails if it differs from the
+// committed copy, catching handlers added without running make openapi.
+func (c *Ci) OpenApiCheck(ctx context.Context, src *dagger.Directory) (string, error) {
+	return dag.Container().
+		From("alpine:latest").
+		WithFile("/generated/openapi.yaml", c.openApiSpec(src)).
+		WithFile("/committed/openapi.yaml", src.File("openapi.yaml")).
+		WithExec([]string{"sh", "-c",
+			`if ! diff -u /committed/openapi.yaml /generated/openapi.yaml; then
+               echo "openapi.yaml is out of date — run 'make openapi' and commit the result"
+               exit 1
+             fi
+             echo "openapi.yaml is up to date"`}).
+		Stdout(ctx)
+}
+
+// PythonSdkLint regenerates the Python SDK from the current openapi spec and
+// runs ruff check to verify the generated code is clean.
+// Fails if the spec is stale (shares openApiSpec with OpenApiCheck).
+func (c *Ci) PythonSdkLint(ctx context.Context, src *dagger.Directory) (string, error) {
+	return dag.Container().
+		From("ghcr.io/astral-sh/uv:python3.12-bookworm-slim").
+		WithMountedCache("/root/.cache/uv", dag.CacheVolume("uv-cache")).
+		WithDirectory("/work", src.Directory("python-sdk")).
+		WithFile("/work/openapi.yaml", c.openApiSpec(src)).
+		WithWorkdir("/work").
+		WithExec([]string{"uv", "sync", "--group", "dev"}).
+		WithExec([]string{"uv", "run", "openapi-python-client", "generate",
+			"--path", "openapi.yaml",
+			"--meta", "setup",
+			"--overwrite",
+			"--custom-template-path", "templates"}).
+		WithExec([]string{"uvx", "ruff", "check", "."}).
+		Stdout(ctx)
+}
+
+// QaraxImage builds and returns the qarax control-plane container image.
+// Chain .Publish(ctx, address) to push to a registry.
+func (c *Ci) QaraxImage(ctx context.Context, src *dagger.Directory) (*dagger.Container, error) {
+	binDir, err := c.Build(ctx, src)
+	if err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+	buildCtx := src.WithDirectory("target/x86_64-unknown-linux-musl/release", binDir)
+	return buildCtx.DockerBuild(dagger.DirectoryDockerBuildOpts{
+		Dockerfile: "e2e/Dockerfile.qarax",
+	}), nil
+}
+
+// QaraxNodeImage builds and returns the qarax-node container image.
+// Reads the Cloud Hypervisor version from versions/cloud-hypervisor-version.
+// Chain .Publish(ctx, address) to push to a registry.
+func (c *Ci) QaraxNodeImage(ctx context.Context, src *dagger.Directory) (*dagger.Container, error) {
+	binDir, err := c.Build(ctx, src)
+	if err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+	chVersion, err := src.File("versions/cloud-hypervisor-version").Contents(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read cloud-hypervisor version: %w", err)
+	}
+	buildCtx := src.WithDirectory("target/x86_64-unknown-linux-musl/release", binDir)
+	return buildCtx.DockerBuild(dagger.DirectoryDockerBuildOpts{
+		Dockerfile: "e2e/Dockerfile.qarax-node",
+		BuildArgs: []dagger.BuildArg{
+			{Name: "CLOUD_HYPERVISOR_VERSION", Value: strings.TrimSpace(chVersion)},
+		},
+	}), nil
+}
+
+// All runs Fmt, Lint, Test, SqlxCheck, Audit, OpenApiCheck, and PythonSdkLint in parallel.
+// Use Build, QaraxImage, and QaraxNodeImage separately when you need binaries or images.
 func (c *Ci) All(ctx context.Context, src *dagger.Directory) (string, error) {
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -131,6 +246,30 @@ func (c *Ci) All(ctx context.Context, src *dagger.Directory) (string, error) {
 	g.Go(func() error {
 		if _, err := c.Test(ctx, src); err != nil {
 			return fmt.Errorf("test: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.SqlxCheck(ctx, src); err != nil {
+			return fmt.Errorf("sqlx-check: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.Audit(ctx, src); err != nil {
+			return fmt.Errorf("audit: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.OpenApiCheck(ctx, src); err != nil {
+			return fmt.Errorf("openapi-check: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.PythonSdkLint(ctx, src); err != nil {
+			return fmt.Errorf("python-sdk-lint: %w", err)
 		}
 		return nil
 	})
