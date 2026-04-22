@@ -130,6 +130,7 @@ func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, erro
 		WithExec([]string{"cargo", "binstall", "--no-confirm", "sqlx-cli"}).
 		WithServiceBinding("postgres", pg).
 		WithEnvVariable("DATABASE_URL", dbURL).
+		WithExec([]string{"cargo", "sqlx", "migrate", "run"}).
 		WithExec([]string{"cargo", "sqlx", "prepare", "--workspace", "--check"}).
 		Stdout(ctx)
 }
