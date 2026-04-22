@@ -133,8 +133,11 @@ func installBinstall(ctr *dagger.Container) *dagger.Container {
 // against a live Postgres instance.
 func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, error) {
 	pg := c.postgres()
-	return installBinstall(c.prebuilt(src)).
+	sqlxBin := installBinstall(dag.Container().From("rust:1")).
 		WithExec([]string{"cargo", "binstall", "--no-confirm", "sqlx-cli"}).
+		File("/usr/local/cargo/bin/cargo-sqlx")
+	return c.prebuilt(src).
+		WithFile("/usr/local/cargo/bin/cargo-sqlx", sqlxBin).
 		WithServiceBinding("postgres", pg).
 		WithoutEnvVariable("SQLX_OFFLINE").
 		WithEnvVariable("DATABASE_URL", dbURL).
@@ -146,16 +149,13 @@ func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, erro
 // Audit runs cargo audit against Cargo.lock to detect known CVEs.
 // Ignores are configured in .cargo/audit.toml at the workspace root.
 func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
-	return installBinstall(
-		dag.Container().
-			From("rust:1").
-			WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
-			WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
-				Include: []string{"Cargo.lock", ".cargo/audit.toml"},
-			}).
-			WithWorkdir("/src"),
-	).
+	return installBinstall(dag.Container().From("rust:1")).
 		WithExec([]string{"cargo", "binstall", "--no-confirm", "cargo-audit"}).
+		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
+		WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
+			Include: []string{"Cargo.lock", ".cargo/audit.toml"},
+		}).
+		WithWorkdir("/src").
 		WithExec([]string{"cargo", "audit"}).
 		Stdout(ctx)
 }
@@ -192,9 +192,9 @@ func (c *Ci) PythonSdkLint(ctx context.Context, src *dagger.Directory) (string, 
 		From("ghcr.io/astral-sh/uv:python3.12-bookworm-slim").
 		WithMountedCache("/root/.cache/uv", dag.CacheVolume("uv-cache")).
 		WithDirectory("/work", src.Directory("python-sdk")).
-		WithFile("/work/openapi.yaml", c.openApiSpec(src)).
 		WithWorkdir("/work").
 		WithExec([]string{"uv", "sync", "--group", "dev"}).
+		WithFile("/work/openapi.yaml", c.openApiSpec(src)).
 		WithExec([]string{"uv", "run", "openapi-python-client", "generate",
 			"--path", "openapi.yaml",
 			"--meta", "setup",
