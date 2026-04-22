@@ -53,6 +53,17 @@ func (c *Ci) rustBase(src *dagger.Directory) *dagger.Container {
 		WithWorkdir("/src")
 }
 
+// prebuilt compiles the full workspace once in debug mode so that Lint, Test,
+// SqlxCheck, and openApiSpec can run without recompiling. All those steps chain
+// from this container; Dagger's operation graph deduplicates it so the build
+// runs exactly once per session regardless of how many steps reference it.
+func (c *Ci) prebuilt(src *dagger.Directory) *dagger.Container {
+	return c.rustBase(src).
+		WithExec([]string{"rustup", "component", "add", "clippy"}).
+		WithEnvVariable("SQLX_OFFLINE", "true").
+		WithExec([]string{"cargo", "build", "--workspace", "--features", otelFeatures})
+}
+
 // Fmt checks formatting with cargo +nightly fmt --all -- --check.
 func (c *Ci) Fmt(ctx context.Context, src *dagger.Directory) (string, error) {
 	return dag.Container().
@@ -66,12 +77,9 @@ func (c *Ci) Fmt(ctx context.Context, src *dagger.Directory) (string, error) {
 		Stdout(ctx)
 }
 
-// Lint runs cargo clippy -D warnings using the committed .sqlx offline query cache.
-// No database required.
+// Lint runs cargo clippy -D warnings against pre-compiled artifacts.
 func (c *Ci) Lint(ctx context.Context, src *dagger.Directory) (string, error) {
-	return c.rustBase(src).
-		WithExec([]string{"rustup", "component", "add", "clippy"}).
-		WithEnvVariable("SQLX_OFFLINE", "true").
+	return c.prebuilt(src).
 		WithExec([]string{"cargo", "clippy", "--workspace",
 			"--features", otelFeatures, "--", "-D", "warnings"}).
 		Stdout(ctx)
@@ -91,16 +99,15 @@ func (c *Ci) Build(ctx context.Context, src *dagger.Directory) (*dagger.Director
 		Directory("/out"), nil
 }
 
-// Test runs the nextest suite against a live Postgres 16 service.
+// Test runs the nextest suite against a live Postgres 16 service using pre-compiled artifacts.
 func (c *Ci) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 	pg := c.postgres()
 
-	return c.rustBase(src).
+	return c.prebuilt(src).
 		// Install nextest via binary download — faster than building from source.
 		WithExec([]string{"sh", "-c",
 			"curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/cargo/bin"}).
 		WithServiceBinding("postgres", pg).
-		WithEnvVariable("SQLX_OFFLINE", "true").
 		WithEnvVariable("DATABASE_URL", dbURL).
 		WithEnvVariable("TEST_DATABASE_URL", dbURL).
 		WithEnvVariable("DATABASE_HOST", "postgres").
@@ -126,9 +133,10 @@ func installBinstall(ctr *dagger.Container) *dagger.Container {
 // against a live Postgres instance.
 func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, error) {
 	pg := c.postgres()
-	return installBinstall(c.rustBase(src)).
+	return installBinstall(c.prebuilt(src)).
 		WithExec([]string{"cargo", "binstall", "--no-confirm", "sqlx-cli"}).
 		WithServiceBinding("postgres", pg).
+		WithoutEnvVariable("SQLX_OFFLINE").
 		WithEnvVariable("DATABASE_URL", dbURL).
 		WithExec([]string{"cargo", "sqlx", "migrate", "run"}).
 		WithExec([]string{"cargo", "sqlx", "prepare", "--workspace", "--check"}).
@@ -136,7 +144,7 @@ func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, erro
 }
 
 // Audit runs cargo audit against Cargo.lock to detect known CVEs.
-// Ignores are configured in audit.toml at the workspace root.
+// Ignores are configured in .cargo/audit.toml at the workspace root.
 func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
 	return installBinstall(
 		dag.Container().
@@ -153,10 +161,9 @@ func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
 }
 
 // openApiSpec generates openapi.yaml from source and returns it as a File.
-// Shared by OpenApiCheck and PythonSdkLint so the Rust build runs only once.
+// Chains from prebuilt so the binary is already compiled.
 func (c *Ci) openApiSpec(src *dagger.Directory) *dagger.File {
-	return c.rustBase(src).
-		WithEnvVariable("SQLX_OFFLINE", "true").
+	return c.prebuilt(src).
 		WithExec([]string{"cargo", "run", "-p", "qarax", "--bin", "generate-openapi"}).
 		File("/src/openapi.yaml")
 }
@@ -232,6 +239,8 @@ func (c *Ci) QaraxNodeImage(ctx context.Context, src *dagger.Directory) (*dagger
 }
 
 // All runs Fmt, Lint, Test, SqlxCheck, Audit, OpenApiCheck, and PythonSdkLint in parallel.
+// Lint, Test, SqlxCheck, and OpenApiCheck all chain from prebuilt so the workspace
+// is compiled exactly once before checks fan out.
 // Use Build, QaraxImage, and QaraxNodeImage separately when you need binaries or images.
 func (c *Ci) All(ctx context.Context, src *dagger.Directory) (string, error) {
 	g, ctx := errgroup.WithContext(ctx)
