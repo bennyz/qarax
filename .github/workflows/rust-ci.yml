@@ -8,6 +8,9 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+env:
+  DAGGER_VERSION: v0.20.6
+
 jobs:
   check:
     name: CI Checks (fmt + lint + test)
@@ -15,23 +18,138 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name != 'run-e2e'
     steps:
       - uses: actions/checkout@v6
+
+      - name: Cache Dagger engine image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-engine.tar
+          key: dagger-engine-${{ env.DAGGER_VERSION }}
+
+      # Unique key per run so we always write an up-to-date cache entry.
+      # restore-keys finds the most recent entry for the same Dagger version.
+      - name: Cache Dagger data volume
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-data.tar.zst
+          key: dagger-data-${{ env.DAGGER_VERSION }}-${{ github.run_id }}
+          restore-keys: dagger-data-${{ env.DAGGER_VERSION }}-
+
       - name: Install Dagger CLI
-        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=${{ env.DAGGER_VERSION }} BIN_DIR=/usr/local/bin sh
+
+      - name: Load or pull Dagger engine image
+        run: |
+          if [ -f /tmp/dagger-engine.tar ]; then
+            docker load < /tmp/dagger-engine.tar
+          else
+            docker pull registry.dagger.io/engine:${{ env.DAGGER_VERSION }}
+            docker save registry.dagger.io/engine:${{ env.DAGGER_VERSION }} -o /tmp/dagger-engine.tar
+          fi
+
+      - name: Create Dagger data volume and restore cache
+        run: |
+          docker volume create dagger-data
+          if [ -f /tmp/dagger-data.tar.zst ]; then
+            echo "Restoring Dagger data volume from cache..."
+            docker run --rm \
+              -v dagger-data:/data \
+              -v /tmp/dagger-data.tar.zst:/backup.tar.zst \
+              alpine sh -c "apk add -q zstd && zstd -d /backup.tar.zst -c | tar -xf - -C /data"
+            echo "Restored Dagger data volume"
+          else
+            echo "No cached volume found, starting cold"
+          fi
+
+      - name: Start Dagger engine
+        run: |
+          docker run --name dagger-engine-${{ env.DAGGER_VERSION }} \
+            -d --init --restart always \
+            -v dagger-data:/var/lib/dagger \
+            --privileged \
+            registry.dagger.io/engine:${{ env.DAGGER_VERSION }} --debug
+
       - name: Run CI checks
         run: dagger call --mod ./ci all --src=.
+
+      - name: Save Dagger data volume
+        if: always()
+        run: |
+          echo "Saving Dagger data volume..."
+          docker run --rm \
+            -v dagger-data:/data \
+            -v /tmp:/backup \
+            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -f -o /backup/dagger-data.tar.zst"
+          echo "Saved: $(du -sh /tmp/dagger-data.tar.zst | cut -f1)"
 
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Cache Dagger engine image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-engine.tar
+          key: dagger-engine-${{ env.DAGGER_VERSION }}
+
+      - name: Cache Dagger data volume
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dagger-data.tar.zst
+          key: dagger-data-build-${{ env.DAGGER_VERSION }}-${{ github.run_id }}
+          restore-keys: dagger-data-build-${{ env.DAGGER_VERSION }}-
+
       - name: Install Dagger CLI
-        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=${{ env.DAGGER_VERSION }} BIN_DIR=/usr/local/bin sh
+
+      - name: Load or pull Dagger engine image
+        run: |
+          if [ -f /tmp/dagger-engine.tar ]; then
+            docker load < /tmp/dagger-engine.tar
+          else
+            docker pull registry.dagger.io/engine:${{ env.DAGGER_VERSION }}
+            docker save registry.dagger.io/engine:${{ env.DAGGER_VERSION }} -o /tmp/dagger-engine.tar
+          fi
+
+      - name: Create Dagger data volume and restore cache
+        run: |
+          docker volume create dagger-data
+          if [ -f /tmp/dagger-data.tar.zst ]; then
+            echo "Restoring Dagger data volume from cache..."
+            docker run --rm \
+              -v dagger-data:/data \
+              -v /tmp/dagger-data.tar.zst:/backup.tar.zst \
+              alpine sh -c "apk add -q zstd && zstd -d /backup.tar.zst -c | tar -xf - -C /data"
+            echo "Restored Dagger data volume"
+          else
+            echo "No cached volume found, starting cold"
+          fi
+
+      - name: Start Dagger engine
+        run: |
+          docker run --name dagger-engine-${{ env.DAGGER_VERSION }} \
+            -d --init --restart always \
+            -v dagger-data:/var/lib/dagger \
+            --privileged \
+            registry.dagger.io/engine:${{ env.DAGGER_VERSION }} --debug
+
       - name: Build release binaries
         run: |
           mkdir -p target/x86_64-unknown-linux-musl/release
           dagger call --mod ./ci build --src=. export \
             --path=./target/x86_64-unknown-linux-musl/release
+
+      - name: Save Dagger data volume
+        if: always()
+        run: |
+          echo "Saving Dagger data volume..."
+          docker run --rm \
+            -v dagger-data:/data \
+            -v /tmp:/backup \
+            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -f -o /backup/dagger-data.tar.zst"
+          echo "Saved: $(du -sh /tmp/dagger-data.tar.zst | cut -f1)"
+
       - name: Upload binaries
         uses: actions/upload-artifact@v6
         with:

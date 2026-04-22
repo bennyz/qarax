@@ -1,0 +1,23 @@
+[advisories]
+ignore = [
+    # rsa Marvin Attack timing side-channel: no fix available upstream.
+    # Pulled in by sqlx-postgres (rsa 0.9) and russh (rsa 0.10-rc).
+    "RUSTSEC-2023-0071",
+
+    # rustls-webpki bugs: affects rustls 0.21 via hyper-rustls 0.24 / tokio-rustls 0.24.
+    # Requires reqwest 0.11 → 0.12 + hyper 0.14 → 1.x migration.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+
+    # idna 0.4.0: requires upgrading validator 0.16 → 0.20 (breaking API changes).
+    "RUSTSEC-2024-0421",
+
+    # libcrux-sha3: incorrect SHAKE output in russh's ML-KEM dependency.
+    # Requires upgrading russh 0.57 → 0.60 (breaking client::Handler API changes).
+    "RUSTSEC-2026-0074",
+
+    # proc-macro-error unmaintained; pulled in by validator_derive 0.16.
+    # Requires upgrading validator 0.16 → 0.20 (breaking API changes).
+    "RUSTSEC-2024-0370",
+]

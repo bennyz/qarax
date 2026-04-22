@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"dagger/ci/internal/dagger"
 
@@ -45,10 +46,22 @@ func (c *Ci) rustBase(src *dagger.Directory) *dagger.Container {
 			"apt-get update && apt-get install -y --no-install-recommends musl-tools protobuf-compiler libprotobuf-dev"}).
 		WithExec([]string{"rustup", "target", "add", "x86_64-unknown-linux-musl"}).
 		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
-		WithMountedCache("/usr/local/cargo/git", dag.CacheVolume("cargo-git")).
+		WithMountedCache("/usr/local/cargo/git", dag.CacheVolume("cargo-git"), dagger.ContainerWithMountedCacheOpts{Sharing: dagger.CacheSharingModeLocked}).
 		WithMountedCache("/src/target", dag.CacheVolume("cargo-target")).
+		WithEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true").
 		WithDirectory("/src", src).
 		WithWorkdir("/src")
+}
+
+// prebuilt compiles the full workspace once in debug mode so that Lint, Test,
+// SqlxCheck, and openApiSpec can run without recompiling. All those steps chain
+// from this container; Dagger's operation graph deduplicates it so the build
+// runs exactly once per session regardless of how many steps reference it.
+func (c *Ci) prebuilt(src *dagger.Directory) *dagger.Container {
+	return c.rustBase(src).
+		WithExec([]string{"rustup", "component", "add", "clippy"}).
+		WithEnvVariable("SQLX_OFFLINE", "true").
+		WithExec([]string{"cargo", "build", "--workspace", "--features", otelFeatures})
 }
 
 // Fmt checks formatting with cargo +nightly fmt --all -- --check.
@@ -64,12 +77,9 @@ func (c *Ci) Fmt(ctx context.Context, src *dagger.Directory) (string, error) {
 		Stdout(ctx)
 }
 
-// Lint runs cargo clippy -D warnings using the committed .sqlx offline query cache.
-// No database required.
+// Lint runs cargo clippy -D warnings against pre-compiled artifacts.
 func (c *Ci) Lint(ctx context.Context, src *dagger.Directory) (string, error) {
-	return c.rustBase(src).
-		WithExec([]string{"rustup", "component", "add", "clippy"}).
-		WithEnvVariable("SQLX_OFFLINE", "true").
+	return c.prebuilt(src).
 		WithExec([]string{"cargo", "clippy", "--workspace",
 			"--features", otelFeatures, "--", "-D", "warnings"}).
 		Stdout(ctx)
@@ -89,16 +99,15 @@ func (c *Ci) Build(ctx context.Context, src *dagger.Directory) (*dagger.Director
 		Directory("/out"), nil
 }
 
-// Test runs the nextest suite against a live Postgres 16 service.
+// Test runs the nextest suite against a live Postgres 16 service using pre-compiled artifacts.
 func (c *Ci) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 	pg := c.postgres()
 
-	return c.rustBase(src).
+	return c.prebuilt(src).
 		// Install nextest via binary download — faster than building from source.
 		WithExec([]string{"sh", "-c",
 			"curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/cargo/bin"}).
 		WithServiceBinding("postgres", pg).
-		WithEnvVariable("SQLX_OFFLINE", "true").
 		WithEnvVariable("DATABASE_URL", dbURL).
 		WithEnvVariable("TEST_DATABASE_URL", dbURL).
 		WithEnvVariable("DATABASE_HOST", "postgres").
@@ -111,8 +120,128 @@ func (c *Ci) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 		Stdout(ctx)
 }
 
-// All runs Fmt, Lint, and Test in parallel.
-// Use Build separately when you need release binaries.
+// installBinstall installs cargo-binstall on the given container using the
+// official release script, enabling fast prebuilt-binary installs.
+func installBinstall(ctr *dagger.Container) *dagger.Container {
+	return ctr.WithExec([]string{"sh", "-c",
+		"curl -L --proto '=https' --tlsv1.2 -sSf " +
+			"https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash"})
+}
+
+// SqlxCheck verifies that the committed .sqlx offline query cache matches the
+// actual queries in source by running cargo sqlx prepare --workspace --check
+// against a live Postgres instance.
+func (c *Ci) SqlxCheck(ctx context.Context, src *dagger.Directory) (string, error) {
+	pg := c.postgres()
+	sqlxBin := installBinstall(dag.Container().From("rust:1")).
+		WithExec([]string{"cargo", "binstall", "--no-confirm", "sqlx-cli"}).
+		File("/usr/local/cargo/bin/cargo-sqlx")
+	return c.prebuilt(src).
+		WithFile("/usr/local/cargo/bin/cargo-sqlx", sqlxBin).
+		WithServiceBinding("postgres", pg).
+		WithoutEnvVariable("SQLX_OFFLINE").
+		WithEnvVariable("DATABASE_URL", dbURL).
+		WithExec([]string{"cargo", "sqlx", "migrate", "run"}).
+		WithExec([]string{"cargo", "sqlx", "prepare", "--workspace", "--check"}).
+		Stdout(ctx)
+}
+
+// Audit runs cargo audit against Cargo.lock to detect known CVEs.
+// Ignores are configured in .cargo/audit.toml at the workspace root.
+func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
+	return installBinstall(dag.Container().From("rust:1")).
+		WithExec([]string{"cargo", "binstall", "--no-confirm", "cargo-audit"}).
+		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
+		WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
+			Include: []string{"Cargo.lock", ".cargo/audit.toml"},
+		}).
+		WithWorkdir("/src").
+		WithExec([]string{"cargo", "audit"}).
+		Stdout(ctx)
+}
+
+// openApiSpec generates openapi.yaml from source and returns it as a File.
+// Chains from prebuilt so the binary is already compiled.
+func (c *Ci) openApiSpec(src *dagger.Directory) *dagger.File {
+	return c.prebuilt(src).
+		WithExec([]string{"cargo", "run", "-p", "qarax", "--bin", "generate-openapi"}).
+		File("/src/openapi.yaml")
+}
+
+// OpenApiCheck regenerates openapi.yaml and fails if it differs from the
+// committed copy, catching handlers added without running make openapi.
+func (c *Ci) OpenApiCheck(ctx context.Context, src *dagger.Directory) (string, error) {
+	return dag.Container().
+		From("alpine:latest").
+		WithFile("/generated/openapi.yaml", c.openApiSpec(src)).
+		WithFile("/committed/openapi.yaml", src.File("openapi.yaml")).
+		WithExec([]string{"sh", "-c",
+			`if ! diff -u /committed/openapi.yaml /generated/openapi.yaml; then
+               echo "openapi.yaml is out of date — run 'make openapi' and commit the result"
+               exit 1
+             fi
+             echo "openapi.yaml is up to date"`}).
+		Stdout(ctx)
+}
+
+// PythonSdkLint regenerates the Python SDK from the current openapi spec and
+// runs ruff check to verify the generated code is clean.
+// Fails if the spec is stale (shares openApiSpec with OpenApiCheck).
+func (c *Ci) PythonSdkLint(ctx context.Context, src *dagger.Directory) (string, error) {
+	return dag.Container().
+		From("ghcr.io/astral-sh/uv:python3.12-bookworm-slim").
+		WithMountedCache("/root/.cache/uv", dag.CacheVolume("uv-cache")).
+		WithDirectory("/work", src.Directory("python-sdk")).
+		WithWorkdir("/work").
+		WithExec([]string{"uv", "sync", "--group", "dev"}).
+		WithFile("/work/openapi.yaml", c.openApiSpec(src)).
+		WithExec([]string{"uv", "run", "openapi-python-client", "generate",
+			"--path", "openapi.yaml",
+			"--meta", "setup",
+			"--overwrite",
+			"--custom-template-path", "templates"}).
+		WithExec([]string{"uvx", "ruff", "check", "."}).
+		Stdout(ctx)
+}
+
+// QaraxImage builds and returns the qarax control-plane container image.
+// Chain .Publish(ctx, address) to push to a registry.
+func (c *Ci) QaraxImage(ctx context.Context, src *dagger.Directory) (*dagger.Container, error) {
+	binDir, err := c.Build(ctx, src)
+	if err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+	buildCtx := src.WithDirectory("target/x86_64-unknown-linux-musl/release", binDir)
+	return buildCtx.DockerBuild(dagger.DirectoryDockerBuildOpts{
+		Dockerfile: "e2e/Dockerfile.qarax",
+	}), nil
+}
+
+// QaraxNodeImage builds and returns the qarax-node container image.
+// Reads the Cloud Hypervisor version from versions/cloud-hypervisor-version.
+// Chain .Publish(ctx, address) to push to a registry.
+func (c *Ci) QaraxNodeImage(ctx context.Context, src *dagger.Directory) (*dagger.Container, error) {
+	binDir, err := c.Build(ctx, src)
+	if err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+	chVersion, err := src.File("versions/cloud-hypervisor-version").Contents(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read cloud-hypervisor version: %w", err)
+	}
+	buildCtx := src.WithDirectory("target/x86_64-unknown-linux-musl/release", binDir)
+	return buildCtx.DockerBuild(dagger.DirectoryDockerBuildOpts{
+		Dockerfile: "e2e/Dockerfile.qarax-node",
+		BuildArgs: []dagger.BuildArg{
+			{Name: "CLOUD_HYPERVISOR_VERSION", Value: strings.TrimSpace(chVersion)},
+		},
+	}), nil
+}
+
+// All runs Fmt, Lint, Test, SqlxCheck, Audit, OpenApiCheck, and PythonSdkLint in parallel.
+// Lint, Test, SqlxCheck, and OpenApiCheck all chain from prebuilt so the workspace
+// is compiled exactly once before checks fan out.
+// Use Build, QaraxImage, and QaraxNodeImage separately when you need binaries or images.
 func (c *Ci) All(ctx context.Context, src *dagger.Directory) (string, error) {
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -131,6 +260,30 @@ func (c *Ci) All(ctx context.Context, src *dagger.Directory) (string, error) {
 	g.Go(func() error {
 		if _, err := c.Test(ctx, src); err != nil {
 			return fmt.Errorf("test: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.SqlxCheck(ctx, src); err != nil {
+			return fmt.Errorf("sqlx-check: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.Audit(ctx, src); err != nil {
+			return fmt.Errorf("audit: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.OpenApiCheck(ctx, src); err != nil {
+			return fmt.Errorf("openapi-check: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if _, err := c.PythonSdkLint(ctx, src); err != nil {
+			return fmt.Errorf("python-sdk-lint: %w", err)
 		}
 		return nil
 	})
