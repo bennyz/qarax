@@ -48,6 +48,7 @@ func (c *Ci) rustBase(src *dagger.Directory) *dagger.Container {
 		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
 		WithMountedCache("/usr/local/cargo/git", dag.CacheVolume("cargo-git")).
 		WithMountedCache("/src/target", dag.CacheVolume("cargo-target")).
+		WithEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true").
 		WithDirectory("/src", src).
 		WithWorkdir("/src")
 }
