@@ -46,7 +46,7 @@ func (c *Ci) rustBase(src *dagger.Directory) *dagger.Container {
 			"apt-get update && apt-get install -y --no-install-recommends musl-tools protobuf-compiler libprotobuf-dev"}).
 		WithExec([]string{"rustup", "target", "add", "x86_64-unknown-linux-musl"}).
 		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
-		WithMountedCache("/usr/local/cargo/git", dag.CacheVolume("cargo-git")).
+		WithMountedCache("/usr/local/cargo/git", dag.CacheVolume("cargo-git"), dagger.ContainerWithMountedCacheOpts{Sharing: dagger.CacheSharingModeLocked}).
 		WithMountedCache("/src/target", dag.CacheVolume("cargo-target")).
 		WithEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true").
 		WithDirectory("/src", src).
