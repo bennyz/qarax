@@ -78,7 +78,7 @@ jobs:
           docker run --rm \
             -v dagger-data:/data \
             -v /tmp:/backup \
-            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -o /backup/dagger-data.tar.zst"
+            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -f -o /backup/dagger-data.tar.zst"
           echo "Saved: $(du -sh /tmp/dagger-data.tar.zst | cut -f1)"
 
   build:
@@ -147,7 +147,7 @@ jobs:
           docker run --rm \
             -v dagger-data:/data \
             -v /tmp:/backup \
-            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -o /backup/dagger-data.tar.zst"
+            alpine sh -c "apk add -q zstd && tar -cf - -C /data . | zstd -f -o /backup/dagger-data.tar.zst"
           echo "Saved: $(du -sh /tmp/dagger-data.tar.zst | cut -f1)"
 
       - name: Upload binaries
