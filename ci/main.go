@@ -141,7 +141,7 @@ func (c *Ci) Audit(ctx context.Context, src *dagger.Directory) (string, error) {
 			From("rust:1").
 			WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry")).
 			WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
-				Include: []string{"Cargo.lock", "audit.toml"},
+				Include: []string{"Cargo.lock", ".cargo/audit.toml"},
 			}).
 			WithWorkdir("/src"),
 	).
