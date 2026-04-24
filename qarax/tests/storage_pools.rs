@@ -121,6 +121,10 @@ async fn create_test_pool(pool: &PgPool, pool_type: StoragePoolType) -> Uuid {
             "export_path": format!("/exports/{}", Uuid::new_v4()),
         }),
         StoragePoolType::OverlayBd => json!({ "url": "http://registry:5000" }),
+        StoragePoolType::Block => json!({
+            "portal": "127.0.0.1:3260",
+            "iqn": "iqn.2024-01.qarax:test",
+        }),
     };
 
     storage_pools::create(
