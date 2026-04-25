@@ -10,6 +10,14 @@ DB_CONTAINER_NAME=${POSTGRES_CONTAINER_NAME:=qarax-test-postgres}
 if [[ -z "${SKIP_DOCKER}" ]]; then
 	CONTAINER_ID=$(docker ps -aq --filter "name=^${DB_CONTAINER_NAME}$")
 	if [[ -n "${CONTAINER_ID}" ]]; then
+		PORT_BOUND=$(docker inspect --format "{{index .HostConfig.PortBindings \"5432/tcp\"}}" "${CONTAINER_ID}")
+		if [[ -z "${PORT_BOUND}" || "${PORT_BOUND}" == "[]" ]]; then
+			echo >&2 "Existing container ${DB_CONTAINER_NAME} has no port binding — removing and recreating"
+			docker rm -f "${CONTAINER_ID}" >/dev/null
+			CONTAINER_ID=""
+		fi
+	fi
+	if [[ -n "${CONTAINER_ID}" ]]; then
 		STATUS=$(docker inspect --format '{{.State.Status}}' "${CONTAINER_ID}")
 		if [[ "${STATUS}" != "running" ]]; then
 			docker start "${CONTAINER_ID}" >/dev/null

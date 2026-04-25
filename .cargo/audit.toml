@@ -13,10 +13,6 @@ ignore = [
     # idna 0.4.0: requires upgrading validator 0.16 → 0.20 (breaking API changes).
     "RUSTSEC-2024-0421",
 
-    # libcrux-sha3: incorrect SHAKE output in russh's ML-KEM dependency.
-    # Requires upgrading russh 0.57 → 0.60 (breaking client::Handler API changes).
-    "RUSTSEC-2026-0074",
-
     # proc-macro-error unmaintained; pulled in by validator_derive 0.16.
     # Requires upgrading validator 0.16 → 0.20 (breaking API changes).
     "RUSTSEC-2024-0370",
