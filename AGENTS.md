@@ -155,7 +155,7 @@ Three jobs run on every PR and push to master:
 
 - **check** (`dagger call --mod ./ci all --src=.`): runs fmt, lint, test, sqlx-check, audit, openapi-check, and python-sdk-lint in parallel. All steps except `fmt` chain from a shared `prebuilt` container (debug build) so the workspace compiles exactly once per session.
 - **build** (`dagger call --mod ./ci build --src=.`): release build targeting `x86_64-unknown-linux-musl`; uploads the four binaries as a workflow artifact.
-- **e2e**: downloads the build artifacts, starts a Docker Compose stack with KVM passthrough, runs pytest. Triggered on push to master or when the `run-e2e` label is present on a PR.
+- **e2e**: downloads the build artifacts, starts a Docker Compose stack with KVM passthrough, runs pytest. Triggered on push to master inside `rust-ci.yml`, or in a dedicated PR E2E workflow when the `run-e2e` label is first added. After that, labeled PR updates run E2E from `rust-ci.yml` on `synchronize`.
 
 ### Dagger checks
 
@@ -194,7 +194,7 @@ Known unfixable advisories are listed in `.cargo/audit.toml` with comments expla
 
 ### E2E trigger
 
-E2E tests run automatically on push to master. On PRs, apply the `run-e2e` label to trigger them.
+E2E tests run automatically on push to master. On PRs, apply the `run-e2e` label to trigger a dedicated PR E2E workflow without re-running the other Rust CI jobs; future commits to that labeled PR still run E2E on `synchronize`.
 
 ## Versioning
 
