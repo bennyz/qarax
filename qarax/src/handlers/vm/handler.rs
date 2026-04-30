@@ -44,7 +44,10 @@ use crate::{
         vm_disks::{self, NewVmDisk},
         vm_rng,
         vm_templates::{self, CreateVmTemplateFromVmRequest},
-        vms::{self, BootMode, Hypervisor, NewVm, NewVmNetwork, ResolvedNewVm, Vm, VmStatus},
+        vms::{
+            self, BootMode, ExecVmRequest, ExecVmResponse, Hypervisor, NewVm, NewVmNetwork,
+            ResolvedNewVm, Vm, VmStatus,
+        },
     },
     network_policy,
 };
@@ -2127,6 +2130,79 @@ pub async fn console_attach(
     Ok(ws.on_upgrade(move |socket| handle_console_websocket(socket, vm_id, host)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/vms/{vm_id}/exec",
+    params(
+        ("vm_id" = uuid::Uuid, Path, description = "VM unique identifier")
+    ),
+    request_body = ExecVmRequest,
+    responses(
+        (status = 200, description = "Command executed inside the VM", body = ExecVmResponse),
+        (status = 404, description = "VM not found"),
+        (status = 422, description = "VM is not running or guest exec is unavailable"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "vms"
+)]
+#[instrument(skip(env, req))]
+pub async fn exec(
+    Extension(env): Extension<App>,
+    Path(vm_id): Path<Uuid>,
+    Json(req): Json<ExecVmRequest>,
+) -> Result<ApiResponse<ExecVmResponse>> {
+    if req.command.is_empty() {
+        return Err(crate::errors::Error::UnprocessableEntity(
+            "command must contain at least one argument".into(),
+        ));
+    }
+
+    let vm = vms::get(env.pool(), vm_id).await?;
+    if vm.status != VmStatus::Running {
+        return Err(crate::errors::Error::UnprocessableEntity(format!(
+            "VM {} is not running",
+            vm_id
+        )));
+    }
+    if !vm.guest_agent {
+        return Err(crate::errors::Error::UnprocessableEntity(format!(
+            "guest agent is not enabled for VM {}",
+            vm_id
+        )));
+    }
+
+    let host_id = vm.host_id.ok_or_else(|| {
+        crate::errors::Error::UnprocessableEntity("VM has no assigned host".into())
+    })?;
+    let host = hosts::get_by_id(env.pool(), host_id)
+        .await?
+        .ok_or_else(|| {
+            crate::errors::Error::UnprocessableEntity("assigned host not found".into())
+        })?;
+
+    let node_client = NodeClient::new(&host.address, host.port as u16);
+    let response = node_client
+        .exec_vm(vm_id, req.command, req.timeout_secs)
+        .await
+        .map_err(|e| match e.downcast::<crate::errors::Error>() {
+            Ok(err) => err,
+            Err(err) => {
+                tracing::error!(vm_id = %vm_id, error = %err, "vm exec failed");
+                crate::errors::Error::InternalServerError
+            }
+        })?;
+
+    Ok(ApiResponse {
+        data: ExecVmResponse {
+            exit_code: response.exit_code,
+            stdout: response.stdout,
+            stderr: response.stderr,
+            timed_out: response.timed_out,
+        },
+        code: StatusCode::OK,
+    })
+}
+
 async fn handle_console_websocket(ws: WebSocket, vm_id: Uuid, host: crate::model::hosts::Host) {
     info!("WebSocket connection established for VM: {}", vm_id);
 
@@ -2553,18 +2629,13 @@ async fn build_create_vm_request(env: &App, vm: &Vm) -> Result<CreateVmRequest> 
         cloud_init_meta_data,
         cloud_init_network_config: vm.cloud_init_network_config.clone(),
         devices,
-        vsock: vm
-            .config
-            .get("sandbox_exec")
-            .and_then(|value| value.as_bool())
-            .filter(|enabled| *enabled)
-            .map(|_| VsockConfig {
-                cid: None,
-                socket: None,
-                iommu: None,
-                pci_segment: None,
-                id: Some("sandbox-exec".to_string()),
-            }),
+        vsock: vms::guest_agent_enabled(&vm.config).then_some(VsockConfig {
+            cid: None,
+            socket: None,
+            iommu: None,
+            pci_segment: None,
+            id: Some("sandbox-exec".to_string()),
+        }),
         numa_placement,
         rng,
         serial: serial_override,

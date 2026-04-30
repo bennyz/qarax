@@ -42,6 +42,35 @@ pub struct PlacementPolicy {
     pub spread_tags: Vec<String>,
 }
 
+pub const GUEST_AGENT_CONFIG_KEY: &str = "guest_agent";
+const LEGACY_SANDBOX_EXEC_CONFIG_KEY: &str = "sandbox_exec";
+
+pub fn guest_agent_enabled(config: &serde_json::Value) -> bool {
+    config
+        .get(GUEST_AGENT_CONFIG_KEY)
+        .and_then(|value| value.as_bool())
+        .or_else(|| {
+            config
+                .get(LEGACY_SANDBOX_EXEC_CONFIG_KEY)
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+pub fn set_guest_agent_config(config: &mut serde_json::Value, enabled: bool) {
+    if !config.is_object() {
+        *config = default_vm_config();
+    }
+
+    if let Some(map) = config.as_object_mut() {
+        map.insert(
+            GUEST_AGENT_CONFIG_KEY.to_string(),
+            serde_json::Value::Bool(enabled),
+        );
+        map.remove(LEGACY_SANDBOX_EXEC_CONFIG_KEY);
+    }
+}
+
 impl PlacementPolicy {
     pub fn validate(&self) -> Result<(), Error> {
         if let Some(class) = &self.reservation_class
@@ -129,6 +158,7 @@ pub struct Vm {
     pub boot_mode: BootMode,
     pub description: Option<String>,
     pub placement_policy: Option<PlacementPolicy>,
+    pub guest_agent: bool,
 
     // CPU configuration
     pub boot_vcpus: i32,
@@ -208,6 +238,7 @@ impl From<VmRow> for Vm {
             boot_mode: row.boot_mode,
             description: row.description,
             placement_policy: placement_policy_from_config(&row.config.0),
+            guest_agent: guest_agent_enabled(&row.config.0),
 
             boot_vcpus: row.boot_vcpus,
             max_vcpus: row.max_vcpus,
@@ -401,8 +432,25 @@ pub struct NewVm {
     /// anti-affinity, and spread preferences during scheduling.
     pub placement_policy: Option<PlacementPolicy>,
 
+    /// Enable the guest agent used by `vm exec`.
+    pub guest_agent: Option<bool>,
+
     #[serde(default = "default_vm_config")]
     pub config: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct ExecVmRequest {
+    pub command: Vec<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct ExecVmResponse {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -496,6 +544,7 @@ pub async fn resolve_create_request(pool: &PgPool, request: NewVm) -> Result<Res
         numa_config,
         persistent_upper_pool_id,
         placement_policy,
+        guest_agent,
         config,
     } = request;
 
@@ -565,6 +614,10 @@ pub async fn resolve_create_request(pool: &PgPool, request: NewVm) -> Result<Res
             Ok(policy)
         })
         .transpose()?;
+    let mut config = config;
+    if let Some(enabled) = guest_agent {
+        set_guest_agent_config(&mut config, enabled);
+    }
 
     Ok(ResolvedNewVm {
         name,

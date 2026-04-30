@@ -2127,6 +2127,38 @@ paths:
           description: VM not stopped, disk not resizable, or size invalid
         '500':
           description: Internal server error
+  /vms/{vm_id}/exec:
+    post:
+      tags:
+      - vms
+      operationId: exec
+      parameters:
+      - name: vm_id
+        in: path
+        description: VM unique identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecVmRequest'
+        required: true
+      responses:
+        '200':
+          description: Command executed inside the VM
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecVmResponse'
+        '404':
+          description: VM not found
+        '422':
+          description: VM is not running or guest exec is unavailable
+        '500':
+          description: Internal server error
   /vms/{vm_id}/force-stop:
     post:
       tags:
@@ -2988,6 +3020,38 @@ components:
           format: int64
           minimum: 0
     ExecSandboxResponse:
+      type: object
+      required:
+      - exit_code
+      - stdout
+      - stderr
+      - timed_out
+      properties:
+        exit_code:
+          type: integer
+          format: int32
+        stderr:
+          type: string
+        stdout:
+          type: string
+        timed_out:
+          type: boolean
+    ExecVmRequest:
+      type: object
+      required:
+      - command
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+        timeout_secs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          minimum: 0
+    ExecVmResponse:
       type: object
       required:
       - exit_code
@@ -4028,6 +4092,11 @@ components:
           type:
           - string
           - 'null'
+        guest_agent:
+          type:
+          - boolean
+          - 'null'
+          description: Enable the guest agent used by `vm exec`.
         hypervisor:
           oneOf:
           - type: 'null'
@@ -4885,6 +4954,7 @@ components:
       - status
       - hypervisor
       - boot_mode
+      - guest_agent
       - boot_vcpus
       - max_vcpus
       - kvm_hyperv
@@ -4924,6 +4994,8 @@ components:
           type:
           - string
           - 'null'
+        guest_agent:
+          type: boolean
         host_id:
           type:
           - string

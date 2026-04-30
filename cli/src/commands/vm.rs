@@ -8,8 +8,8 @@ use crate::{
         self,
         models::{
             AttachDiskRequest, CommitVmRequest, CreateSnapshotRequest, CreateVmResult,
-            DiskResizeRequest, HotplugNicRequest, NewVm, NewVmNetwork, RestoreRequest,
-            VmImagePreflightRequest, VmMigrateRequest, VmResizeRequest,
+            DiskResizeRequest, ExecVmRequest, HotplugNicRequest, NewVm, NewVmNetwork,
+            RestoreRequest, VmImagePreflightRequest, VmMigrateRequest, VmResizeRequest,
         },
     },
     client::Client,
@@ -116,6 +116,9 @@ enum VmCommand {
         /// Path to cloud-init network-config file (suppresses kernel ip= params when set)
         #[arg(long, value_name = "FILE", requires = "cloud_init_user_data")]
         cloud_init_network_config: Option<std::path::PathBuf>,
+        /// Enable the guest agent used by `qarax vm exec`
+        #[arg(long)]
+        guest_agent: bool,
         /// Number of GPUs to request (enables GPU-aware scheduling)
         #[arg(long)]
         gpu_count: Option<i32>,
@@ -222,6 +225,17 @@ enum VmCommand {
     Attach {
         /// VM name or ID
         vm: String,
+    },
+    /// Execute a command inside a running VM via the guest agent
+    Exec {
+        /// VM name or ID
+        vm: String,
+        /// Kill the guest command if it runs longer than this many seconds
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Command and arguments to execute inside the VM
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
     /// Attach a storage object as a disk on a VM (local, NFS, or OverlayBD)
     AttachDisk {
@@ -491,6 +505,14 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
                         .map(|h| h.to_string())
                         .unwrap_or_else(|| "-".to_string())
                 );
+                println!(
+                    "Guest agent: {}",
+                    if vm.guest_agent {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
                 println!("Boot mode:   {}", vm.boot_mode);
                 println!("vCPUs:       {}/{}", vm.boot_vcpus, vm.max_vcpus);
                 println!("Memory:      {}", format_bytes(vm.memory_size));
@@ -538,6 +560,7 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
             cloud_init_user_data,
             cloud_init_meta_data,
             cloud_init_network_config,
+            guest_agent,
             gpu_count,
             gpu_vendor,
             gpu_model,
@@ -675,6 +698,7 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
                 numa_config,
                 persistent_upper_pool_id,
                 placement_policy,
+                guest_agent: guest_agent.then_some(true),
             };
 
             let result = api::vms::create(client, &new_vm).await?;
@@ -804,6 +828,40 @@ pub async fn run(args: VmArgs, client: &Client, output: OutputFormat) -> anyhow:
         VmCommand::Attach { vm } => {
             let id = resolve_vm_id(client, &vm).await?;
             console::attach(client.base_url(), id).await?;
+        }
+
+        VmCommand::Exec {
+            vm,
+            timeout,
+            command,
+        } => {
+            let id = resolve_vm_id(client, &vm).await?;
+            let response = api::vms::exec(
+                client,
+                id,
+                &ExecVmRequest {
+                    command,
+                    timeout_secs: timeout,
+                },
+            )
+            .await?;
+
+            if !matches!(output, OutputFormat::Table) {
+                print_output(&response, output)?;
+            } else {
+                if !response.stdout.is_empty() {
+                    print!("{}", response.stdout);
+                }
+                if !response.stderr.is_empty() {
+                    eprint!("{}", response.stderr);
+                }
+                if response.timed_out {
+                    anyhow::bail!("vm command timed out");
+                }
+                if response.exit_code != 0 {
+                    anyhow::bail!("vm command exited with status {}", response.exit_code);
+                }
+            }
         }
 
         VmCommand::AttachDisk {

@@ -114,6 +114,7 @@ pub struct StorageObjectListQuery {
         vm::handler::metrics,
         vm::handler::console_log,
         vm::handler::console_attach,
+        vm::handler::exec,
         vm::handler::attach_disk,
         vm::handler::remove_disk,
         vm::handler::list_nics,
@@ -200,6 +201,8 @@ pub struct StorageObjectListQuery {
             crate::model::vms::NewVm,
             crate::model::vms::PlacementPolicy,
             crate::model::vms::NewVmNetwork,
+            crate::model::vms::ExecVmRequest,
+            crate::model::vms::ExecVmResponse,
             crate::model::vms::VmStatus,
             crate::model::vms::Hypervisor,
             crate::model::vm_templates::CreateVmTemplateFromVmRequest,
@@ -434,6 +437,7 @@ fn vms() -> Router {
             "/vms/{vm_id}/console/attach",
             get(vm::handler::console_attach),
         )
+        .route("/vms/{vm_id}/exec", post(vm::handler::exec))
         .route("/vms/{vm_id}/disks", post(vm::handler::attach_disk))
         .route(
             "/vms/{vm_id}/disks/{device_id}",

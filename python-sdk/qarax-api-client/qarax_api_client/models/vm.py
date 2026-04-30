@@ -25,6 +25,7 @@ class Vm:
         boot_mode (BootMode):
         boot_vcpus (int):
         config (Any):
+        guest_agent (bool):
         hypervisor (Hypervisor):
         id (UUID):
         kvm_hyperv (bool):
@@ -54,6 +55,7 @@ class Vm:
     boot_mode: BootMode
     boot_vcpus: int
     config: Any
+    guest_agent: bool
     hypervisor: Hypervisor
     id: UUID
     kvm_hyperv: bool
@@ -88,6 +90,8 @@ class Vm:
         boot_vcpus = self.boot_vcpus
 
         config = self.config
+
+        guest_agent = self.guest_agent
 
         hypervisor = self.hypervisor.value
 
@@ -190,6 +194,7 @@ class Vm:
                 "boot_mode": boot_mode,
                 "boot_vcpus": boot_vcpus,
                 "config": config,
+                "guest_agent": guest_agent,
                 "hypervisor": hypervisor,
                 "id": id,
                 "kvm_hyperv": kvm_hyperv,
@@ -240,6 +245,8 @@ class Vm:
         boot_vcpus = d.pop("boot_vcpus")
 
         config = d.pop("config")
+
+        guest_agent = d.pop("guest_agent")
 
         hypervisor = Hypervisor(d.pop("hypervisor"))
 
@@ -387,6 +394,7 @@ class Vm:
             boot_mode=boot_mode,
             boot_vcpus=boot_vcpus,
             config=config,
+            guest_agent=guest_agent,
             hypervisor=hypervisor,
             id=id,
             kvm_hyperv=kvm_hyperv,

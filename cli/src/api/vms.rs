@@ -6,10 +6,10 @@ use crate::client::Client;
 
 use super::models::{
     AttachDiskRequest, CommitVmRequest, CommitVmResponse, CreateSnapshotRequest, CreateVmResponse,
-    CreateVmResult, DiskResizeRequest, HotplugNicRequest, NetworkInterface, NewVm, RestoreRequest,
-    SecurityGroup, Snapshot, StorageObject, Vm, VmDisk, VmImagePreflightRequest,
-    VmImagePreflightResponse, VmMigrateRequest, VmMigrateResponse, VmResizeRequest,
-    VmStartResponse,
+    CreateVmResult, DiskResizeRequest, ExecVmRequest, ExecVmResponse, HotplugNicRequest,
+    NetworkInterface, NewVm, RestoreRequest, SecurityGroup, Snapshot, StorageObject, Vm, VmDisk,
+    VmImagePreflightRequest, VmImagePreflightResponse, VmMigrateRequest, VmMigrateResponse,
+    VmResizeRequest, VmStartResponse,
 };
 
 pub async fn list(client: &Client, name: Option<&str>, tags: &[String]) -> anyhow::Result<Vec<Vm>> {
@@ -90,6 +90,14 @@ pub async fn resume(client: &Client, vm_id: Uuid) -> anyhow::Result<()> {
 
 pub async fn console_log(client: &Client, vm_id: Uuid) -> anyhow::Result<String> {
     client.get_text(&format!("/vms/{vm_id}/console")).await
+}
+
+pub async fn exec(
+    client: &Client,
+    vm_id: Uuid,
+    req: &ExecVmRequest,
+) -> anyhow::Result<ExecVmResponse> {
+    client.post(&format!("/vms/{vm_id}/exec"), req).await
 }
 
 pub async fn attach_disk(

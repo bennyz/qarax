@@ -57,7 +57,8 @@ pub(crate) async fn resolve_sandbox_vm(
         numa_config: None,
         persistent_upper_pool_id: None,
         placement_policy: None,
-        config: serde_json::json!({ "sandbox_exec": true }),
+        guest_agent: Some(true),
+        config: serde_json::json!({}),
     };
 
     let resolved_vm = vms::resolve_create_request(env.pool(), new_vm).await?;

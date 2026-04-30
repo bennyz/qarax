@@ -23,6 +23,8 @@ from .deploy_host_request import DeployHostRequest
 from .disk_resize_request import DiskResizeRequest
 from .exec_sandbox_request import ExecSandboxRequest
 from .exec_sandbox_response import ExecSandboxResponse
+from .exec_vm_request import ExecVmRequest
+from .exec_vm_response import ExecVmResponse
 from .hook_execution import HookExecution
 from .hook_execution_status import HookExecutionStatus
 from .hook_scope import HookScope
@@ -130,6 +132,8 @@ __all__ = (
     "DiskResizeRequest",
     "ExecSandboxRequest",
     "ExecSandboxResponse",
+    "ExecVmRequest",
+    "ExecVmResponse",
     "HookExecution",
     "HookExecutionStatus",
     "HookScope",

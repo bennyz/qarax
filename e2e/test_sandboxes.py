@@ -48,6 +48,8 @@ from qarax_api_client.models.new_sandbox import NewSandbox
 from qarax_api_client.models.sandbox_status import SandboxStatus
 
 QARAX_URL = os.getenv("QARAX_URL", "http://localhost:8000")
+NFS_SERVER_HOST = os.getenv("NFS_SERVER_HOST", "nfs-server")
+NFS_EXPORT_PATH = os.getenv("NFS_EXPORT_PATH", "/nfs-export")
 SANDBOX_READY_TIMEOUT = int(os.getenv("SANDBOX_READY_TIMEOUT", "120"))
 TRANSFER_TIMEOUT = 30
 
@@ -57,7 +59,9 @@ def client():
     return Client(base_url=QARAX_URL)
 
 
-async def create_bootable_sandbox_template(client, hypervisor: str | None):
+async def create_bootable_sandbox_template(
+    client, hypervisor: str | None, *, shared_pool: bool = False
+):
     """Create a bootable sandbox template and return (template_id, cleanup_resources)."""
     test_id = uuid.uuid4().hex[:8]
     hosts = await list_hosts.asyncio(client=client)
@@ -66,22 +70,38 @@ async def create_bootable_sandbox_template(client, hypervisor: str | None):
     host = next((h for h in hosts if h.status == HostStatus.UP), hosts[0])
 
     pool_name = f"e2e-sandbox-pool-{test_id}"
+    pool_type = StoragePoolType.NFS if shared_pool else StoragePoolType.LOCAL
+    pool_config = (
+        {"url": f"{NFS_SERVER_HOST}:{NFS_EXPORT_PATH}"}
+        if shared_pool
+        else {"path": f"/var/lib/qarax/e2e-sandbox-{test_id}"}
+    )
     pool_id_raw = await create_storage_pool.asyncio(
         client=client,
         body=NewStoragePool(
             name=pool_name,
-            pool_type=StoragePoolType.LOCAL,
-            config={"path": f"/var/lib/qarax/e2e-sandbox-{test_id}"},
+            pool_type=pool_type,
+            config=pool_config,
         ),
     )
     assert pool_id_raw is not None
     pool_id = uuid.UUID(str(pool_id_raw).strip('"'))
 
-    await attach_pool_host.asyncio_detailed(
-        client=client,
-        pool_id=pool_id,
-        body=AttachPoolHostRequest(host_id=host.id),
-    )
+    if shared_pool:
+        up_hosts = [candidate for candidate in hosts if candidate.status == HostStatus.UP]
+        assert up_hosts, "Expected at least one UP host"
+        for up_host in up_hosts:
+            await attach_pool_host.asyncio_detailed(
+                client=client,
+                pool_id=pool_id,
+                body=AttachPoolHostRequest(host_id=up_host.id),
+            )
+    else:
+        await attach_pool_host.asyncio_detailed(
+            client=client,
+            pool_id=pool_id,
+            body=AttachPoolHostRequest(host_id=host.id),
+        )
 
     transfer = await create_transfer.asyncio(
         client=client,

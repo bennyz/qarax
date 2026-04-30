@@ -18,6 +18,7 @@ pub struct Vm {
     pub boot_mode: String,
     pub description: Option<String>,
     pub placement_policy: Option<serde_json::Value>,
+    pub guest_agent: bool,
     pub boot_vcpus: i32,
     pub max_vcpus: i32,
     pub memory_size: i64,
@@ -90,6 +91,8 @@ pub struct NewVm {
     pub persistent_upper_pool_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement_policy: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_agent: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,6 +236,21 @@ pub struct VmMigrateRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VmMigrateResponse {
     pub job_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExecVmRequest {
+    pub command: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecVmResponse {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
 }
 
 // Hosts

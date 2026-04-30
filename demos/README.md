@@ -16,6 +16,7 @@ Each demo lives in its own directory with a `run.sh` and a `README.md`.
 | [network-isolation/](network-isolation/) | Same-VPC subnet routing plus VM security groups with live firewall updates | `./hack/run-local.sh` |
 | [sandbox/](sandbox/) | Ephemeral VMs from templates with idle-timeout auto-reap and prewarmed pool claims | `./hack/run-local.sh` |
 | [firecracker/](firecracker/) | Firecracker backend lifecycle demo (create/start/pause/resume/stop/delete) | `./hack/run-local.sh` |
+| [vm-exec/](vm-exec/) | Regular VM guest exec: create a guest-agent-enabled VM, boot it, and run a command inside the guest | `./hack/run-local.sh` |
 
 ## Quick start
 
@@ -43,6 +44,9 @@ Each demo lives in its own directory with a `run.sh` and a `README.md`.
 
 # Run the Firecracker backend demo
 ./demos/firecracker/run.sh
+
+# Run the regular VM guest exec demo
+./demos/vm-exec/run.sh
 ```
 
 Networking note:

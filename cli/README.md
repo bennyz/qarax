@@ -234,6 +234,10 @@ qarax vm create --name my-oci-vm --vcpus 2 --memory 536870912 \
 qarax vm create --name my-vm --vcpus 2 --memory 536870912 \
   --boot-source linux-6.1 --network my-network --cloud-init-user-data ./user-data.yaml
 
+# With guest exec enabled
+qarax vm create --name my-vm --vcpus 2 --memory 536870912 \
+  --boot-source linux-6.1 --guest-agent
+
 # Using a template + instance type
 qarax vm create --name my-ai-vm --template ubuntu-base --instance-type gpu-small
 
@@ -257,6 +261,9 @@ qarax vm delete my-vm
 # Console
 qarax vm console my-vm      # print stored serial log
 qarax vm attach my-vm       # interactive WebSocket console (Ctrl-C to exit)
+
+# Guest exec (requires --guest-agent at create time and a compatible guest init/agent)
+qarax vm exec my-vm -- /bin/sh -c 'printf vm-exec && uname -s'
 ```
 
 ### Audit logs

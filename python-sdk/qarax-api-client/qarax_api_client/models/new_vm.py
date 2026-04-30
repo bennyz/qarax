@@ -41,6 +41,7 @@ class NewVm:
         config (Any | Unset):
         cpu_topology (Any | Unset):
         description (None | str | Unset):
+        guest_agent (bool | None | Unset): Enable the guest agent used by `vm exec`.
         hypervisor (Hypervisor | None | Unset):
         image_ref (None | str | Unset): OCI image reference to use as root filesystem (e.g.
             "docker.io/library/ubuntu:22.04").
@@ -89,6 +90,7 @@ class NewVm:
     config: Any | Unset = UNSET
     cpu_topology: Any | Unset = UNSET
     description: None | str | Unset = UNSET
+    guest_agent: bool | None | Unset = UNSET
     hypervisor: Hypervisor | None | Unset = UNSET
     image_ref: None | str | Unset = UNSET
     instance_type_id: None | Unset | UUID = UNSET
@@ -175,6 +177,12 @@ class NewVm:
             description = UNSET
         else:
             description = self.description
+
+        guest_agent: bool | None | Unset
+        if isinstance(self.guest_agent, Unset):
+            guest_agent = UNSET
+        else:
+            guest_agent = self.guest_agent
 
         hypervisor: None | str | Unset
         if isinstance(self.hypervisor, Unset):
@@ -359,6 +367,8 @@ class NewVm:
             field_dict["cpu_topology"] = cpu_topology
         if description is not UNSET:
             field_dict["description"] = description
+        if guest_agent is not UNSET:
+            field_dict["guest_agent"] = guest_agent
         if hypervisor is not UNSET:
             field_dict["hypervisor"] = hypervisor
         if image_ref is not UNSET:
@@ -507,6 +517,15 @@ class NewVm:
             return cast(None | str | Unset, data)
 
         description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_guest_agent(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        guest_agent = _parse_guest_agent(d.pop("guest_agent", UNSET))
 
         def _parse_hypervisor(data: object) -> Hypervisor | None | Unset:
             if data is None:
@@ -797,6 +816,7 @@ class NewVm:
             config=config,
             cpu_topology=cpu_topology,
             description=description,
+            guest_agent=guest_agent,
             hypervisor=hypervisor,
             image_ref=image_ref,
             instance_type_id=instance_type_id,

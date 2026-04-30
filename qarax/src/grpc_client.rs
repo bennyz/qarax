@@ -180,6 +180,14 @@ pub fn net_configs_from_db(networks: &[NetworkInterface]) -> Vec<NetConfig> {
 }
 
 impl NodeClient {
+    fn is_retryable_guest_agent_error(message: &str) -> bool {
+        message.contains("failed to connect to guest-agent socket")
+            || message.contains("failed to open vsock stream to guest agent")
+            || message.contains("failed to read guest-agent handshake")
+            || message.contains("guest-agent handshake exceeds")
+            || message.contains("guest-agent connect failed")
+    }
+
     /// Create a new client for the specified qarax-node address
     pub fn new(host: &str, port: u16) -> Self {
         Self {
@@ -1098,14 +1106,23 @@ impl NodeClient {
                 timeout_secs,
             })
             .await
-            .map_err(|status| match status.code() {
-                tonic::Code::NotFound => crate::errors::Error::NotFound.into(),
-                tonic::Code::InvalidArgument
-                | tonic::Code::FailedPrecondition
-                | tonic::Code::DeadlineExceeded => {
-                    crate::errors::Error::UnprocessableEntity(status.message().to_string()).into()
+            .map_err(|status| {
+                let message = status.message().to_string();
+                match status.code() {
+                    tonic::Code::NotFound => crate::errors::Error::NotFound.into(),
+                    tonic::Code::InvalidArgument
+                    | tonic::Code::FailedPrecondition
+                    | tonic::Code::DeadlineExceeded => {
+                        crate::errors::Error::UnprocessableEntity(message).into()
+                    }
+                    tonic::Code::Internal if Self::is_retryable_guest_agent_error(&message) => {
+                        crate::errors::Error::UnprocessableEntity(format!(
+                            "guest agent is not ready yet: {message}"
+                        ))
+                        .into()
+                    }
+                    _ => anyhow::anyhow!("Failed to exec command on qarax-node: {}", status),
                 }
-                _ => anyhow::anyhow!("Failed to exec command on qarax-node: {}", status),
             })?;
 
         Ok(response.into_inner())
